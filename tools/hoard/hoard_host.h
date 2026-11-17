@@ -14,9 +14,17 @@
 
 #include "parena_runtime.h"
 
+/* Arenas. state is never reset (configuration). request is reset after every connection: everything a request
+ * allocates dies with it. cache 0 (JSON) and 1 (CSV) each hold one ledger output, reset only when the save it came
+ * from changes. */
 Arena *hd_state_arena(void);
 Arena *hd_request_arena(void);
 int hd_request_reset(void);
+Arena *hd_cache_arena(int which);
+int hd_cache_reset(int which);
+
+/* FNV-1a, masked to a non-negative int: an ETag that changes whenever its input does. */
+int hd_hash(const char *s);
 
 char *hd_env(const char *key, const char *fallback, Arena *dest);
 char *hd_read_file(const char *path, Arena *dest);

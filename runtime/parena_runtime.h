@@ -2133,16 +2133,19 @@ static inline long find_body_length_from_headers(const char *buf, size_t have, s
  * unchanged from before). A bounded 30s idle-read timeout (via poll) is a
  * real, cheap safety net against ever hanging forever again on a response
  * shape this function's own parsing can't make sense of. */
-static inline char *tcp_read_impl(int fd, Arena *dest) {
+/* tcp_read_max_impl -- tcp_read_impl with a byte cap (max > 0), so a server that only needs the request line and
+ * headers (tools/hoard) bounds what one client can make it hold. max == 0 is tcp_read_impl. */
+static inline char *tcp_read_max_impl(int fd, size_t max, Arena *dest) {
     size_t cap = 4096;
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
     long content_length = -1; /* -1 = not yet known (boundary not seen, or no Content-Length header) */
     size_t header_end = 0;
     for (;;) {
+        if (max > 0 && len >= max) break;   /* over the cap: cut, never buffered whole */
         if (content_length >= 0 && len >= header_end + (size_t)content_length) break;
         if (len + 4096 > cap) {
-            size_t new_cap = cap + 4096;
+            size_t new_cap = cap * 2;   /* doubling: growing by 4 KiB copied the whole buffer on every read */
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
             buf = grown;
@@ -2177,6 +2180,7 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
     out[len] = '\0';
     return out;
 }
+static inline char *tcp_read_impl(int fd, Arena *dest) { return tcp_read_max_impl(fd, 0, dest); }
 
 /* tcp_write_impl -- byte-for-byte the same loop as string_concat's
  * sibling raw_write_impl above (write() is write() whether the fd is a
@@ -3512,7 +3516,8 @@ static inline long parena_find_body_length_from_headers(const char *buf, size_t 
     return -2;
 }
 
-static inline char *tcp_read_impl(int fd, Arena *dest) {
+/* tcp_read_max_impl -- see the POSIX block: max > 0 caps what one request can make the server hold. */
+static inline char *tcp_read_max_impl(int fd, size_t max, Arena *dest) {
     size_t cap = 4096;
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
@@ -3522,9 +3527,10 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
     for (;;) {
         WSAPOLLFD pfd;
         int pr, n;
+        if (max > 0 && len >= max) break;   /* over the cap: cut, never buffered whole */
         if (content_length >= 0 && len >= header_end + (size_t)content_length) break;
         if (len + 4096 > cap) {
-            size_t new_cap = cap + 4096;
+            size_t new_cap = cap * 2;   /* doubling: growing by 4 KiB copied the whole buffer on every read */
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
             buf = grown;
@@ -3549,6 +3555,7 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
     out[len] = '\0';
     return out;
 }
+static inline char *tcp_read_impl(int fd, Arena *dest) { return tcp_read_max_impl(fd, 0, dest); }
 
 static inline int tcp_write_impl(int fd, const char *s) {
     size_t len = strlen(s);

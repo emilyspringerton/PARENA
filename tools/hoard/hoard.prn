@@ -1,28 +1,40 @@
 ;; tools/hoard/hoard.prn -- the Hoard's local web server, in PARENA: one page that shows every character's gear,
 ;; bags, bank and mail, served from this machine at http://127.0.0.1:<HOARD_PORT>/ (default 8765). It needs no login
 ;; and no public host. Founder, 2026-11-17: "web hosting still blocked, lets get self hosting working ... we want a
-;; gui web interface too", and "all mods first parena first dev".
+;; gui web interface too", "all mods first parena first dev", and after the first one ran out of memory: "do an optim
+;; pass".
 ;;
-;; Routes:
-;;   GET /               tools/hoard/page.html (read from HOARD_LIB on every request)
-;;   GET /api/hoard      the ledger as JSON  } both computed fresh on every request by the PARENA ledger
-;;   GET /api/hoard.csv  the ledger as CSV   } (stdlib/collection/ledger.prn), run under Lua 5.1
+;; Routes (GET only; anything else is 405):
+;;   /               page.html, the shell: styles and <script type="module" src="/app.js">
+;;   /app.js         the page itself, PARENA emitted as JavaScript (tools/hoard/hoard_page.prn, `-o app.js`)
+;;   /api/version    {"etag":"..."}: the newest save's identity, from a directory listing and stat only, no Lua.
+;;                   The page polls this and fetches the ledger only when it changes.
+;;   /api/hoard      the ledger as JSON  } ETag + If-None-Match -> 304 with no body; cached per save, so Lua runs
+;;   /api/hoard.csv  the ledger as CSV   } once per /reload or logout, never per request
 ;;
-;; Why the ledger runs as a child process: it reads Fafnir's Bed's SavedVariables, which are Lua tables, and the
-;; ledger is a Lua-target PARENA module run through the journal reader's sandboxed loader (the same path the
-;; Collection's other readers take). This server is a C-target PARENA program; it composes the command, runs it with
-;; process/run-capture and answers with what comes back.
+;; Memory (the first version died with "out of memory (arena block alloc failed)" after 1 h 32 min of polling):
+;;   - every connection is accepted, read, answered and closed in the REQUEST arena, which is reset after each one.
+;;     The first version read every request into the never-reset main arena, so each poll grew the process for good.
+;;   - the serve loop is a loop (loop/recur), not one recursive call per connection.
+;;   - a request is read up to max-request bytes (net/tcp's tcp-read-max): GET needs only its request line and
+;;     headers.
+;;   - the JSON and the CSV each live in their own cache arena, reset only when the save they came from changes.
+;;
+;; Why the ledger runs as a child process: Fafnir's Bed's SavedVariables are Lua tables, and the ledger is a
+;; Lua-target PARENA module (stdlib/collection/ledger.prn) run through the journal reader's sandboxed loader, the
+;; same path the Collection's other readers take. This server is a C-target PARENA program; it composes that
+;; command and runs it with process/run-capture.
 ;;
 ;; It binds 127.0.0.1 only (net/tcp's tcp-listen-local): this is your play data, so the LAN never sees it and
 ;; Windows asks no firewall question.
 ;;
-;; Host boundary (hoard_host.c/.h): only what a PARENA program cannot do yet. That is arenas, env, reading a file,
-;; listing Account/*/SavedVariables/<addon>.lua with the newest modification time, and shell-quoting for the
-;; platform's popen. Routing, configuration, the command and every response are PARENA below.
+;; Host boundary (hoard_host.c/.h): arenas, env, reading a file, listing Account/*/SavedVariables/<addon>.lua with
+;; the newest modification time, a string hash, and shell-quoting for the platform's popen. Routing, configuration,
+;; caching, ETags, the command and every response are PARENA below.
 ;;
-;; Env: WOW_WTF_DIR (required), HOARD_LIB (required: folder holding page.html, ledger.lua, ledger_export.lua and
-;; journal_reader.lua; scripts/hoard.sh fills it), HOARD_LUA (required: a Lua 5.1 interpreter),
-;; FAFNIR_ADDON / FAFNIR_VAR (FafnirsBed / FafnirsBedDB), HOARD_PORT (8765).
+;; Env: WOW_WTF_DIR (required), HOARD_LIB (required: folder holding page.html, app.js, ledger.lua,
+;; ledger_export.lua and journal_reader.lua; scripts/hoard.sh fills it), HOARD_LUA (required: a Lua 5.1
+;; interpreter), FAFNIR_ADDON / FAFNIR_VAR (FafnirsBed / FafnirsBedDB), HOARD_PORT (8765).
 
 (module hoard)
 (import string)
@@ -32,12 +44,20 @@
 
 (export hoard-run)
 
+(def max-request 16384)
+
 ;; ---- configuration (set once in setup, allocated in the never-reset state arena) --------------------------------
 (def wtf-dir "")
 (def lib-dir "")
 (def lua-bin "")
 (def addon "")
 (def sv-var "")
+
+;; ---- the ledger cache: one entry per format, each in its own arena (0 = json, 1 = csv) --------------------------
+(def json-key "")
+(def json-body "")
+(def csv-key "")
+(def csv-body "")
 
 ;; ---- host boundary -----------------------------------------------------------------------------------------------
 (defn host-env [(key : String @ Region) (fallback : String @ Region) (dest : Arena @ Region)] : String @ Region
@@ -56,6 +76,14 @@
   #target
   {:c (inline-c "hd_request_reset()")})
 
+(defn cache-arena [(which : I32)] : Arena @ Region
+  #target
+  {:c (inline-c "hd_cache_arena(which)")})
+
+(defn cache-reset [(which : I32)] : I32
+  #target
+  {:c (inline-c "hd_cache_reset(which)")})
+
 (defn host-read [(path : String @ Region) (dest : Arena @ Region)] : String @ Region
   #target
   {:c (inline-c "hd_read_file(path, dest)")})
@@ -69,6 +97,11 @@
 (defn host-sv-saved-at [(wtf : String @ Region) (name : String @ Region)] : I32
   #target
   {:c (inline-c "hd_sv_saved_at(wtf, name)")})
+
+;; FNV-1a of a string, as a non-negative I32 (an ETag only needs to change when its input does).
+(defn host-hash [(s : String @ Region)] : I32
+  #target
+  {:c (inline-c "hd_hash(s)")})
 
 ;; The whole command as the platform's popen needs it (Windows' cmd /c strips one outer pair of quotes).
 (defn host-shell-wrap [(cmd : String @ Region) (dest : Arena @ Region)] : String @ Region
@@ -95,6 +128,19 @@
 (defn port-of [(s : String @ Region)] : I32
   (let [n (read-int s 0 0)]
     (if (and (> n 0) (< n 65536)) n 8765)))
+
+;; A copy of `s` in `dest` (a cache arena outlives the request arena `s` was built in).
+(defn keep [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (string/concat "" s dest))
+
+;; ---- the save's identity -------------------------------------------------------------------------------------------
+;; The listing (which files) and the newest modification time (when) together say which save the ledger is of.
+(defn save-key [(dest : Arena @ Region)] : String @ Region
+  (cat3 (string/i32-to-string (host-sv-saved-at wtf-dir addon) dest) "|" (host-sv-list wtf-dir addon dest) dest))
+
+;; The ETag for one format of one save: "<format>-<hash of the key>".
+(defn etag [(format : String @ Region) (key : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (cat3 (string/concat "\"" format dest) "-" (string/concat (string/i32-to-string (host-hash key) dest) "\"" dest) dest))
 
 ;; ---- the ledger command ------------------------------------------------------------------------------------------
 ;; One "account\tpath\n" line per file -> ` "account" "path"` per file, appended to `acc`.
@@ -134,55 +180,120 @@
         dest)
       dest)))
 
-(defn ledger-response [(mode : String @ Region) (content-type : String @ Region) (dest : Arena @ Region)] : String @ Region
+;; Run the ledger; "" when it failed (said on the server's console).
+(defn run-ledger [(mode : String @ Region) (dest : Arena @ Region)] : String @ Region
   (let [out (process/run-capture (ledger-cmd mode dest) dest)
         code (process/run-capture-exit-code)]
     (if (= code 0)
-      (http_server/response 200 content-type out dest)
-      (do
-        (println (string/concat "hoard: the ledger failed: " out dest))
-        (http_server/json-response 500
-          (cat3 "{\"error\":\"the ledger exited with " (string/i32-to-string code dest)
-                "; see the server window\"}" dest)
-          dest)))))
+      out
+      (do (println (string/concat "hoard: the ledger failed: " out dest)) ""))))
 
-(defn page-response [(dest : Arena @ Region)] : String @ Region
-  (let [path (cat3 lib-dir "/" "page.html" dest)
-        html (host-read path dest)]
-    (if (string/str-eq? html "")
+;; The cached body for this format at this save, refreshed (once) when the save changed. "" = the ledger failed.
+(defn cached-json [(key : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (if (and (string/str-eq? key json-key) (not (string/str-eq? json-body "")))
+    json-body
+    (let [out (run-ledger "json" dest)]
+      (if (string/str-eq? out "")
+        ""
+        (do (cache-reset 0)
+            (set! json-key (keep key (cache-arena 0)))
+            (set! json-body (keep out (cache-arena 0)))
+            json-body)))))
+
+(defn cached-csv [(key : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (if (and (string/str-eq? key csv-key) (not (string/str-eq? csv-body "")))
+    csv-body
+    (let [out (run-ledger "csv" dest)]
+      (if (string/str-eq? out "")
+        ""
+        (do (cache-reset 1)
+            (set! csv-key (keep key (cache-arena 1)))
+            (set! csv-body (keep out (cache-arena 1)))
+            csv-body)))))
+
+;; ---- responses -----------------------------------------------------------------------------------------------------
+;; 200 with an ETag and `Cache-Control: no-cache` (the browser keeps it, and asks before each use).
+(defn ok-tagged [(content-type : String @ Region) (tag : String @ Region) (body : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (string/concat
+    (cat3 "HTTP/1.1 200 OK\r\nContent-Type: " content-type "\r\nContent-Length: " dest)
+    (string/concat
+      (cat3 (string/i32-to-string (string/length body) dest) "\r\nETag: " tag dest)
+      (string/concat "\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n" body dest)
+      dest)
+    dest))
+
+(defn not-modified [(tag : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (cat3 "HTTP/1.1 304 Not Modified\r\nETag: " tag "\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n" dest))
+
+(defn ledger-failed [(dest : Arena @ Region)] : String @ Region
+  (http_server/json-response 500 "{\"error\":\"the ledger failed; see the server window\"}" dest))
+
+;; /api/hoard and /api/hoard.csv: 304 when the browser already holds this save, else the cached body.
+(defn ledger-response [(raw : String @ Region) (format : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [key (save-key dest)
+        tag (etag format key dest)]
+    (if (string/str-eq? (http_server/header-value raw "If-None-Match" dest) tag)
+      (not-modified tag dest)
+      (let [body (if (string/str-eq? format "csv") (cached-csv key dest) (cached-json key dest))]
+        (if (string/str-eq? body "")
+          (ledger-failed dest)
+          (ok-tagged (if (string/str-eq? format "csv") "text/csv; charset=utf-8" "application/json; charset=utf-8")
+                     tag body dest))))))
+
+;; /api/version: what the page polls. A directory listing and a stat; no Lua, no ledger.
+(defn version-response [(dest : Arena @ Region)] : String @ Region
+  (http_server/json-response 200 (cat3 "{\"etag\":\"" (string/i32-to-string (host-hash (save-key dest)) dest) "\"}" dest) dest))
+
+(defn file-response [(name : String @ Region) (content-type : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [path (cat3 lib-dir "/" name dest)
+        body (host-read path dest)]
+    (if (string/str-eq? body "")
       (http_server/text-response 500 (string/concat "hoard: cannot read " path dest) dest)
-      (http_server/html-response 200 html dest))))
+      (http_server/response 200 content-type body dest))))
 
 ;; ---- routing -----------------------------------------------------------------------------------------------------
-(defn route [(method : String @ Region) (path : String @ Region) (dest : Arena @ Region)] : String @ Region
+(defn route [(raw : String @ Region) (method : String @ Region) (path : String @ Region) (dest : Arena @ Region)] : String @ Region
   (if (not (string/str-eq? method "GET"))
     (http_server/text-response 405 "read-only: GET only" dest)
     (if (string/str-eq? path "/")
-      (page-response dest)
-      (if (string/str-eq? path "/api/hoard")
-        (ledger-response "json" "application/json; charset=utf-8" dest)
-        (if (string/str-eq? path "/api/hoard.csv")
-          (ledger-response "csv" "text/csv; charset=utf-8" dest)
-          (http_server/text-response 404 "not found" dest))))))
+      (file-response "page.html" "text/html; charset=utf-8" dest)
+      (if (string/str-eq? path "/app.js")
+        (file-response "app.js" "text/javascript; charset=utf-8" dest)
+        (if (string/str-eq? path "/api/version")
+          (version-response dest)
+          (if (string/str-eq? path "/api/hoard")
+            (ledger-response raw "json" dest)
+            (if (string/str-eq? path "/api/hoard.csv")
+              (ledger-response raw "csv" dest)
+              (http_server/text-response 404 "not found" dest))))))))
 
 (defn handle [(raw : String @ Region) (dest : Arena @ Region)] : String @ Region
-  (route (http_server/parse-method raw dest) (http_server/parse-path raw dest) dest))
+  (route raw (http_server/parse-method raw dest) (http_server/parse-path raw dest) dest))
 
-(defn serve-one [(!stream : &mut TcpStream) (dest : Arena @ Region)] : I32
-  (let [raw (match (net/tcp/tcp-read !stream dest) ((Ok !text) !text) ((Err _) ""))]
+;; One connection, entirely in `req` (the request arena): read (capped), answer, close.
+(defn serve-one [(!stream : &mut TcpStream) (req : Arena @ Region)] : I32
+  (let [raw (match (net/tcp/tcp-read-max !stream max-request req) ((Ok !text) !text) ((Err _) ""))]
     (do
-      (net/tcp/tcp-write !stream (handle raw (request-arena)) dest)
-      (net/tcp/tcp-close !stream dest)
-      (request-reset)
+      (net/tcp/tcp-write !stream (handle raw req) req)
+      (net/tcp/tcp-close !stream req)
       0)))
 
-(defn serve-loop [(!listener : &mut TcpListener) (served : I32) (dest : Arena @ Region)] : I32
-  (match (net/tcp/tcp-accept !listener dest)
-    ((Ok !stream)
-      (do
-        (serve-one &mut !stream dest)
-        (serve-loop !listener (+ served 1) dest)))
-    ((Err _) (do (println "hoard: accept failed") 1))))
+;; Accept one connection into the request arena, serve it, then reset the arena: nothing a request allocated
+;; outlives it.
+(defn serve-next [(!listener : &mut TcpListener)] : I32
+  (let [req (request-arena)
+        r (match (net/tcp/tcp-accept !listener req)
+            ((Ok !stream) (serve-one &mut !stream req))
+            ((Err _) (do (println "hoard: accept failed") 1)))]
+    (do (request-reset) r)))
+
+;; Serve forever. `running` never changes (a counter would overflow after 2^31 connections); the else branch is only
+;; there because a loop needs a value.
+(defn serve-loop [(!listener : &mut TcpListener)] : I32
+  (loop [running 1]
+    (if (= running 1)
+      (do (serve-next !listener) (recur running))
+      0)))
 
 ;; Every required setting is checked before listening: a missing one is named, not guessed.
 (defn missing [] : String @ Region
@@ -212,5 +323,5 @@
               (println (cat3 "hoard: http://127.0.0.1:" (string/i32-to-string port dest)
                              "/  (WoW saves on /reload and logout; the page follows)" dest))
               (println (string/concat "hoard: reading " (string/concat wtf-dir (cat3 "/Account/*/SavedVariables/" addon ".lua" dest) dest) dest))
-              (serve-loop &!listener 0 dest)))
+              (serve-loop &!listener)))
           ((Err _) (do (println (cat3 "hoard: cannot listen on 127.0.0.1:" (string/i32-to-string port dest) " (already running?)" dest)) 1)))))))

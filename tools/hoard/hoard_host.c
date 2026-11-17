@@ -25,6 +25,26 @@ int hd_request_reset(void) {
     return 0;
 }
 
+static Arena g_cache[2];
+
+Arena *hd_cache_arena(int which) { return &g_cache[which ? 1 : 0]; }
+
+int hd_cache_reset(int which) {
+    Arena *a = hd_cache_arena(which);
+    arena_free_all(a);
+    arena_init(a);
+    return 0;
+}
+
+int hd_hash(const char *s) {
+    unsigned long h = 2166136261UL;
+    for (; s && *s; s++) {
+        h ^= (unsigned char)*s;
+        h = (h * 16777619UL) & 0xffffffffUL;
+    }
+    return (int)(h & 0x7fffffffUL);
+}
+
 static char *dup_in(const char *s, size_t n, Arena *dest) {
     char *out = (char *)arena_alloc(dest, n + 1);
     memcpy(out, s, n);
@@ -156,5 +176,7 @@ int main(void) {
     arena_init(&g_arena);
     arena_init(&g_state);
     arena_init(&g_request);
+    arena_init(&g_cache[0]);
+    arena_init(&g_cache[1]);
     return hoard_run(&g_arena);
 }
