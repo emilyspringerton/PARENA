@@ -141,6 +141,21 @@ glue runtime/wow/fafnirs_bed.lua "$f/fafnirs_bed.lua" "$F_ADDON" "$F_VAR"
 toc "$f/$F_ADDON.toc" "Fafnir's Bed" "Every bag, bank and mailbox on the account in one hoard: net inventory and who has what. /fafnir" \
   SavedVariables "$F_VAR" inventory.lua fafnirs_bed.lua
 
+# Self Found: every transaction, and whether each character is still self-found (founder, 2026-11-17). Account-wide
+# so /sf shows every character. The doctrine is stdlib/collection/selffound.prn.
+SF_ADDON="${SELFFOUND_ADDON:-SelfFound}"
+SF_VAR="${SELFFOUND_VAR:-SelfFoundDB}"
+for n in "$SF_ADDON" "$SF_VAR"; do
+  case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+  case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+done
+sf="$OUT/AddOns/$SF_ADDON"
+mkdir -p "$sf"
+wrap collection/selffound "$sf/selffound.lua" stdlib/reflux/reflux.prn stdlib/collection/selffound.prn
+glue runtime/wow/self_found.lua "$sf/self_found.lua" "$SF_ADDON" "$SF_VAR"
+toc "$sf/$SF_ADDON.toc" "Self Found" "Every transaction on every character, and who is still self-found: no AH buying or selling, no trades, no player mail, no guild bank. /sf" \
+  SavedVariables "$SF_VAR" selffound.lua self_found.lua
+
 fun "$H_ADDON" "$H_VAR" hrungnir hrungnir.prn hrungnir.lua hrungnir.lua "Hrungnir" \
   "A pet rock in a tiny frame. It levels up as you play and has opinions. /rock" SavedVariablesPerCharacter
 fun "$R_ADDON" "$R_VAR" ratatoskr ratatoskr.prn ratatoskr_roll.lua ratatoskr.lua "Ratatoskr Roll" \
