@@ -1,0 +1,46 @@
+-- runtime/wow/locales/vegvisir.lua -- Vegvísir's catalogue (spec addon 43, "our own maps": the old map). Data;
+-- enUS fallback. Vegvísir is the wayfinding stave: "that which shows the way".
+local _, ns = ...
+local enUS = {
+    NAME = "Vegvísir",
+    TITLE = "Vegvísir -- the old map",
+    HELP = "/oldmap -- open the old map   /oldmap here -- this land   /oldmap hoard -- the hoard   /oldmap folk -- everyone",
+    TAB_WORLD = "The World", TAB_HERE = "This Land", TAB_HOARD = "The Hoard", TAB_FOLK = "The Folk",
+    WORLD_HEAD = "%d lands walked by %d of us; %d fields charted in all.",
+    LAND_ROW = "%s  --  %s charted%s",
+    LAND_UNKNOWN = "a land with no name",
+    LAND_WHO = "   (%s here)",
+    HERE_HEAD = "%s  --  %d of %d fields charted (%s)",
+    HERE_NONE = "No land under your feet that the map can read.",
+    HERE_FIRST = "Nobody of ours has set foot here before.",
+    CHARTED = "%s: %s of %s is charted.",
+    QUARTER = "a quarter", HALF = "half", THREEQ = "three quarters", WHOLE = "every field",
+    PIN_ME = "you", PIN_SEEN = "%s, seen %s",
+    PIN_X = "Andvari's X no. %d%s", PIN_X_FOUND = " (dug up)",
+    PIN_STOP = "Rune Riddle stop %d", PIN_START = "Sleipnir's start", PIN_FINISH = "Sleipnir's finish",
+    HOARD_HEAD = "%d kinds of thing, %d in all; %s in purses and the post.",
+    HOARD_SEARCH = "Search the hoard...",
+    HOARD_ROW = "%s  x%d  --  %s",
+    HOARD_HOLDER = "%s %d %s",
+    HOARD_NONE = "Fafnir's Bed is not here: no hoard to show.",
+    HOARD_EMPTY = "Nothing matches.",
+    IN_BAGS = "in bags", IN_BANK = "in the bank", IN_MAIL = "in the post",
+    FOLK_HEAD = "%d of us, on %d lands.",
+    FOLK_ROW = "%s  --  %s%s, %s",
+    FOLK_NOWHERE = "nowhere the map has seen",
+    FOLK_SHOW = "Show",
+    AGO_NOW = "now", AGO_MIN = "%d min ago", AGO_HOUR = "%d h ago", AGO_DAY = "%d d ago",
+    DOORS = "Every door:",
+    DOOR_TIP = "%s\n%s\n|cff9d9d9d%s|r",
+    NOCMD = "(no command)",
+    OPENED = "%s: the old map is open. %s",
+    MINIMAP_TIP = "Vegvísir, the old map\n|cff9d9d9dLeft-click: open. Drag: move the stamp.|r",
+    GOLD_FMT = "%dg %ds %dc",
+    MISSING = "%s: RefluxCore's collection/vegvisir module is missing.",
+    H_OPEN_1 = "Ink on old vellum / every road we ever walked / still warm underfoot",
+    H_OPEN_2 = "Who holds the linen? / the map knows, the map knows all / ask it, not the bank",
+    H_OPEN_3 = "A quarter charted / the rest is fog and rumor / go and make it ink",
+}
+local enGB = {}
+for k, v in pairs(enUS) do enGB[k] = v end
+ns.catalogue = { enUS = enUS, enGB = enGB }

@@ -245,6 +245,27 @@ fi
 game NAGLFAR NaglfarCrew NaglfarCrewDB naglfar naglfar_crew.lua "Naglfar Crew" \
   "Sardines: find the hider and squeeze in; last one out loses. /sardines" SavedVariables
 
+# Vegvísir, the old map (spec addon 43, "our own maps"; founder 2026-11-15: every addon's affordances come off it).
+# Built like a game (kit + catalogue + rules) plus its parchment and, once every other addon is built, the same
+# registry the hub gets: every addon's doors and SavedVariables names, which is how it draws their pins.
+# Account-wide: the charted fields and everyone's last position are one sheet for all of us.
+VG_ADDON="${VEGVISIR_ADDON:-Vegvisir}"
+VG_VAR="${VEGVISIR_VAR:-VegvisirDB}"
+for n in "$VG_ADDON" "$VG_VAR"; do
+  case "$n" in [A-Za-z_]*) ;; *) die "'$n' is not a Lua/addon name" ;; esac
+  case "$n" in *[!A-Za-z0-9_]*) die "'$n' is not a Lua/addon name" ;; esac
+done
+vg="$OUT/AddOns/$VG_ADDON"
+mkdir -p "$vg"
+wrap collection/vegvisir "$vg/vegvisir_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/ids.prn stdlib/collection/games.prn stdlib/collection/vegvisir.prn
+cp runtime/wow/locales/fun_kit.lua "$vg/kit_locale.lua"
+cp runtime/wow/locales/vegvisir.lua "$vg/locale.lua"
+cp runtime/wow/fun_kit.lua "$vg/kit.lua"
+cp runtime/wow/assets/parchment.tga "$vg/parchment.tga"
+glue runtime/wow/vegvisir.lua "$vg/vegvisir.lua" "$VG_ADDON" "$VG_VAR"
+toc "$vg/$VG_ADDON.toc" "Vegvísir" "The old map: where we have been, where everyone is, the hoard, and a door to every addon. /oldmap" SavedVariables "$VG_VAR" registry.lua vegvisir_rules.lua kit_locale.lua locale.lua kit.lua vegvisir.lua
+GAMES_BUILT="$GAMES_BUILT $VG_ADDON"
+
 # Huginn: quest arrows for orienteering (several at once) with a mini quest log. Account-wide: its waypoints and
 # toggles are by quest id and map, the same for every character.
 HG_ADDON="${HUGINN_ADDON:-Huginn}"
@@ -269,7 +290,9 @@ mkdir -p "$hub"
 wrap collection/hub "$hub/hub_rules.lua" stdlib/reflux/reflux.prn stdlib/collection/hub.prn
 cp runtime/wow/locales/collection_hub.lua "$hub/locale.lua"
 glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB_VAR"
-{
+registry() {  # registry OUTFILE SELF -- every addon in the package but SELF, read back from its own .toc and code
+  local out="$1" self="$2"
+  {
   echo "-- registry.lua -- every addon in this package, read back from its own .toc and code by"
   echo "-- scripts/wow-package-collection.sh. Generated; do not edit."
   echo "local _, ns = ..."
@@ -277,7 +300,7 @@ glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB
   echo "ns.addons = {"
   for t in "$OUT"/AddOns/*/*.toc; do
     d="$(dirname "$t")"; folder="$(basename "$d")"
-    [ "$folder" = "$HUB_ADDON" ] && continue
+    [ "$folder" = "$self" ] && continue
     title="$(sed -n 's/^## Title: //p' "$t" | head -1)"
     notes="$(sed -n 's/^## Notes: //p' "$t" | head -1)"
     svkind="$(sed -n 's/^## \(SavedVariables[A-Za-z]*\): .*/\1/p' "$t" | head -1)"
@@ -289,9 +312,12 @@ glue runtime/wow/collection_hub.lua "$hub/collection_hub.lua" "$HUB_ADDON" "$HUB
     echo "    svkind = \"$(luastr "$svkind")\", sv = \"$(luastr "$sv")\", key = \"$(luastr "$key")\", cmds = { $cmds } },"
   done
   echo "}"
-} > "$hub/registry.lua"
+  } > "$out"
+}
+registry "$hub/registry.lua" "$HUB_ADDON"
 toc "$hub/$HUB_ADDON.toc" "Collection" "The settings and status of every Collection addon in one window. /collection" \
   SavedVariables "$HUB_VAR" registry.lua hub_rules.lua locale.lua collection_hub.lua
+registry "$vg/registry.lua" "$VG_ADDON"   # the hub is built now, so the map's registry has its door too
 
 # Re-stamp RefluxCore's version with the release's, so all three agree.
 sed -i "s/^## Version: .*/## Version: $VERSION/" "$OUT/AddOns/RefluxCore/RefluxCore.toc"

@@ -1,0 +1,87 @@
+;; stdlib/collection/vegvisir.prn -- Vegvísir, the old map (spec addon 43, "our own maps"). The founder, 2026-11-15:
+;; "all the interface affordances should come off the old map: shows where we have been in the whole world on all
+;; characters, where all characters are, and global inventory" -- "glue all the plugins together interface wise; it
+;; should be fun and connected and emergent". Vegvísir is the wayfinding stave, "that which shows the way".
+;; A REFLUX mod; built with collection/games. The host (runtime/wow/vegvisir.lua) draws; these are the decisions.
+;;
+;; Account-wide (## SavedVariables: VegvisirDB), one sheet for every character:
+;;   db.seen[map]   = {[field] = 1}      every field any of us has stood in: the map cut into a 32 x 32 grid
+;;   db.lands[map]  = { name, n }        what the land is called, and how many of its fields are charted
+;;   db.where[who]  = { map, x, y, at, class, zone }   where each of us was last seen (x, y permille of the map)
+;;   db.went[who]   = {[map] = first time}             which lands each of us has walked
+;;   db.page, db.ring                    the host's own: the last page shown, the minimap stamp's angle
+;; The hoard is read live from Fafnir's Bed, the other pins from their addons' own saves, the doors from the
+;; package registry: nothing of theirs is copied here.
+;;
+;; Addon 43's REFLUX block is 2420-2429 (ids.prn):
+;;   2420 arrived   a = map, b = x permille, c = y permille      a character's first step on a land, ever
+;;   2421 charted   a = map, b = permille of the land charted, c = the milestone crossed (250, 500, 750, 1000)
+
+(module collection/vegvisir)
+(export vv-init vv-grid vv-cell vv-cell-col vv-cell-row vv-coverage vv-milestone vv-see! vv-step! vv-here! vv-land-name!)
+
+(defn vv-n [(v : Any)] : I32 (if (lua/nil? v) 0 v))
+
+(defn vv-table! [(db : Any) (key : String)] : Any
+  (do (if (lua/nil? (lua/aget db key)) (lua/aset! db key (lua/obj)) 0) (lua/aget db key)))
+
+(defn vv-init [(db : Any)] : Any
+  (do (vv-table! db "seen") (vv-table! db "lands") (vv-table! db "where") (vv-table! db "went")
+      (lua/set! db "v" 1) db))
+
+;; The sheet: 32 fields across and 32 down, 1024 in all; a position in permille of the map falls in one of them.
+;; Fields are numbered 1..1024 across then down, so field 1 is the top-left corner and 1024 the bottom-right.
+(defn vv-grid [] : I32 32)
+(defn vv-axis [(p : I32)] : I32 (g-clamp 0 (- (vv-grid) 1) (/ (* p (vv-grid)) 1000)))
+(defn vv-cell [(x : I32) (y : I32)] : I32 (+ (* (vv-axis y) (vv-grid)) (+ (vv-axis x) 1)))
+(defn vv-cell-col [(cell : I32)] : I32 (+ (g-mod (- cell 1) (vv-grid)) 1))
+(defn vv-cell-row [(cell : I32)] : I32 (+ (/ (- cell 1) (vv-grid)) 1))
+
+;; The land's record and its charted fields, made on first touch.
+(defn vv-land [(db : Any) (map : I32)] : Any
+  (let [lands (lua/get db "lands")]
+    (do (if (lua/nil? (lua/aget lands map)) (lua/aset! lands map (lua/obj "n" 0)) 0) (lua/aget lands map))))
+
+(defn vv-fields [(db : Any) (map : I32)] : Any
+  (let [seen (lua/get db "seen")]
+    (do (if (lua/nil? (lua/aget seen map)) (lua/aset! seen map (lua/obj)) 0) (lua/aget seen map))))
+
+(defn vv-land-name! [(db : Any) (map : I32) (name : String)] : I32
+  (do (lua/set! (vv-land db map) "name" name) 1))
+
+;; Permille of the land's fields that are charted.
+(defn vv-coverage [(db : Any) (map : I32)] : I32
+  (let [l (lua/aget (lua/get db "lands") map)]
+    (if (lua/nil? l) 0 (/ (* (vv-n (lua/get l "n")) 1000) (* (vv-grid) (vv-grid))))))
+
+;; The milestone crossed going from `before` to `after` permille: the largest of 250, 500, 750, 1000, else 0.
+(defn vv-milestone [(before : I32) (after : I32)] : I32
+  (if (and (< before 1000) (>= after 1000)) 1000
+    (if (and (< before 750) (>= after 750)) 750
+      (if (and (< before 500) (>= after 500)) 500
+        (if (and (< before 250) (>= after 250)) 250 0)))))
+
+;; Charts one field: 1 when it was not charted before (and the land's count grows), else 0.
+(defn vv-see! [(db : Any) (map : I32) (cell : I32)] : I32
+  (let [fields (vv-fields db map)]
+    (if (lua/nil? (lua/aget fields cell))
+      (let [l (vv-land db map)]
+        (do (lua/aset! fields cell 1) (lua/set! l "n" (+ (vv-n (lua/get l "n")) 1)) 1))
+      0)))
+
+;; A step at (map, x, y): charts the field; when that crosses a milestone, says so into REFLUX (2421) and returns
+;; the milestone, else 0.
+(defn vv-step! [(db : Any) (map : I32) (x : I32) (y : I32) (now : I32)] : I32
+  (let [before (vv-coverage db map)
+        new (vv-see! db map (vv-cell x y))
+        m (if (= new 1) (vv-milestone before (vv-coverage db map)) 0)]
+    (do (if (> m 0) (reflux-dispatch (collection-action-type 43 1) map (vv-coverage db map) m) 0) m)))
+
+;; Where `who` is now. 1 (and 2420 into REFLUX) the first time ever this character stands on this land, else 0.
+(defn vv-here! [(db : Any) (who : String) (map : I32) (x : I32) (y : I32) (now : I32) (class : String) (zone : String)] : I32
+  (let [where (lua/get db "where") went (lua/get db "went")]
+    (do (lua/aset! where who (lua/obj "map" map "x" x "y" y "at" now "class" class "zone" zone))
+        (if (lua/nil? (lua/aget went who)) (lua/aset! went who (lua/obj)) 0)
+        (if (lua/nil? (lua/aget (lua/aget went who) map))
+          (do (lua/aset! (lua/aget went who) map now) (reflux-dispatch (collection-action-type 43 0) map x y) 1)
+          0))))
