@@ -64,8 +64,25 @@ local function session(world, saved)
             return "tex", c.n, false, 1, false, false, "|Hitem:" .. c.id .. "|h[" .. c.name .. "]|h", false, false, c.id
         end
     end
+    -- equipped gear: slot range from the client's globals, items by id and by link
+    env.INVSLOT_FIRST_EQUIPPED = 1
+    env.INVSLOT_LAST_EQUIPPED = 19
+    env.GetInventoryItemID = function(unit, slot) local g = world.gear and world.gear[slot]; return g and g.id end
+    env.GetInventoryItemLink = function(unit, slot)
+        local g = world.gear and world.gear[slot]
+        return g and ("|Hitem:" .. g.id .. "|h[" .. g.name .. "]|h") or nil
+    end
     env.GetInboxNumItems = function() return #world.mail end
     env.GetInboxItem = function(i, j) local m = world.mail[i] and world.mail[i][j]; if m then return m.name, m.id, "tex", m.n end end
+    -- the send side of the mailbox (mail in flight)
+    env.ATTACHMENTS_MAX_SEND = 12
+    env.GetSendMailItem = function(i) local m = world.outbox and world.outbox[i]; if m then return m.name, m.id, "tex", m.n end end
+    env.GetSendMailMoney = function() return world.outbox_money or 0 end
+    env.SendMail = function() end
+    env.hooksecurefunc = function(name, f)
+        local orig = env[name]
+        env[name] = function(...) local r = { orig(...) }; f(...); return unpack(r) end
+    end
     if world.c_map then
         env.C_Map = {
             GetBestMapForUnit = function() return 1415 end,
@@ -112,6 +129,8 @@ local world = {
     bags = { [0] = { item(2770, "Copper Ore", 20), item(2770, "Copper Ore", 5), {}, item(6948, "Hearthstone", 1) },
              [1] = { item(2589, "Linen Cloth", 12) } },
     mail = {},
+    gear = { [1] = item(4373, "Shadowskin Gloves", 1), [11] = item(5009, "Mindbender Loop", 1),
+             [12] = item(5009, "Mindbender Loop", 1), [16] = item(2207, "Jambiya", 1) },
 }
 local saved = {}
 
@@ -129,6 +148,21 @@ local inv = s.env.FafnirsBedDB
 eq(inv.chars["Emily-Forever"].loc.bags[2770], 25, "two ore stacks counted as 25")
 eq(inv.chars["Emily-Forever"].gold, 1234567, "gold read")
 eq(inv.names[2770], "Copper Ore", "item names learned from links")
+
+-- equipped gear: counted as a location, and the slot map kept
+local emily = inv.chars["Emily-Forever"]
+eq(emily.loc.equipped and emily.loc.equipped[5009], 2, "two of the same ring count as 2 equipped")
+eq(emily.slots and emily.slots[16], 2207, "the main-hand slot holds the dagger")
+eq(inv.names[2207], "Jambiya", "equipped item names learned from links")
+local saved_gear = world.gear
+world.gear = {}
+s.fire("PLAYER_LOGIN")
+eq(emily.slots[16], 2207, "an all-empty read at login is not trusted (gear not loaded yet)")
+world.gear = { [1] = saved_gear[1], [11] = saved_gear[11], [12] = saved_gear[12] }
+s.fire("PLAYER_EQUIPMENT_CHANGED", 16, true)
+eq(emily.slots[16], nil, "taking off the dagger empties the slot")
+eq(emily.loc.equipped[2207], nil, "and drops it from the equipped counts")
+world.gear = {}
 
 -- loot 10 ore, sell the linen, earn money
 world.bags[0][3] = item(2770, "Copper Ore", 10)
@@ -154,6 +188,31 @@ eq(inv.chars["Emily-Forever"].loc.bank[2770], 43, "a closed bank keeps its last 
 world.mail = { { item(2589, "Linen Cloth", 20), item(2770, "Copper Ore", 2) } }
 s.fire("MAIL_INBOX_UPDATE")
 eq(inv.chars["Emily-Forever"].loc.mail[2589], 20, "mail attachments read")
+
+-- mail in flight: a parcel to an alt is remembered once the client confirms it, and cleared when the alt reads it
+world.outbox = { item(2589, "Linen Cloth", 5) }
+world.outbox_money = 250
+s.env.SendMail("astrid", "cloth", "")
+eq(inv.post, nil, "nothing is in flight until the client confirms the send")
+s.fire("MAIL_SEND_SUCCESS")
+local parcel = inv.post and inv.post["Astrid-Forever"] and inv.post["Astrid-Forever"][1]
+eq(parcel and parcel.items[2589], 5, "the parcel's items are in flight to Astrid-Forever (name capitalised, realm added)")
+eq(parcel and parcel.copper, 250, "and its money")
+eq(parcel and parcel.from, "Emily-Forever", "from the sender")
+world.outbox = { item(2770, "Copper Ore", 3) }; world.outbox_money = 0
+s.env.SendMail("Astrid-Forever", "", "")
+s.fire("MAIL_FAILED")
+eq(inv.post["Astrid-Forever"][2], nil, "a failed send is not remembered")
+world.outbox = nil
+s.env.SendMail("Astrid", "empty", "")
+s.fire("MAIL_SEND_SUCCESS")
+eq(inv.post["Astrid-Forever"][2], nil, "a letter with nothing attached is not a parcel")
+local me = world.name
+world.name = "Astrid"
+s.fire("MAIL_INBOX_UPDATE")
+eq(next(inv.post["Astrid-Forever"]), nil, "Astrid opening her mailbox clears what was in flight to her")
+world.name = me
+inv.chars["Astrid-Forever"] = nil   -- the rest of this test is about one character
 
 local out = s.slash("FAFNIRSBED", "")
 has(out, "net inventory -- 1 characters", "/fafnir shows the net totals")

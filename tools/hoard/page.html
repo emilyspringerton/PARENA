@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Hoard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=League+Gothic&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Playfair+Display+SC:wght@400;700;900&family=Playfair+Display:ital,wght@1,400;1,700&display=swap" rel="stylesheet">
+<style>
+/* Valhöll day (Vellum) tokens, replicated from WOTAN css/valholl.css (plates III Palette, IV Type, VIII Kit). */
+:root {
+  --parchment-100: #F3E9D2; --parchment-300: #E7D7B4; --parchment-600: #8A7350;
+  --ink-900: #1E1915; --ink-700: #4B4036; --sea-700: #1C4A5A; --sea-400: #6E9BA2;
+  --blood-600: #9B3421; --brass-500: #8C6B27; --vanir-700: #7F4C0E;
+  --vellum-ground:
+    radial-gradient(130% 110% at 22% 14%, rgba(255,250,236,0.55) 0%, rgba(243,233,210,0) 48%, rgba(110,80,40,0.20) 100%),
+    #F3E9D2;
+  --font-display: 'Playfair Display SC', Georgia, serif;
+  --font-wood: 'League Gothic', 'Arial Narrow', Impact, sans-serif;
+  --font-body: 'Libre Caslon Text', Georgia, serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace;
+  --font-marginalia: 'Playfair Display', Georgia, serif;
+  --ease-unroll: cubic-bezier(0.2, 0.8, 0.2, 1); --dur-unroll: 220ms;
+}
+@media (prefers-reduced-motion: reduce) { :root { --dur-unroll: 0ms; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--vellum-ground); background-attachment: fixed; color: var(--ink-900);
+  font: 400 16px/1.55 var(--font-body); }
+a { color: var(--sea-700); }
+a:hover { color: var(--ink-900); }
+:focus-visible { outline: 2px solid var(--brass-500); outline-offset: 3px; }
+::selection { background: var(--sea-400); color: var(--ink-900); }
+.sr { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.page { position: relative; max-width: 1200px; margin: 0 auto; padding: 48px 64px 56px; }
+@media (min-width: 900px) {
+  .page::before, .page::after { content: ""; position: absolute; pointer-events: none; }
+  .page::before { inset: 16px; border: 1.5px solid var(--ink-900); }
+  .page::after { inset: 23px; border: 0.75px solid var(--ink-900); }
+}
+@media (max-width: 899px) { .page { padding: 24px 16px 40px; } }
+
+.eyebrow { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 24px; margin: 0;
+  font: 400 13px/1.4 var(--font-mono); letter-spacing: 0.14em; color: var(--ink-700); text-transform: uppercase; }
+h1 { margin: 18px 0 6px; font: 900 64px/1 var(--font-display); letter-spacing: 0.04em; }
+.lede { margin: 0; max-width: 46em; font: italic 400 21px/1.4 var(--font-marginalia); color: var(--ink-700); }
+.rule2 { width: 220px; height: 0; border: 0; border-top: 1.5px solid var(--ink-900); border-bottom: 0.75px solid var(--ink-900);
+  padding-top: 3px; margin: 28px 0; }
+@media (max-width: 600px) { h1 { font-size: 44px; } .lede { font-size: 18px; } }
+
+.plate { border: 1.25px solid var(--ink-900); padding: 4px; background: var(--parchment-300); min-width: 0; }
+.plate > .in { border: 0.75px solid var(--parchment-600); padding: 18px 22px; min-width: 0; }
+.plate.soft { background: rgba(231,215,180,0.55); }
+
+.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 760px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.stat .num { font: 400 52px/0.95 var(--font-wood); text-transform: uppercase; letter-spacing: 0.03em; font-variant-numeric: tabular-nums; }
+.label { margin: 0 0 6px; font: 400 12px/1.4 var(--font-mono); letter-spacing: 0.12em; color: var(--ink-700); text-transform: uppercase; }
+
+.bar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: end; margin: 28px 0 18px; }
+.field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 260px; }
+input[type=search] { min-height: 48px; padding: 8px 12px; border: 1.25px solid var(--ink-900); background: rgba(243,233,210,0.7);
+  font: 400 16px/1.3 var(--font-body); color: var(--ink-900); }
+.tabs { display: inline-flex; border: 1.25px solid var(--ink-900); }
+.tabs button { min-height: 48px; padding: 0 18px; border: 0; background: transparent; cursor: pointer;
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); }
+.tabs button + button { border-left: 0.75px solid var(--parchment-600); }
+.tabs button[aria-pressed=true] { background: var(--sea-700); color: var(--parchment-100); }
+.csv { display: inline-flex; align-items: center; min-height: 48px; padding: 0 18px; border: 1.25px solid var(--ink-900);
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); text-decoration: none; }
+.csv:hover { background: var(--sea-700); color: var(--parchment-100); }
+.slot { font: 400 11px/1.3 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-700); margin-right: 4px; }
+
+.watch { display: flex; align-items: center; gap: 10px; font: 400 13px/1.4 var(--font-mono); color: var(--ink-700); }
+.lamp { width: 10px; height: 10px; border-radius: 50%; background: var(--brass-500); flex: none; }
+.watch.fresh .lamp { background: var(--sea-700); box-shadow: 0 0 0 4px rgba(28,74,90,0.18); }
+.watch.down .lamp { background: var(--blood-600); }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 8px 10px; border-bottom: 1.5px solid var(--ink-900);
+  font: 400 12px/1.3 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-700); }
+td { padding: 10px; border-bottom: 0.75px solid var(--parchment-600); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+.num-col { text-align: right; font: 500 15px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.iname { font-weight: 700; }
+.iid { font: 400 12px/1.3 var(--font-mono); color: var(--ink-700); margin-left: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; min-height: 26px; padding: 2px 10px; border: 0.75px solid var(--parchment-600);
+  background: rgba(243,233,210,0.6); font: 400 12px/1.2 var(--font-mono); letter-spacing: 0.06em; color: var(--ink-900); cursor: pointer; }
+.chip b { font-weight: 600; }
+.chip .where { color: var(--vanir-700); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; }
+.chip:hover { border-color: var(--ink-900); }
+.table-wrap { overflow-x: auto; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.char h2 { margin: 0; font: 700 26px/1.1 var(--font-display); letter-spacing: 0.04em; overflow-wrap: anywhere; }
+.char .realm { margin: 2px 0 10px; font: italic 400 15px/1.3 var(--font-marginalia); color: var(--ink-700); }
+.char .row { display: flex; justify-content: space-between; gap: 12px; font: 400 13px/1.5 var(--font-mono); color: var(--ink-700); }
+.char .row b { color: var(--ink-900); font-weight: 600; font-variant-numeric: tabular-nums; }
+.char h3 { margin: 14px 0 6px; font: 400 12px/1.3 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-700);
+  border-top: 0.75px solid var(--parchment-600); padding-top: 10px; }
+.char ul { list-style: none; margin: 0; padding: 0; }
+.char li { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; font-size: 15px; }
+.char li .n { font: 500 14px/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
+.empty { margin: 0; font: italic 400 15px/1.4 var(--font-marginalia); color: var(--ink-700); }
+.coin { white-space: nowrap; }
+.coin .g { color: var(--vanir-700); } .coin .s { color: var(--ink-700); } .coin .c { color: #7A4A2A; }
+.problem { margin: 16px 0; color: var(--blood-600); font: 400 14px/1.5 var(--font-mono); }
+.unroll { animation: unroll var(--dur-unroll) var(--ease-unroll); }
+@keyframes unroll { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+#post { margin: 0 0 18px; }
+.post h2 { margin: 0 0 4px; font: 700 22px/1.2 var(--font-display); letter-spacing: 0.04em; }
+.parcel { display: grid; grid-template-columns: minmax(0, 14em) minmax(0, 1fr) auto; gap: 4px 16px; align-items: baseline;
+  padding: 10px 0; border-top: 0.75px solid var(--parchment-600); }
+.parcel:first-of-type { border-top: 0; }
+.parcel .route { font: 700 17px/1.3 var(--font-display); letter-spacing: 0.03em; overflow-wrap: anywhere; }
+.parcel .route .arrow { color: var(--brass-500); padding: 0 4px; }
+.parcel .what { font-size: 15px; overflow-wrap: anywhere; }
+.parcel .when { font: 400 13px/1.4 var(--font-mono); color: var(--ink-700); white-space: nowrap; }
+.tag { display: inline-block; margin-left: 6px; padding: 0 6px; border: 0.75px solid var(--blood-600); color: var(--blood-600);
+  font: 400 10px/1.6 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; vertical-align: middle; }
+@media (max-width: 700px) { .parcel { grid-template-columns: 1fr; } }
+footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); color: var(--ink-700); }
+/* windowed items list (hoard_page.prn): a fixed pool of absolutely positioned rows inside a scrolling viewport */
+.vhead, .vrow { display: grid; grid-template-columns: minmax(0, 2fr) 80px minmax(0, 3fr); gap: 12px; align-items: center; }
+.vhead { padding: 8px 10px; border-bottom: 1.5px solid var(--ink-900); font: 400 12px/1.3 var(--font-mono);
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-700); }
+.vlist { position: relative; height: min(70vh, 720px); overflow-y: auto; contain: strict; }
+.vspacer { position: relative; }
+.vrow { position: absolute; left: 0; right: 0; height: 46px; padding: 0 10px; border-bottom: 0.75px solid var(--parchment-600);
+  box-sizing: border-box; overflow: hidden; }
+.vrow[hidden] { display: none; }
+.vname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vchips { flex-wrap: nowrap; overflow: hidden; }
+.vchips .more { font: 400 11px/1.2 var(--font-mono); color: var(--ink-700); white-space: nowrap; }
+.pager { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; font: 400 13px/1.4 var(--font-mono); }
+.pager button { min-height: 40px; padding: 0 14px; border: 1.25px solid var(--ink-900); background: transparent; cursor: pointer;
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-900); }
+.pager button:disabled { opacity: 0.4; cursor: default; }
+</style>
+</head>
+<body>
+<main class="page">
+  <p class="eyebrow"><span>Fafnir's Bed · Unified inventory</span><span id="eyebrow-right">Reading the hoard…</span></p>
+  <h1>The Hoard</h1>
+  <p class="lede">Every piece of gear worn, and every bag, bank and mailbox Fafnir has seen, across all your characters. The game writes it down
+    only on <b>/reload</b> or logout: type <b>/reload</b> in game and this page follows within a few seconds.</p>
+  <hr class="rule2">
+
+  <section class="stats" aria-label="Totals">
+    <div class="plate stat"><div class="in"><p class="label">Characters</p><div class="num" id="s-chars">–</div></div></div>
+    <div class="plate stat"><div class="in"><p class="label">Kinds of item</p><div class="num" id="s-kinds">–</div></div></div>
+    <div class="plate stat"><div class="in"><p class="label">Items held</p><div class="num" id="s-items">–</div></div></div>
+    <div class="plate stat"><div class="in"><p class="label">Gold, all told</p><div class="num" id="s-gold">–</div></div></div>
+  </section>
+
+  <div class="bar">
+    <label class="field"><span class="label">Find an item or a character</span>
+      <input type="search" id="q" placeholder="Linen Cloth, 2589, Nerf…" autocomplete="off"></label>
+    <div class="tabs" role="group" aria-label="View">
+      <button type="button" id="v-items" aria-pressed="true">By item</button>
+      <button type="button" id="v-chars" aria-pressed="false">By character</button>
+    </div>
+    <a class="csv" href="/api/hoard.csv" download="hoard.csv">Download CSV</a>
+  </div>
+  <p class="watch" id="watch" role="status"><span class="lamp" aria-hidden="true"></span><span id="watch-text">Watching the saved file…</span></p>
+  <div id="problems"></div>
+  <section id="post" aria-label="Mail in flight"></section>
+  <section id="view" aria-live="polite"></section>
+  <footer>Saved by the game, read by this page; nothing here writes back. The game saves when a character logs out
+    or you /reload, so the page moves on each switch of character. Bank contents appear once a character has opened
+    the bank; mail you send stays "in the post" until its recipient opens their mailbox.</footer>
+</main>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

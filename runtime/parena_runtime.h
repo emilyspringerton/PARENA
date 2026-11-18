@@ -1633,7 +1633,9 @@ static inline int tcp_connect_impl(const char *host, int port) {
     return fd;
 }
 
-static inline int tcp_listen_impl(int port) {
+/* tcp_listen_addr_impl -- loopback != 0 binds 127.0.0.1 only (tcp-listen-local: a tool serving the
+ * founder's own data must not be reachable from the LAN); 0 binds every interface (tcp-listen). */
+static inline int tcp_listen_addr_impl(int port, int loopback) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     int opt = 1;
@@ -1641,12 +1643,14 @@ static inline int tcp_listen_impl(int port) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = loopback ? htonl(INADDR_LOOPBACK) : htonl(INADDR_ANY);
     addr.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) { close(fd); return -1; }
     if (listen(fd, 16) < 0) { close(fd); return -1; }
     return fd;
 }
+static inline int tcp_listen_impl(int port) { return tcp_listen_addr_impl(port, 0); }
+static inline int tcp_listen_local_impl(int port) { return tcp_listen_addr_impl(port, 1); }
 
 /* ---- stdlib/net/udp.prn real host glue (2026-09-11) -------------------
  * Real BSD UDP sockets -- closes the same real "FFI declared, host
@@ -2129,16 +2133,19 @@ static inline long find_body_length_from_headers(const char *buf, size_t have, s
  * unchanged from before). A bounded 30s idle-read timeout (via poll) is a
  * real, cheap safety net against ever hanging forever again on a response
  * shape this function's own parsing can't make sense of. */
-static inline char *tcp_read_impl(int fd, Arena *dest) {
+/* tcp_read_max_impl -- tcp_read_impl with a byte cap (max > 0), so a server that only needs the request line and
+ * headers (tools/hoard) bounds what one client can make it hold. max == 0 is tcp_read_impl. */
+static inline char *tcp_read_max_impl(int fd, size_t max, Arena *dest) {
     size_t cap = 4096;
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
     long content_length = -1; /* -1 = not yet known (boundary not seen, or no Content-Length header) */
     size_t header_end = 0;
     for (;;) {
+        if (max > 0 && len >= max) break;   /* over the cap: cut, never buffered whole */
         if (content_length >= 0 && len >= header_end + (size_t)content_length) break;
         if (len + 4096 > cap) {
-            size_t new_cap = cap + 4096;
+            size_t new_cap = cap * 2;   /* doubling: growing by 4 KiB copied the whole buffer on every read */
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
             buf = grown;
@@ -2173,6 +2180,7 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
     out[len] = '\0';
     return out;
 }
+static inline char *tcp_read_impl(int fd, Arena *dest) { return tcp_read_max_impl(fd, 0, dest); }
 
 /* tcp_write_impl -- byte-for-byte the same loop as string_concat's
  * sibling raw_write_impl above (write() is write() whether the fd is a
@@ -3453,7 +3461,9 @@ static inline int tcp_connect_impl(const char *host, int port) {
     return (s == INVALID_SOCKET) ? -1 : (int)s;
 }
 
-static inline int tcp_listen_impl(int port) {
+/* tcp_listen_addr_impl -- loopback != 0 binds 127.0.0.1 only (tcp-listen-local: a tool serving the
+ * founder's own data must not be reachable from the LAN); 0 binds every interface (tcp-listen). */
+static inline int tcp_listen_addr_impl(int port, int loopback) {
     SOCKET s;
     int opt = 1;
     struct sockaddr_in addr;
@@ -3463,12 +3473,14 @@ static inline int tcp_listen_impl(int port) {
     (void)setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, (int)sizeof opt);
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = loopback ? htonl(INADDR_LOOPBACK) : htonl(INADDR_ANY);
     addr.sin_port = htons((u_short)port);
     if (bind(s, (const struct sockaddr *)&addr, (int)sizeof addr) != 0) { closesocket(s); return -1; }
     if (listen(s, 16) != 0) { closesocket(s); return -1; }
     return (int)s;
 }
+static inline int tcp_listen_impl(int port) { return tcp_listen_addr_impl(port, 0); }
+static inline int tcp_listen_local_impl(int port) { return tcp_listen_addr_impl(port, 1); }
 
 static inline int tcp_accept_impl(int listener_fd) {
     SOCKET a;
@@ -3504,7 +3516,8 @@ static inline long parena_find_body_length_from_headers(const char *buf, size_t 
     return -2;
 }
 
-static inline char *tcp_read_impl(int fd, Arena *dest) {
+/* tcp_read_max_impl -- see the POSIX block: max > 0 caps what one request can make the server hold. */
+static inline char *tcp_read_max_impl(int fd, size_t max, Arena *dest) {
     size_t cap = 4096;
     size_t len = 0;
     char *buf = (char *)arena_alloc(dest, cap);
@@ -3514,9 +3527,10 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
     for (;;) {
         WSAPOLLFD pfd;
         int pr, n;
+        if (max > 0 && len >= max) break;   /* over the cap: cut, never buffered whole */
         if (content_length >= 0 && len >= header_end + (size_t)content_length) break;
         if (len + 4096 > cap) {
-            size_t new_cap = cap + 4096;
+            size_t new_cap = cap * 2;   /* doubling: growing by 4 KiB copied the whole buffer on every read */
             char *grown = (char *)arena_alloc(dest, new_cap);
             memcpy(grown, buf, len);
             buf = grown;
@@ -3541,6 +3555,7 @@ static inline char *tcp_read_impl(int fd, Arena *dest) {
     out[len] = '\0';
     return out;
 }
+static inline char *tcp_read_impl(int fd, Arena *dest) { return tcp_read_max_impl(fd, 0, dest); }
 
 static inline int tcp_write_impl(int fd, const char *s) {
     size_t len = strlen(s);

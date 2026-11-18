@@ -39,7 +39,7 @@
 
 (module net/tcp)
 (import string)
-(export tcp-listen tcp-accept tcp-connect tcp-read tcp-write tcp-close TcpListener TcpStream NetError)
+(export tcp-listen tcp-listen-local tcp-accept tcp-connect tcp-read tcp-read-max tcp-write tcp-close TcpListener TcpStream NetError)
 
 (defstruct TcpListener
   (fd : I32))
@@ -67,6 +67,11 @@
   #target
   {:c (inline-c "tcp_listen_impl(port)")})
 
+(defn raw-listen-local [(port : I32)]
+  : I32
+  #target
+  {:c (inline-c "tcp_listen_local_impl(port)")})
+
 (defn raw-accept [(listener-fd : I32)]
   : I32
   #target
@@ -76,6 +81,11 @@
   : String @ Region
   #target
   {:c (inline-c "tcp_read_impl(fd, dest)")})
+
+(defn raw-read-max [(fd : I32) (max : I32) (dest : Arena @ Region)]
+  : String @ Region
+  #target
+  {:c (inline-c "tcp_read_max_impl(fd, (size_t)max, dest)")})
 
 (defn raw-write [(fd : I32) (data : String @ Region)]
   : I32
@@ -108,6 +118,15 @@
       (Err AddressInUse)
       (Ok {:fd fd}))))
 
+;; tcp-listen-local -- tcp-listen bound to 127.0.0.1 only. For a tool that serves the user's own data
+;; (tools/hoard): reachable from this machine's browser, never from the LAN, and no firewall prompt.
+(defn tcp-listen-local [(port : I32) (dest : Arena @ Region)]
+  : (Result TcpListener NetError) @ Region
+  (let [fd (raw-listen-local port)]
+    (if (< fd 0)
+      (Err AddressInUse)
+      (Ok {:fd fd}))))
+
 (defn tcp-accept [(!l : &TcpListener) (dest : Arena @ Region)]
   : (Result TcpStream NetError) @ Region
   (let [fd (raw-accept (get-field !l :fd))]
@@ -118,6 +137,12 @@
 (defn tcp-read [(!s : &mut TcpStream) (dest : Arena @ Region)]
   : (Result String NetError) @ Region
   (Ok (raw-read (get-field !s :fd) dest)))
+
+;; tcp-read-max -- tcp-read that stops after `max` bytes: a server that needs only the request line and headers
+;; (tools/hoard) bounds what one client can make it hold. The text is cut at the cap, never buffered whole.
+(defn tcp-read-max [(!s : &mut TcpStream) (max : I32) (dest : Arena @ Region)]
+  : (Result String NetError) @ Region
+  (Ok (raw-read-max (get-field !s :fd) max dest)))
 
 (defn tcp-write [(!s : &mut TcpStream) (data : String @ Region) (dest : Arena @ Region)]
   : (Result I32 NetError) @ Region
