@@ -1,0 +1,28 @@
+;; stdlib/shankpit/ascend_rules.prn -- /ascend in SHANKPIT's chat: your WoW guilds' Discords, from GuildHerald's feed
+;; (founder, 2026-11-17: "if im connected to discord i should be able to type /ascend in the shankpit terminal to
+;; sync my discord from the wow data"). Generated into SHANKPIT (scripts/gen_ascend_rules.sh, C target); its
+;; packages/collection/ascend.c is plumbing.
+;;
+;; The feed is stdlib/collection/guildherald.prn's: 3082 a guild, 3083 one of its Discord invites, 3084 the summary.
+;; Discord does not let an app join servers for a person (that needs a bot already in each server), so /ascend lists
+;; the invites and opens them for the player to accept; Discord itself shows the ones they are already in.
+
+(module shankpit/ascend-rules)
+(export asc-accepts asc-role asc-open-max asc-code-char-ok asc-code-len-ok asc-act-opened)
+
+;; GuildHerald's feed rows, and what each does to the /ascend model: 1 a guild, 2 an invite, 3 the summary (ends a load).
+(defn asc-accepts [(t : I32)] : I32 (if (< t 3082) 0 (if (> t 3084) 0 1)))
+(defn asc-role [(t : I32)] : I32 (if (= t 3082) 1 (if (= t 3083) 2 (if (= t 3084) 3 0))))
+
+;; Invite links one "/ascend join" opens; the rest wait for the next one, so a browser never gets a flood of tabs.
+(defn asc-open-max [] : I32 5)
+
+;; A Discord invite code, checked again here before any URL is built: 2-32 letters, digits or '-'.
+(defn asc-code-char-ok [(c : I32)] : I32
+  (if (and (>= c 48) (<= c 57)) 1
+    (if (and (>= c 65) (<= c 90)) 1
+      (if (and (>= c 97) (<= c 122)) 1 (if (= c 45) 1 0)))))
+(defn asc-code-len-ok [(n : I32)] : I32 (if (< n 2) 0 (if (> n 32) 0 1)))
+
+;; REFLUX: 3085 /ascend opened invites (a = how many this time). In GuildHerald's claimed range, 3080-3089.
+(defn asc-act-opened [] : I32 3085)

@@ -1,0 +1,115 @@
+# catalog/plugins.tsv -- every plugin the store lists, one per line, TAB separated. docs/PLUGIN_STORE_NORTHSTAR.md.
+# id	kind	channel	spec	title	summary
+# kind: wow | shankpit.  channel: available | early | wishlist (stdlib/collection/catalog.prn).  spec: the Collection
+# spec number, or - . title/summary: - for a built WoW addon (read from its own .toc at generation time).
+# Channels for built addons are an engineering proposal until the founder confirms them: available = verified in the
+# real client (RefluxCore, CollectionJournal, FafnirsBed, docs/COLLECTION_OF_VALUE_STEP1_AND_DISPUTES.md); early = the rest.
+# EcoWar is tabled (founder, 2026-11-13) and is not listed.
+RefluxCore	wow	available	-	-	-
+CollectionJournal	wow	available	-	-	-
+FafnirsBed	wow	available	2	-	-
+SelfFound	wow	early	-	-	-
+GuildHerald	wow	early	-	-	-
+CollectionHub	wow	early	-	-	-
+CharacterBoard	wow	early	1	-	-
+MacroSync	wow	early	-	-	-
+Huginn	wow	early	-	-	-
+HuldufolkHunt	wow	early	54	-	-
+MjolnirPass	wow	early	55	-	-
+RuneRiddle	wow	early	56	-	-
+OdinnSays	wow	early	57	-	-
+AndvarisMap	wow	early	58	-	-
+MimirsRiddle	wow	early	59	-	-
+SleipnirSprint	wow	early	60	-	-
+FreyasRunway	wow	early	61	-	-
+AegirsCatch	wow	early	62	-	-
+BragisVerse	wow	early	63	-	-
+AlfarRevel	wow	early	64	-	-
+RatatoskrRoll	wow	early	65	-	-
+NornsDraw	wow	early	66	-	-
+Holmgang	wow	early	67	-	-
+LokisLies	wow	early	68	-	-
+HallTapestry	wow	early	69	-	-
+Hrungnir	wow	early	70	-	-
+NaglfarCrew	wow	early	71	-	-
+Volva	wow	early	72	-	-
+SagaOfFools	wow	early	73	-	-
+BRAWLPIT	shankpit	early	-	BRAWLPIT	The platform fighter, as a wasm level inside the SHANKPIT world (Shift+M).
+spec-003	wow	wishlist	3	Andvaranaut	Gold Ledger
+spec-004	wow	wishlist	4	Hermóðr	Mailbox Tracker
+spec-005	wow	wishlist	5	Sindri's Forge	Profession Matrix
+spec-006	wow	wishlist	6	Skuld	Cooldown Watch
+spec-007	wow	wishlist	7	Gleipnir	Lockout Grid
+spec-008	wow	wishlist	8	Mímir's Well	Quest Log Mirror
+spec-009	wow	wishlist	9	Gungnir Plan	Gear Planner
+spec-010	wow	wishlist	10	Orðstírr	Rep Tracker
+spec-011	wow	wishlist	11	Bifröst	Bank Alt Router
+spec-012	wow	wishlist	12	Ymir's Bones	Mats Planner
+spec-013	wow	wishlist	13	Yggdrasil Path	Leveling Route Coach
+spec-014	wow	wishlist	14	Einherjar Trials	Class Quest Tracker
+spec-015	wow	wishlist	15	Rune Carve	Talent Snapshot
+spec-016	wow	wishlist	16	Nótt	Rested XP Clock
+spec-017	wow	wishlist	17	Saga's Ledger	Auction History
+spec-018	wow	wishlist	18	Huginn and Muninn	Duo Sync Panel
+spec-019	wow	wishlist	19	Skáld's Saga	Session Journal
+spec-020	wow	wishlist	20	Norns' Thread	Item Origin Tagger
+spec-021	wow	wishlist	21	Rúnatal	Roster Notes
+spec-022	wow	wishlist	22	Sessrúmnir	Collection Tracker
+spec-023	wow	wishlist	23	Huginn's Eye	Quest Offer Primitive
+spec-024	wow	wishlist	24	Valhöll Gate	Quest Turn-in Primitive
+spec-025	wow	wishlist	25	Draugr's Hoard	Loot Primitive
+spec-026	wow	wishlist	26	Sólarsteinn	Position Primitive
+spec-027	wow	wishlist	27	Heimdall's Watch	NPC Sighting Primitive
+spec-028	wow	wishlist	28	Mímisbrunnr	Node Primitive
+spec-029	wow	wishlist	29	Kaupang	Vendor Primitive
+spec-030	wow	wishlist	30	Mímir's Measure	Min-Level Verifier
+spec-031	wow	wishlist	31	Landnám	Quest Location Verifier
+spec-032	wow	wishlist	32	Gift of Freyr	Reward Verifier
+spec-033	wow	wishlist	33	Norns' Odds	Drop Rate Ledger
+spec-034	wow	wishlist	34	Freyr's Field	Farm Route Builder
+spec-035	wow	wishlist	35	Fenrir's Moon	Rare Spawn Timer
+spec-036	wow	wishlist	36	Sumbel	Farm Session Scorer
+spec-037	wow	wishlist	37	Gleipnir Links	Quest Chain Mapper
+spec-038	wow	wishlist	38	Huldufólk	Hidden Quest Finder
+spec-039	wow	wishlist	39	Ratatoskr Trail	Breadcrumb Tracker
+spec-040	wow	wishlist	40	Ásgarðr Wall	Faction and Race Gate Log
+spec-041	wow	wishlist	41	Loki's Ledger	Discrepancy Inbox
+spec-042	wow	wishlist	42	Élivágar	Stream Explorer
+spec-043	wow	wishlist	43	Vegvísir	GPS Map Maker
+spec-044	wow	wishlist	44	Nine Realms	Map Layer Composer
+spec-045	wow	wishlist	45	Bautasteinn	Landmark Library
+spec-046	wow	wishlist	46	Muspelheim	Coverage Heatmap
+spec-047	wow	wishlist	47	Bifröst Print	Map Export
+spec-048	wow	wishlist	48	Rune Weaver	Pixel Mail Studio
+spec-049	wow	wishlist	49	Huginn's Whisper	Comms Primitive
+spec-050	wow	wishlist	50	Muninn's Memory	Comms Timeline
+spec-051	wow	wishlist	51	Hermóðr's Ledger	Mail Ledger
+spec-052	wow	wishlist	52	Brokkr's Chest	Container Ledger
+spec-053	wow	wishlist	53	Rune Seal	Mail Signature
+spec-074	wow	wishlist	74	Heimdall's Gaze	AH Scan Primitive
+spec-075	wow	wishlist	75	Gjallarhorn Gauge	Volume Meter
+spec-076	wow	wishlist	76	Mímir's Depth	Listing Depth Book
+spec-077	wow	wishlist	77	Bifröst Gap	Spread Watch
+spec-078	wow	wishlist	78	Þórr's Sway	Delta
+spec-079	wow	wishlist	79	Fenrir's Surge	Gamma
+spec-080	wow	wishlist	80	Skuld's Hourglass	Theta
+spec-081	wow	wishlist	81	Ragnarök Gauge	Vega
+spec-082	wow	wishlist	82	Forseti's Scale	Implied Fair Value
+spec-083	wow	wishlist	83	Ginnungagap Field	Volatility Surface
+spec-084	wow	wishlist	84	Jarl Watch	Seller Concentration
+spec-085	wow	wishlist	85	Loki's Knife	Undercut Tracker
+spec-086	wow	wishlist	86	Sól and Máni	Time-of-Day Curve
+spec-087	wow	wishlist	87	Brokkr's Refill	Restock Detector
+spec-088	wow	wishlist	88	Gjallarhorn Alarm	Crash and Spike Alert
+spec-089	wow	wishlist	89	Sindri's Margin	Craft Margin Sheet
+spec-090	wow	wishlist	90	Hedeby Trade	Vendor Arbitrage
+spec-091	wow	wishlist	91	Skattr	Deposit and Cut Calc
+spec-092	wow	wishlist	92	Norns' Weave	Correlation Matrix
+spec-093	wow	wishlist	93	Wheel of Ár	Seasonality Log
+spec-094	wow	wishlist	94	Hoard Ledger	Position Book
+spec-095	wow	wishlist	95	Valhöll Tally	Realised P&L
+spec-096	wow	wishlist	96	Gleipnir Bounds	Risk Limits
+spec-097	wow	wishlist	97	Skald's Score	Flip Scorecard
+spec-098	wow	wishlist	98	Heimdall's Watch	Watchlist
+spec-099	wow	wishlist	99	Rúnatal Calendar	Market Calendar
+spec-100	wow	wishlist	100	Hliðskjálf Throne	Desk Dashboard

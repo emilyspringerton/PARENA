@@ -1,0 +1,202 @@
+;; stdlib/collection/selffound.prn -- Self Found: every transaction a character makes, and whether it is still
+;; self-found (founder, 2026-11-17: "a self found plugin that tracks all transactions and marks a character self
+;; found until it violates self found doctrine ... to help us discover more of the in game vendors etc. self found
+;; characters may scan the AH but not buy or sell to it").
+;;
+;; THE DOCTRINE (founder-confirmed 2026-11-17). A character stops being self-found the first time it:
+;;   - buys from or posts to the auction house (scanning it is allowed);
+;;   - completes a trade with another player that moves anything;
+;;   - takes an item or money from mail another player sent -- its own alts included; mail from the auction house
+;;     or an NPC, and its own returned mail, do not count;
+;;   - withdraws items or money from a guild bank (depositing does not count).
+;; Vendors, repairs, loot, quest rewards, sending mail and AH scans are recorded and never break it.
+;; It never comes back: self-found is lost for good, and when and why is kept.
+;;
+;; Status: 2 self-found since level 1 (first seen at level 1, so nothing before was missed); 1 self-found since we
+;; started watching (first seen above level 1: its earlier life is unknown, so it is never shown as verified);
+;; 0 broken.
+;;
+;; REFLUX: this mod dispatches 3070 (a transaction: kind, a, b) and 3071 (self-found broken: kind, status before, 0).
+;; 3070-3079 is claimed for Self Found and must be confirmed by the lead in BOARD.md "Extra REFLUX ranges".
+;;
+;; Nothing here calls the WoW API: the host glue (runtime/wow/self_found.lua) passes who, level, time and position.
+;; Build with the REFLUX stdlib:  parena build stdlib/reflux/reflux.prn stdlib/collection/selffound.prn -o sf.lua
+
+(module collection/selffound)
+(export sf-init sf-char sf-record sf-violates sf-vendor sf-vendor-item sf-status sf-keep
+        sf-k-vendor-buy sf-k-vendor-sell sf-k-buyback sf-k-repair sf-k-ah-scan sf-k-ah-buy sf-k-ah-post
+        sf-k-trade sf-k-mail-player sf-k-mail-other sf-k-mail-send sf-k-gbank-withdraw sf-k-gbank-deposit
+        sf-k-loot sf-k-quest sf-k-last sf-act-tx sf-act-broken
+        sf-act-feed-char sf-act-feed-broken sf-act-feed-vendor sf-act-feed-summary sf-feed-new sf-feed-merge sf-feed-summary-row)
+
+;; --- transaction kinds --------------------------------------------------------------------------------------------
+(defn sf-k-vendor-buy [] : I32 1)
+(defn sf-k-vendor-sell [] : I32 2)
+(defn sf-k-buyback [] : I32 3)
+(defn sf-k-repair [] : I32 4)
+(defn sf-k-ah-scan [] : I32 5)
+(defn sf-k-ah-buy [] : I32 6)
+(defn sf-k-ah-post [] : I32 7)
+(defn sf-k-trade [] : I32 8)
+(defn sf-k-mail-player [] : I32 9)    ;; taking an item/money from a player's mail (alts included)
+(defn sf-k-mail-other [] : I32 10)    ;; taking from AH or NPC mail, or one's own returned mail
+(defn sf-k-mail-send [] : I32 11)
+(defn sf-k-gbank-withdraw [] : I32 12)
+(defn sf-k-gbank-deposit [] : I32 13)
+(defn sf-k-loot [] : I32 14)
+(defn sf-k-quest [] : I32 15)
+(defn sf-k-last [] : I32 15)
+
+(defn sf-act-tx [] : I32 3070)
+(defn sf-act-broken [] : I32 3071)
+;; The feed (sf-feed-build): Self Found's saved state as REFLUX rows, for hosts outside the game (SHANKPIT's stream
+;; overlay, terminal and APPS page). Strings travel in a separate name table; rows carry its 1-based ids.
+(defn sf-act-feed-char [] : I32 3072)      ;; a = name id, b = status, c = transactions
+(defn sf-act-feed-broken [] : I32 3073)    ;; a = name id, b = kind that broke it, c = when (epoch seconds)
+(defn sf-act-feed-vendor [] : I32 3074)    ;; a = name id, b = npc id, c = items on its list
+(defn sf-act-feed-summary [] : I32 3075)   ;; a = characters, b = still self-found, c = vendors found
+
+;; How many transaction rows the account keeps; older rows are dropped from the low end.
+(defn sf-keep [] : I32 20000)
+
+;; 1 when a transaction of this kind breaks self-found (the doctrine above).
+(defn sf-violates [(kind : I32)] : I32
+  (if (= kind (sf-k-ah-buy)) 1
+    (if (= kind (sf-k-ah-post)) 1
+      (if (= kind (sf-k-trade)) 1
+        (if (= kind (sf-k-mail-player)) 1
+          (if (= kind (sf-k-gbank-withdraw)) 1 0))))))
+
+;; Give a fresh or older SavedVariables table what it is missing. Never resets data.
+;;   chars    "name-realm" -> { status, firstLevel, since, brokenKind, brokenAt, brokenSeq, n }
+;;   tx       seq -> { seq, at, who, kind, a, b, c, zone, x, y }, from firstSeq to nextSeq-1
+;;   vendors  npc id -> { name, zone, x, y, firstAt, lastAt, visits, sfVisits, items = { item id -> price } }
+(defn sf-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "chars")) (lua/set! db "chars" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "tx")) (lua/set! db "tx" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "vendors")) (lua/set! db "vendors" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "nextSeq")) (lua/set! db "nextSeq" 1) 0)
+      (if (lua/nil? (lua/get db "firstSeq")) (lua/set! db "firstSeq" 1) 0)
+      (lua/set! db "v" 1)
+      db))
+
+;; The character's record, made on first sight. level is the character's level when first seen.
+(defn sf-char [(db : Any) (who : String) (level : I32) (now : I32)] : Any
+  (let [chars (lua/get db "chars")
+        c (lua/aget chars who)]
+    (if (lua/nil? c)
+        (let [nc (lua/obj "status" (if (<= level 1) 2 1) "firstLevel" level "since" now "n" 0)]
+          (do (lua/aset! chars who nc) nc))
+        c)))
+
+(defn sf-status [(db : Any) (who : String)] : I32
+  (let [c (lua/aget (lua/get db "chars") who)]
+    (if (lua/nil? c) -1 (lua/get c "status"))))
+
+;; Drop rows from the low end until at most sf-keep remain.
+(defn sf-trim [(db : Any)] : I32
+  (if (> (- (lua/get db "nextSeq") (lua/get db "firstSeq")) (sf-keep))
+      (do (lua/aset! (lua/get db "tx") (lua/get db "firstSeq") (lua/nil))
+          (lua/set! db "firstSeq" (+ (lua/get db "firstSeq") 1))
+          (sf-trim db))
+      0))
+
+;; Record one transaction and apply the doctrine. Returns the character's status after it.
+;; a, b, c are the kind's numbers (item id, count, copper; a vendor's npc id in c); zone/x/y as the host read them.
+(defn sf-record [(db : Any) (who : String) (level : I32) (kind : I32) (a : I32) (b : I32) (c : I32)
+                 (now : I32) (zone : Any) (x : Any) (y : Any)] : I32
+  (if (< kind 1) -1
+    (if (> kind (sf-k-last)) -1
+      (let [ch (sf-char db who level now)
+            seq (lua/get db "nextSeq")
+            before (lua/get ch "status")]
+        (do (lua/aset! (lua/get db "tx") seq
+                       (lua/obj "seq" seq "at" now "who" who "kind" kind "a" a "b" b "c" c "zone" zone "x" x "y" y))
+            (lua/set! db "nextSeq" (+ seq 1))
+            (lua/set! ch "n" (+ (lua/get ch "n") 1))
+            (reflux-dispatch (sf-act-tx) kind a b)
+            (if (= (sf-violates kind) 1)
+                (if (> before 0)
+                    (do (lua/set! ch "status" 0)
+                        (lua/set! ch "brokenKind" kind)
+                        (lua/set! ch "brokenAt" now)
+                        (lua/set! ch "brokenSeq" seq)
+                        (reflux-dispatch (sf-act-broken) kind before 0)
+                        0)
+                    0)
+                0)
+            (sf-trim db)
+            (lua/get ch "status"))))))
+
+;; A vendor seen (merchant window opened). sf is 1 when the visiting character is self-found right now.
+(defn sf-vendor [(db : Any) (npc : I32) (name : String) (now : I32) (zone : Any) (x : Any) (y : Any) (sf : I32)] : Any
+  (let [vs (lua/get db "vendors")
+        v (lua/aget vs npc)]
+    (if (lua/nil? v)
+        (let [nv (lua/obj "name" name "zone" zone "x" x "y" y "firstAt" now "lastAt" now "visits" 1
+                          "sfVisits" sf "items" (lua/array))]
+          (do (lua/aset! vs npc nv) nv))
+        (do (lua/set! v "lastAt" now)
+            (lua/set! v "visits" (+ (lua/get v "visits") 1))
+            (lua/set! v "sfVisits" (+ (lua/get v "sfVisits") sf))
+            v))))
+
+;; One item on a vendor's list, with its price in copper (the latest price seen wins).
+(defn sf-vendor-item [(db : Any) (npc : I32) (item : I32) (price : I32)] : I32
+  (let [v (lua/aget (lua/get db "vendors") npc)]
+    (if (lua/nil? v) 0
+        (do (lua/aset! (lua/get v "items") item price) 1))))
+
+;; --- the feed ---------------------------------------------------------------------------------------------------
+;; A feed is { names = { "Ingrid-Forever", ... }, rows = { {type, a, b, c}, ... }, chars, sf, vendors }.
+;; sf-feed-merge adds one account's SelfFoundDB to it (a player's WTF folder holds one per account); the host
+;; writes the summary row last with sf-feed-summary-row.
+(defn sf-feed-new [] : Any
+  (lua/obj "names" (lua/array) "rows" (lua/array) "nrows" 0 "nnames" 0 "chars" 0 "sf" 0 "vendors" 0))
+
+(defn sf-feed-name [(feed : Any) (s : String)] : I32
+  (let [id (+ (lua/get feed "nnames") 1)]
+    (do (lua/aset! (lua/get feed "names") id s)
+        (lua/set! feed "nnames" id)
+        id)))
+
+(defn sf-feed-row [(feed : Any) (t : I32) (a : I32) (b : I32) (c : I32)] : I32
+  (let [n (+ (lua/get feed "nrows") 1)]
+    (do (lua/aset! (lua/get feed "rows") n (lua/array t a b c))
+        (lua/set! feed "nrows" n)
+        n)))
+
+(defn sf-feed-chars [(feed : Any) (chars : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") chars k)]
+    (if (lua/nil? nk) 0
+        (let [c (lua/aget chars nk)
+              id (sf-feed-name feed nk)
+              st (lua/get c "status")]
+          (do (sf-feed-row feed (sf-act-feed-char) id st (lua/get c "n"))
+              (if (= st 0) (sf-feed-row feed (sf-act-feed-broken) id (lua/get c "brokenKind") (lua/get c "brokenAt")) 0)
+              (lua/set! feed "chars" (+ (lua/get feed "chars") 1))
+              (if (> st 0) (lua/set! feed "sf" (+ (lua/get feed "sf") 1)) 0)
+              (sf-feed-chars feed chars nk))))))
+
+(defn sf-count-walk [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) n (sf-count-walk t nk (+ n 1)))))
+
+(defn sf-feed-vendors [(feed : Any) (vs : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") vs k)]
+    (if (lua/nil? nk) 0
+        (let [v (lua/aget vs nk)
+              id (sf-feed-name feed (lua/get v "name"))]
+          (do (sf-feed-row feed (sf-act-feed-vendor) id nk (sf-count-walk (lua/get v "items") (lua/nil) 0))
+              (lua/set! feed "vendors" (+ (lua/get feed "vendors") 1))
+              (sf-feed-vendors feed vs nk))))))
+
+;; Add one account's SelfFoundDB. Returns the feed's row count so far.
+(defn sf-feed-merge [(feed : Any) (db : Any)] : I32
+  (do (if (lua/nil? (lua/get db "chars")) 0 (sf-feed-chars feed (lua/get db "chars") (lua/nil)))
+      (if (lua/nil? (lua/get db "vendors")) 0 (sf-feed-vendors feed (lua/get db "vendors") (lua/nil)))
+      (lua/get feed "nrows")))
+
+;; The summary row, written after every account is merged.
+(defn sf-feed-summary-row [(feed : Any)] : I32
+  (sf-feed-row feed (sf-act-feed-summary) (lua/get feed "chars") (lua/get feed "sf") (lua/get feed "vendors")))

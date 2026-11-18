@@ -1,0 +1,124 @@
+;; stdlib/collection/guildherald.prn -- GuildHerald: every guild's Message of the Day and guild info, kept as a log,
+;; with the Discord invites they carry (founder, 2026-11-17: "im in these guilds and the message of the day has the
+;; discord info ... we need the wow data to store all of the guild messages of the day into log streaming so we can
+;; work with that data to support our community" / "i should be able to type /ascend in the shankpit terminal to sync
+;; my discord from the wow data").
+;;
+;; Host glue (runtime/wow/guild_herald.lua) reads the client (GUILD_MOTD, GetGuildRosterMOTD, GetGuildInfoText) and
+;; finds invite-looking text; everything decided is here: what counts as a change, how much history a guild keeps,
+;; what a valid invite code is, the REFLUX rows, and the Collection feed SHANKPIT's /ascend reads.
+;;
+;; REFLUX: 3080 changed (a = kind: 1 motd, 2 info; b = text length; c = invites in it). Feed rows 3082-3084 below.
+;; 3080-3089 is claimed for GuildHerald and must be confirmed by the lead in BOARD.md "Extra REFLUX ranges".
+;;
+;; SavedVariables (account-wide), v1:
+;;   guilds   "name-realm" -> { name, realm, motd, info, firstAt, lastAt, chars = { who -> true },
+;;                              invites = { code -> first seen }, history = { { seq, at, kind, who, text } ... } }
+;;   nextSeq  the next history seq (account-wide, never reused): the log reader appends each entry once by it
+
+(module collection/guildherald)
+(export gh-init gh-guild gh-observe gh-add-invite gh-invite-char-ok gh-invite-len-ok gh-history-max gh-kind-motd
+        gh-kind-info gh-act-changed gh-act-feed-guild gh-act-feed-invite gh-act-feed-summary gh-feed-new gh-feed-merge
+        gh-feed-summary-row)
+
+(defn gh-kind-motd [] : I32 1)
+(defn gh-kind-info [] : I32 2)
+(defn gh-history-max [] : I32 30)          ;; entries a guild keeps; older ones are dropped (the log has them)
+
+(defn gh-act-changed [] : I32 3080)
+(defn gh-act-feed-guild [] : I32 3082)     ;; a = guild name id, b = realm name id, c = history entries
+(defn gh-act-feed-invite [] : I32 3083)    ;; a = guild name id, b = code name id, c = 0
+(defn gh-act-feed-summary [] : I32 3084)   ;; a = guilds, b = invites, c = 0
+
+;; A Discord invite code: 2-32 letters, digits or '-' (discord.gg/<code>, discord.com/invite/<code>).
+(defn gh-invite-char-ok [(c : I32)] : I32
+  (if (and (>= c 48) (<= c 57)) 1
+    (if (and (>= c 65) (<= c 90)) 1
+      (if (and (>= c 97) (<= c 122)) 1 (if (= c 45) 1 0)))))
+(defn gh-invite-len-ok [(n : I32)] : I32 (if (< n 2) 0 (if (> n 32) 0 1)))
+
+(defn gh-init [(db : Any)] : Any
+  (do (if (lua/nil? (lua/get db "guilds")) (lua/set! db "guilds" (lua/array)) 0)
+      (if (lua/nil? (lua/get db "nextSeq")) (lua/set! db "nextSeq" 1) 0)
+      (lua/set! db "v" 1)
+      db))
+
+;; The guild's record, made on first sight; lastAt moves every time.
+(defn gh-guild [(db : Any) (key : String) (name : String) (realm : String) (now : I32)] : Any
+  (let [gs (lua/get db "guilds")
+        g (lua/aget gs key)]
+    (if (lua/nil? g)
+        (let [ng (lua/obj "name" name "realm" realm "firstAt" now "lastAt" now "chars" (lua/array)
+                          "invites" (lua/array) "history" (lua/array))]
+          (do (lua/aset! gs key ng) ng))
+        (do (lua/set! g "lastAt" now) g))))
+
+(defn gh-trim [(h : Any)] : I32
+  (if (> (lua/call-fn (lua/get (lua/global "table") "getn") h) (gh-history-max))
+      (do (lua/call-fn (lua/get (lua/global "table") "remove") h 1) (gh-trim h))
+      0))
+
+;; One reading of a guild's text (kind 1 MOTD, 2 info). Returns 1 when it changed (a new history entry, a REFLUX
+;; row), 0 when it is what the guild already said. An empty text is not a change (a client that has not loaded the
+;; roster yet reports ""). invites: how many valid invite codes the host found in it, for the REFLUX row.
+(defn gh-observe [(db : Any) (key : String) (kind : I32) (text : String) (now : I32) (who : String) (invites : I32)] : I32
+  (let [g (lua/aget (lua/get db "guilds") key)
+        field (if (= kind (gh-kind-motd)) "motd" "info")]
+    (if (lua/nil? g) 0
+      (do (lua/aset! (lua/get g "chars") who true)
+          (if (= (lua/call-fn (lua/get (lua/global "string") "len") text) 0) 0
+            (if (= (lua/aget g field) text) 0
+              (let [seq (lua/get db "nextSeq")]
+                (do (lua/aset! g field text)
+                    (lua/set! db "nextSeq" (+ seq 1))
+                    (lua/call-fn (lua/get (lua/global "table") "insert") (lua/get g "history")
+                                 (lua/obj "seq" seq "at" now "kind" kind "who" who "text" text))
+                    (gh-trim (lua/get g "history"))
+                    (reflux-dispatch (gh-act-changed) kind (lua/call-fn (lua/get (lua/global "string") "len") text) invites)
+                    1))))))))
+
+;; A valid invite code seen in a guild's text (the host checked it with gh-invite-*). Returns 1 when new.
+(defn gh-add-invite [(db : Any) (key : String) (code : String) (now : I32)] : I32
+  (let [g (lua/aget (lua/get db "guilds") key)]
+    (if (lua/nil? g) 0
+      (if (lua/nil? (lua/aget (lua/get g "invites") code))
+          (do (lua/aset! (lua/get g "invites") code now) 1)
+          0))))
+
+;; --- the Collection feed (REFLUX rows + names), for SHANKPIT's /ascend --------------------------------------------
+(defn gh-feed-new [] : Any
+  (lua/obj "names" (lua/array) "rows" (lua/array) "nrows" 0 "nnames" 0 "guilds" 0 "invites" 0))
+
+(defn gh-feed-name [(feed : Any) (s : String)] : I32
+  (let [id (+ (lua/get feed "nnames") 1)]
+    (do (lua/aset! (lua/get feed "names") id s) (lua/set! feed "nnames" id) id)))
+
+(defn gh-feed-row [(feed : Any) (t : I32) (a : I32) (b : I32) (c : I32)] : I32
+  (let [n (+ (lua/get feed "nrows") 1)]
+    (do (lua/aset! (lua/get feed "rows") n (lua/array t a b c)) (lua/set! feed "nrows" n) n)))
+
+(defn gh-feed-invites [(feed : Any) (gid : I32) (inv : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") inv k)]
+    (if (lua/nil? nk) 0
+      (do (gh-feed-row feed (gh-act-feed-invite) gid (gh-feed-name feed nk) 0)
+          (lua/set! feed "invites" (+ (lua/get feed "invites") 1))
+          (gh-feed-invites feed gid inv nk)))))
+
+(defn gh-feed-guilds [(feed : Any) (gs : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") gs k)]
+    (if (lua/nil? nk) 0
+      (let [g (lua/aget gs nk)
+            gid (gh-feed-name feed (lua/get g "name"))]
+        (do (gh-feed-row feed (gh-act-feed-guild) gid (gh-feed-name feed (lua/get g "realm"))
+                         (lua/call-fn (lua/get (lua/global "table") "getn") (lua/get g "history")))
+            (gh-feed-invites feed gid (lua/get g "invites") (lua/nil))
+            (lua/set! feed "guilds" (+ (lua/get feed "guilds") 1))
+            (gh-feed-guilds feed gs nk))))))
+
+;; Add one account's GuildHeraldDB. Returns the feed's row count so far.
+(defn gh-feed-merge [(feed : Any) (db : Any)] : I32
+  (do (if (lua/nil? (lua/get db "guilds")) 0 (gh-feed-guilds feed (lua/get db "guilds") (lua/nil)))
+      (lua/get feed "nrows")))
+
+(defn gh-feed-summary-row [(feed : Any)] : I32
+  (gh-feed-row feed (gh-act-feed-summary) (lua/get feed "guilds") (lua/get feed "invites") 0))

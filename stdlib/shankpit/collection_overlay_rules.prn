@@ -1,0 +1,48 @@
+;; stdlib/shankpit/collection_overlay_rules.prn -- the Collection overlay mod inside SHANKPIT: what the Collection
+;; feed's REFLUX rows mean to the client's surfaces (the stream overlay, the terminal, the APPS page). Founder,
+;; 2026-11-17: "ship all of this into the SHANKPIT stream overlay social meeting terminal ..." and "PARENA FIRST MODS
+;; FIRST REFLUX ALL THE THINGS".
+;;
+;; The rows come from the Collection feed (stdlib/collection/selffound.prn sf-feed-*, 3072-3075) through SHANKPIT's
+;; packages/collection/collection_feed.c, which dispatches them into the client's REFLUX log. The mod
+;; (packages/collection/collection_overlay.c) polls REFLUX and asks these rules; it holds the state, these decide.
+;; Integers only. Generated into SHANKPIT by scripts/gen_collection_overlay_rules.sh (C target).
+
+(module shankpit/collection_overlay_rules)
+(export co-first co-last co-accepts co-role co-tone co-rank co-banner co-surface-stream co-surface-terminal
+        co-surface-apps co-surface-lines co-reload-ms co-banner-ms)
+
+;; The Self Found family: 3070-3079 (claimed, see selffound.prn).
+(defn co-first [] : I32 3070)
+(defn co-last [] : I32 3079)
+(defn co-accepts [(t : I32)] : I32 (if (< t (co-first)) 0 (if (> t (co-last)) 0 1)))
+
+;; What a row does to the mod's model: 1 a character's status, 2 how it broke, 3 a vendor, 4 the summary (ends a
+;; feed load), 0 nothing (live in-game rows 3070/3071 only travel through WoW's own journal today).
+(defn co-role [(t : I32)] : I32
+  (if (= t 3072) 1 (if (= t 3073) 2 (if (= t 3074) 3 (if (= t 3075) 4 0)))))
+
+;; The colour a status is drawn in: 1 green (self-found since level 1), 2 amber (since tracking), 3 red (broken).
+(defn co-tone [(status : I32)] : I32
+  (if (= status 2) 1 (if (= status 1) 2 (if (= status 0) 3 0))))
+
+;; Sort order on every surface: verified self-found first, then since-tracking, then broken.
+(defn co-rank [(status : I32)] : I32
+  (if (= status 2) 0 (if (= status 1) 1 2)))
+
+;; A banner on the stream when a load shows a character newly broken (it was self-found in the previous load).
+;; prev is -1 when the character was not in the previous load: no banner, there is nothing to compare.
+(defn co-banner [(prev : I32) (now : I32)] : I32
+  (if (> prev 0) (if (= now 0) 1 0) 0))
+
+(defn co-surface-stream [] : I32 1)
+(defn co-surface-terminal [] : I32 2)
+(defn co-surface-apps [] : I32 3)
+
+;; How many character lines each surface shows: the stream keeps to a corner, the terminal a screen, the page all.
+(defn co-surface-lines [(surface : I32)] : I32
+  (if (= surface 1) 5 (if (= surface 2) 20 (if (= surface 3) 200 0))))
+
+;; How often the feed file is re-read, and how long a banner stays on the stream.
+(defn co-reload-ms [] : I32 5000)
+(defn co-banner-ms [] : I32 8000)
