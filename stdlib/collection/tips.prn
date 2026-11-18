@@ -1,0 +1,191 @@
+;; stdlib/collection/tips.prn -- the REFLUX tips API's rules (the founder, 2026-11-13: "can we have /rumor also tell
+;; you a tip for one of the other plugins installed? this means all plugins should publish tips via some kind of
+;; reflux compatible tips api"). A REFLUX mod, built into RefluxCore as RefluxCore.modules["collection/tips"]; the
+;; host glue (runtime/wow/reflux_tips.lua, the global RefluxTips) only holds the registry and reads catalogues.
+;;
+;; The registry is a table the host keeps: reg.list[slot] = { addon, spec, keys = {key...}, weights = {w...} },
+;; slot 1, 2, ... in publish order. A tip is a catalogue KEY, never text: the text stays in the publishing addon's
+;; catalogue and is read when the tip is told, in the client's locale.
+;;
+;; Picking a tip (tips-pick!):
+;;   * from a DIFFERENT addon: never the asker's own tips; nil when nobody else has any
+;;   * weighted no-repeat rotation: a tip of weight w (1-9, default 1) is told w times per cycle; the cycle ends
+;;     when every candidate tip has been told its w times, then a new one starts
+;;   * the addon is chosen evenly among those with tips left this cycle (a six-tip addon is not told about twice as
+;;     often as a three-tip one), never the addon told last time while another one has tips left; the tip within it
+;;     is drawn by its tickets left, never the tip told last time while the addon has another
+;; The rotation state is a table the caller keeps (the rumour's carrier saves it): { seen = {["Addon:KEY"] = n},
+;; last, lastTip, told }.
+;;
+;; Tips has no spec number; its REFLUX block is 3060-3069 (BOARD.md extra ranges):
+;;   3060 tips published   a = the addon's spec number (0 when it has none), b = tip count, c = registry slot
+;;   3061 tip told         a = the told addon's spec number, b = the tip's index in its keys, c = its registry slot
+
+(module collection/tips)
+(export tips-first-type tips-told-type tips-init tips-state-init tips-weight tips-register tips-slot-of tips-total
+        tips-pick! tips-line tips-left)
+
+(defn tips-first-type [] : I32 3060)
+(defn tips-told-type [] : I32 3061)
+
+(defn tips-mod [(a : I32) (b : I32)] : I32
+  (let [r (- a (* (/ a b) b))] (if (< r 0) (+ r b) r)))
+
+;; The generator the Collection's rules share (games.prn's g-next): stays in 0..65520, every product fits I32.
+(defn tips-next [(x : I32)] : I32 (tips-mod (+ (* (tips-mod x 65521) 1103) 12345) 65521))
+
+(defn tips-len [(t : Any)] : I32 (lua/call-fn (lua/global "table.getn") t))
+(defn tips-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
+
+(defn tips-init [(reg : Any)] : Any
+  (do (if (lua/nil? (lua/get reg "list")) (lua/set! reg "list" (lua/array)) 0)
+      reg))
+
+(defn tips-state-init [(st : Any)] : Any
+  (do (if (lua/nil? (lua/get st "seen")) (lua/set! st "seen" (lua/obj)) 0)
+      (if (lua/nil? (lua/get st "told")) (lua/set! st "told" 0) 0)
+      st))
+
+;; A tip's weight: whole tickets 1..9, 1 when unset.
+(defn tips-weight [(w : Any)] : I32
+  (if (lua/nil? w) 1
+    (let [n (lua/call-fn (lua/global "math.floor") w)]
+      (if (< n 1) 1 (if (> n 9) 9 n)))))
+
+(defn tips-weights [(weights : Any) (i : I32) (n : I32) (out : Any)] : Any
+  (if (> i n) out
+    (do (lua/aset! out i (tips-weight (if (lua/nil? weights) (lua/nil) (lua/aget weights i))))
+        (tips-weights weights (+ i 1) n out))))
+
+(defn tips-slot-walk [(list : Any) (addon : Any) (i : I32) (n : I32)] : I32
+  (if (> i n) 0
+    (if (= (lua/get (lua/aget list i) "addon") addon) i (tips-slot-walk list addon (+ i 1) n))))
+
+;; The slot an addon published in, or 0.
+(defn tips-slot-of [(reg : Any) (addon : Any)] : I32
+  (tips-slot-walk (lua/get reg "list") addon 1 (tips-len (lua/get reg "list"))))
+
+;; Publish (or publish again) an addon's tips. keys: an array of catalogue keys; weights: an array as long, nil
+;; entries counting 1. Returns the addon's slot -- the same one when it publishes again -- or 0 when there is
+;; nothing to publish. Dispatches 3060.
+(defn tips-register [(reg : Any) (addon : Any) (spec : I32) (keys : Any) (weights : Any)] : I32
+  (let [n (tips-len keys)]
+    (if (or (< n 1) (lua/nil? addon)) 0
+      (let [list (lua/get reg "list")
+            found (tips-slot-of reg addon)
+            slot (if (> found 0) found (+ (tips-len list) 1))]
+        (do (lua/aset! list slot (lua/obj "addon" addon "spec" spec "keys" keys
+                                          "weights" (tips-weights weights 1 n (lua/array))))
+            (reflux-dispatch (tips-first-type) spec n slot)
+            slot)))))
+
+(defn tips-total-walk [(list : Any) (i : I32) (n : I32) (acc : I32)] : I32
+  (if (> i n) acc
+    (tips-total-walk list (+ i 1) n (+ acc (tips-len (lua/get (lua/aget list i) "keys"))))))
+
+;; Tips published, every addon together.
+(defn tips-total [(reg : Any)] : I32 (tips-total-walk (lua/get reg "list") 1 (tips-len (lua/get reg "list")) 0))
+
+;; ---- rotation ----------------------------------------------------------------------------------------------
+
+(defn tips-id [(e : Any) (k : I32)] : Any (str (lua/get e "addon") ":" (lua/aget (lua/get e "keys") k)))
+
+;; Tickets tip k of entry e has left this cycle: its weight less the times told, never below 0.
+(defn tips-tickets [(st : Any) (e : Any) (k : I32)] : I32
+  (let [left (- (lua/aget (lua/get e "weights") k) (tips-zero (lua/aget (lua/get st "seen") (tips-id e k))))]
+    (if (< left 0) 0 left)))
+
+(defn tips-entry-walk [(st : Any) (e : Any) (k : I32) (n : I32) (acc : I32)] : I32
+  (if (> k n) acc (tips-entry-walk st e (+ k 1) n (+ acc (tips-tickets st e k)))))
+
+(defn tips-entry-tickets [(st : Any) (e : Any)] : I32 (tips-entry-walk st e 1 (tips-len (lua/get e "keys")) 0))
+
+;; 1 when entry e may be told about: anybody's but the asker's.
+(defn tips-eligible [(e : Any) (asker : Any)] : I32 (if (= (lua/get e "addon") asker) 0 1))
+
+(defn tips-count-eligible [(list : Any) (asker : Any) (i : I32) (n : I32) (acc : I32)] : I32
+  (if (> i n) acc (tips-count-eligible list asker (+ i 1) n (+ acc (tips-eligible (lua/aget list i) asker)))))
+
+(defn tips-cand-tickets [(st : Any) (list : Any) (asker : Any) (i : I32) (n : I32) (acc : I32)] : I32
+  (if (> i n) acc
+    (let [e (lua/aget list i)]
+      (tips-cand-tickets st list asker (+ i 1) n
+        (+ acc (if (= (tips-eligible e asker) 1) (tips-entry-tickets st e) 0))))))
+
+(defn tips-forget-keys [(st : Any) (e : Any) (k : I32) (n : I32)] : I32
+  (if (> k n) 0
+    (do (lua/aset! (lua/get st "seen") (tips-id e k) (lua/nil))
+        (tips-forget-keys st e (+ k 1) n))))
+
+;; A new cycle: every candidate tip's tickets come back (the asker's own counts are left alone).
+(defn tips-new-cycle [(st : Any) (list : Any) (asker : Any) (i : I32) (n : I32)] : I32
+  (if (> i n) 0
+    (let [e (lua/aget list i)]
+      (do (if (= (tips-eligible e asker) 1) (tips-forget-keys st e 1 (tips-len (lua/get e "keys"))) 0)
+          (tips-new-cycle st list asker (+ i 1) n)))))
+
+;; 1 when entry e is open for this pick: eligible, tickets left, and -- while avoid is 1 -- not the addon told last.
+(defn tips-open [(st : Any) (e : Any) (asker : Any) (avoid : I32)] : I32
+  (if (= (tips-eligible e asker) 0) 0
+    (if (< (tips-entry-tickets st e) 1) 0
+      (if (and (= avoid 1) (= (lua/get e "addon") (lua/get st "last"))) 0 1))))
+
+(defn tips-count-open [(st : Any) (list : Any) (asker : Any) (avoid : I32) (i : I32) (n : I32) (acc : I32)] : I32
+  (if (> i n) acc
+    (tips-count-open st list asker avoid (+ i 1) n (+ acc (tips-open st (lua/aget list i) asker avoid)))))
+
+;; The slot of the j-th open entry (j from 1).
+(defn tips-nth-open [(st : Any) (list : Any) (asker : Any) (avoid : I32) (i : I32) (n : I32) (j : I32)] : I32
+  (if (> i n) 0
+    (if (= (tips-open st (lua/aget list i) asker avoid) 1)
+      (if (= j 1) i (tips-nth-open st list asker avoid (+ i 1) n (- j 1)))
+      (tips-nth-open st list asker avoid (+ i 1) n j))))
+
+;; Tip k's tickets for this draw: none for the tip told last time while skip is 1.
+(defn tips-draw-tickets [(st : Any) (e : Any) (k : I32) (skip : I32)] : I32
+  (if (and (= skip 1) (= (tips-id e k) (lua/get st "lastTip"))) 0 (tips-tickets st e k)))
+
+(defn tips-draw-total [(st : Any) (e : Any) (skip : I32) (k : I32) (n : I32) (acc : I32)] : I32
+  (if (> k n) acc (tips-draw-total st e skip (+ k 1) n (+ acc (tips-draw-tickets st e k skip)))))
+
+(defn tips-draw-walk [(st : Any) (e : Any) (skip : I32) (k : I32) (n : I32) (r : I32)] : I32
+  (if (> k n) n
+    (let [t (tips-draw-tickets st e k skip)]
+      (if (< r t) k (tips-draw-walk st e skip (+ k 1) n (- r t))))))
+
+;; Which of entry e's tips: drawn by tickets left, the last one told sitting out while another has tickets.
+(defn tips-draw [(st : Any) (e : Any) (x : I32)] : I32
+  (let [n (tips-len (lua/get e "keys"))
+        skip (if (> (tips-draw-total st e 1 1 n 0) 0) 1 0)]
+    (tips-draw-walk st e skip 1 n (tips-mod x (tips-draw-total st e skip 1 n 0)))))
+
+(defn tips-pick-open [(st : Any) (list : Any) (asker : Any) (n : I32) (x : I32)] : Any
+  (let [avoid (if (> (tips-count-open st list asker 1 1 n 0) 0) 1 0)
+        open (tips-count-open st list asker avoid 1 n 0)
+        slot (tips-nth-open st list asker avoid 1 n (+ (tips-mod x open) 1))
+        e (lua/aget list slot)
+        k (tips-draw st e (tips-next x))
+        id (tips-id e k)]
+    (do (lua/aset! (lua/get st "seen") id (+ (tips-zero (lua/aget (lua/get st "seen") id)) 1))
+        (lua/set! st "last" (lua/get e "addon"))
+        (lua/set! st "lastTip" id)
+        (lua/set! st "told" (+ (tips-zero (lua/get st "told")) 1))
+        (reflux-dispatch (tips-told-type) (lua/get e "spec") k slot)
+        (lua/array slot k))))
+
+;; The next tip to tell. asker: the addon telling it (never its own tips); st: the rotation state the caller keeps
+;; (tips-state-init'd); seed: any integer that changes between calls. Returns {slot, tip index}, or nil when no
+;; other addon has a tip. Records the pick in st and dispatches 3061.
+(defn tips-pick! [(reg : Any) (st : Any) (asker : Any) (seed : I32)] : Any
+  (let [list (lua/get reg "list")
+        n (tips-len list)]
+    (if (= (tips-count-eligible list asker 1 n 0) 0) (lua/nil)
+      (do (if (= (tips-cand-tickets st list asker 1 n 0) 0) (tips-new-cycle st list asker 1 n) 0)
+          (tips-pick-open st list asker n (tips-next seed))))))
+
+;; Tickets left this cycle for this asker; 0 means its next pick starts a new cycle.
+(defn tips-left [(reg : Any) (st : Any) (asker : Any)] : I32
+  (let [list (lua/get reg "list")] (tips-cand-tickets st list asker 1 (tips-len list) 0)))
+
+;; 1..n from a seed (0 when n < 1): which of a carrier's voice lines to use.
+(defn tips-line [(seed : I32) (n : I32)] : I32 (if (< n 1) 0 (+ (tips-mod (tips-next seed) n) 1)))
