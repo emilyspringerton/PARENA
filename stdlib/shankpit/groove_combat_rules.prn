@@ -119,11 +119,11 @@
               (if (= from 5) (if (= to 5) 0 1) 0))))))))
 
 ;; A new move may start at tick t of the current one when the current one is done, or when it is recovering and the
-;; chain allows it. A glide can also be cancelled out of startup -- the evade has to be there when you need it.
+;; chain allows it. A glide can cancel anything but an active hit window -- the evade has to be there when you need it.
 (defn gc-can-cancel [(from : I32) (to : I32) (t : I32)] : I32
   (let [ph (gc-phase from t)]
     (if (= ph 3) 1
-      (if (and (= to 5) (= ph 0)) 1
+      (if (and (= to 5) (not (= ph 1))) 1
         (if (and (= ph 2) (= (gc-can-chain from to) 1)) 1 0)))))
 
 ;; The combo count after starting `to` from `from` with this grade: on-beat chained moves grow it, an off-beat
