@@ -67,6 +67,10 @@ input[type=search] { min-height: 48px; padding: 8px 12px; border: 1.25px solid v
   font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); }
 .tabs button + button { border-left: 0.75px solid var(--parchment-600); }
 .tabs button[aria-pressed=true] { background: var(--sea-700); color: var(--parchment-100); }
+.csv { display: inline-flex; align-items: center; min-height: 48px; padding: 0 18px; border: 1.25px solid var(--ink-900);
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-900); text-decoration: none; }
+.csv:hover { background: var(--sea-700); color: var(--parchment-100); }
+.slot { font: 400 11px/1.3 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-700); margin-right: 4px; }
 
 .watch { display: flex; align-items: center; gap: 10px; font: 400 13px/1.4 var(--font-mono); color: var(--ink-700); }
 .lamp { width: 10px; height: 10px; border-radius: 50%; background: var(--brass-500); flex: none; }
@@ -118,13 +122,29 @@ tr:last-child td { border-bottom: 0; }
   font: 400 10px/1.6 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; vertical-align: middle; }
 @media (max-width: 700px) { .parcel { grid-template-columns: 1fr; } }
 footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); color: var(--ink-700); }
+/* windowed items list (hoard_page.prn): a fixed pool of absolutely positioned rows inside a scrolling viewport */
+.vhead, .vrow { display: grid; grid-template-columns: minmax(0, 2fr) 80px minmax(0, 3fr); gap: 12px; align-items: center; }
+.vhead { padding: 8px 10px; border-bottom: 1.5px solid var(--ink-900); font: 400 12px/1.3 var(--font-mono);
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-700); }
+.vlist { position: relative; height: min(70vh, 720px); overflow-y: auto; contain: strict; }
+.vspacer { position: relative; }
+.vrow { position: absolute; left: 0; right: 0; height: 46px; padding: 0 10px; border-bottom: 0.75px solid var(--parchment-600);
+  box-sizing: border-box; overflow: hidden; }
+.vrow[hidden] { display: none; }
+.vname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vchips { flex-wrap: nowrap; overflow: hidden; }
+.vchips .more { font: 400 11px/1.2 var(--font-mono); color: var(--ink-700); white-space: nowrap; }
+.pager { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; font: 400 13px/1.4 var(--font-mono); }
+.pager button { min-height: 40px; padding: 0 14px; border: 1.25px solid var(--ink-900); background: transparent; cursor: pointer;
+  font: 600 12px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-900); }
+.pager button:disabled { opacity: 0.4; cursor: default; }
 </style>
 </head>
 <body>
 <main class="page">
   <p class="eyebrow"><span>Fafnir's Bed · Unified inventory</span><span id="eyebrow-right">Reading the hoard…</span></p>
   <h1>The Hoard</h1>
-  <p class="lede">Every bag, bank and mailbox Fafnir has seen, across all your characters. The game writes it down
+  <p class="lede">Every piece of gear worn, and every bag, bank and mailbox Fafnir has seen, across all your characters. The game writes it down
     only on <b>/reload</b> or logout: type <b>/reload</b> in game and this page follows within a few seconds.</p>
   <hr class="rule2">
 
@@ -142,6 +162,7 @@ footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); co
       <button type="button" id="v-items" aria-pressed="true">By item</button>
       <button type="button" id="v-chars" aria-pressed="false">By character</button>
     </div>
+    <a class="csv" href="/api/hoard.csv" download="hoard.csv">Download CSV</a>
   </div>
   <p class="watch" id="watch" role="status"><span class="lamp" aria-hidden="true"></span><span id="watch-text">Watching the saved file…</span></p>
   <div id="problems"></div>
@@ -151,165 +172,6 @@ footer { margin-top: 32px; font: italic 400 15px/1.45 var(--font-marginalia); co
     or you /reload, so the page moves on each switch of character. Bank contents appear once a character has opened
     the bank; mail you send stays "in the post" until its recipient opens their mailbox.</footer>
 </main>
-<script>
-(() => {
-  const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const fmt = (n) => Number(n).toLocaleString("en-US");
-  const coin = (c) => {
-    c = Math.max(0, Math.floor(c || 0));
-    const g = Math.floor(c / 10000), s = Math.floor((c % 10000) / 100), k = c % 100;
-    const parts = [];
-    if (g) parts.push(`<span class="g">${fmt(g)}g</span>`);
-    if (g || s) parts.push(`<span class="s">${s}s</span>`);
-    parts.push(`<span class="c">${k}c</span>`);
-    return `<span class="coin">${parts.join(" ")}</span>`;
-  };
-  const ago = (t) => {
-    if (!t) return "never";
-    const d = Math.max(0, Date.now() / 1000 - t);
-    if (d < 60) return "just now";
-    if (d < 3600) return `${Math.floor(d / 60)} min ago`;
-    if (d < 86400) return `${Math.floor(d / 3600)} h ago`;
-    return `${Math.floor(d / 86400)} d ago`;
-  };
-  const clock = (t) => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-  const itemName = (s) => s.name || `item ${s.id}`;
-
-  let data = null, view = "items", lastSaved = 0, freshUntil = 0;
-  try { view = localStorage.getItem("hoard.view") || "items"; } catch (e) {}
-
-  function setView(v) {
-    view = v;
-    try { localStorage.setItem("hoard.view", v); } catch (e) {}
-    $("v-items").setAttribute("aria-pressed", v === "items");
-    $("v-chars").setAttribute("aria-pressed", v === "chars");
-    render();
-  }
-
-  function matches(q, ...fields) { return !q || fields.some((f) => String(f ?? "").toLowerCase().includes(q)); }
-
-  function renderItems(q) {
-    const rows = data.items.filter((it) => matches(q, it.name, it.id, ...it.holders.map((h) => h.character)));
-    if (!rows.length) return `<div class="plate soft"><div class="in"><p class="empty">Nothing in the hoard matches “${esc(q)}”.</p></div></div>`;
-    return `<div class="plate"><div class="in table-wrap"><table>
-      <thead><tr><th>Item</th><th class="num-col">Total</th><th>Who holds it</th></tr></thead><tbody>
-      ${rows.map((it) => `<tr>
-        <td><a class="iname" href="https://www.wowhead.com/classic/item=${it.id}" target="_blank" rel="noopener">${esc(itemName(it))}</a><span class="iid">#${it.id}</span></td>
-        <td class="num-col">${fmt(it.total)}</td>
-        <td><div class="chips">${it.holders.map((h) => `<button type="button" class="chip" data-char="${esc(h.character)}"><b>${esc(h.character)}</b> ${fmt(h.count)}${h.where !== "bags" ? ` <span class="where">${esc(h.where)}</span>` : ""}</button>`).join("")}</div></td>
-      </tr>`).join("")}
-      </tbody></table></div></div>`;
-  }
-
-  function list(title, stacks, read, q) {
-    const shown = stacks.filter((s) => matches(q, s.name, s.id));
-    let body;
-    if (!read) body = `<p class="empty">Not opened since Fafnir's Bed arrived.</p>`;
-    else if (!stacks.length) body = `<p class="empty">Empty.</p>`;
-    else body = `<ul>${shown.map((s) => `<li><span>${esc(itemName(s))}</span><span class="n">${fmt(s.count)}</span></li>`).join("")}</ul>`;
-    return `<h3>${title}</h3>${body}`;
-  }
-
-  function renderChars(q) {
-    const chars = data.characters.filter((c) => matches(q, c.name, c.realm) ||
-      [...c.bags, ...c.bank, ...c.mail].some((s) => matches(q, s.name, s.id)));
-    if (!chars.length) return `<div class="plate soft"><div class="in"><p class="empty">No character matches “${esc(q)}”.</p></div></div>`;
-    const qForItems = chars.some((c) => matches(q, c.name, c.realm)) ? "" : q;
-    return `<div class="grid">${chars.map((c) => `<article class="plate char"><div class="in">
-      <h2>${esc(c.name)}</h2><p class="realm">${esc(c.realm)}</p>
-      <div class="row"><span>Purse</span><b>${coin(c.copper)}</b></div>
-      <div class="row"><span>Items</span><b>${fmt(c.items)} · ${fmt(c.distinct)} kinds</b></div>
-      <div class="row"><span>Last saved</span><b>${c.seen ? `${clock(c.seen)} · ${ago(c.seen)}` : "never"}</b></div>
-      ${list("Bags", c.bags, true, qForItems)}
-      ${list("Bank", c.bank, c.bankRead && c.bank.length > 0 || c.bankRead, qForItems)}
-      ${c.mail.length ? list("Mail", c.mail, c.mailRead, qForItems) : ""}
-      ${(data.post || []).filter((p) => p.to === c.key).map((p) => `<h3>In the post from ${esc(p.fromName)}</h3><p class="empty">${parcelWhat(p)} · sent ${ago(p.at)}</p>`).join("")}
-    </div></article>`).join("")}</div>`;
-  }
-
-  function parcelWhat(p) {
-    const parts = p.items.map((s) => `${fmt(s.count)} × ${esc(itemName(s))}`);
-    if (p.copper > 0) parts.push(coin(p.copper));
-    return parts.join(", ");
-  }
-
-  function renderPost(q) {
-    const post = (data.post || []).filter((p) => matches(q, p.toName, p.fromName, ...p.items.map((s) => s.name), ...p.items.map((s) => s.id)));
-    if (!post.length) {
-      $("post").innerHTML = (data.post || []).length ? "" :
-        `<p class="empty">Nothing in the post. Mail you send shows here until the recipient opens their mailbox.</p>`;
-      return;
-    }
-    $("post").innerHTML = `<div class="plate post"><div class="in">
-      <h2>In the post</h2>
-      ${post.map((p) => `<div class="parcel">
-        <div class="route">${esc(p.fromName)}<span class="arrow" aria-label="to">→</span>${esc(p.toName)}${p.onAccount ? "" : `<span class="tag">leaves the account</span>`}</div>
-        <div class="what">${parcelWhat(p)}</div>
-        <div class="when">sent ${ago(p.at)}</div>
-      </div>`).join("")}
-    </div></div>`;
-  }
-
-  function render() {
-    if (!data) return;
-    const q = $("q").value.trim().toLowerCase();
-    renderPost(q);
-    $("view").innerHTML = view === "items" ? renderItems(q) : renderChars(q);
-  }
-
-  function paint(d, changed) {
-    data = d;
-    const items = d.characters.reduce((a, c) => a + c.items, 0);
-    $("s-chars").textContent = fmt(d.characters.length);
-    $("s-kinds").textContent = fmt(d.items.length);
-    $("s-items").textContent = fmt(items);
-    $("s-gold").innerHTML = (d.copper / 10000).toLocaleString("en-US", { maximumFractionDigits: 2 }) + "g";
-    $("eyebrow-right").textContent = `Saved ${clock(d.savedAt)}`;
-    $("problems").innerHTML = d.problems.map((p) => `<p class="problem">${esc(p)}</p>`).join("");
-    render();
-    if (changed) { $("view").classList.remove("unroll"); void $("view").offsetWidth; $("view").classList.add("unroll"); }
-  }
-
-  function watchText() {
-    const w = $("watch");
-    if (!data) return;
-    const fresh = Date.now() < freshUntil;
-    w.className = "watch" + (fresh ? " fresh" : "");
-    $("watch-text").textContent = fresh
-      ? `Updated from your /reload, saved ${ago(data.savedAt)}.`
-      : `Watching the saved file. Last /reload or logout: ${clock(data.savedAt)} (${ago(data.savedAt)}).`;
-  }
-
-  async function poll() {
-    try {
-      const r = await fetch("/api/hoard", { cache: "no-store" });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
-      if (d.savedAt !== lastSaved) {
-        const changed = lastSaved !== 0;
-        if (changed) freshUntil = Date.now() + 20000;
-        lastSaved = d.savedAt;
-        paint(d, changed);
-      }
-      watchText();
-    } catch (e) {
-      $("watch").className = "watch down";
-      $("watch-text").textContent = `Can't read the hoard: ${e.message}`;
-    }
-  }
-
-  $("q").addEventListener("input", render);
-  $("v-items").addEventListener("click", () => setView("items"));
-  $("v-chars").addEventListener("click", () => setView("chars"));
-  $("view").addEventListener("click", (e) => {
-    const chip = e.target.closest(".chip[data-char]");
-    if (chip) { $("q").value = chip.dataset.char; setView("chars"); }
-  });
-  setView(view);
-  poll();
-  setInterval(poll, 4000);
-})();
-</script>
+<script type="module" src="/app.js"></script>
 </body>
 </html>

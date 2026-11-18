@@ -1,0 +1,528 @@
+;; tools/hoard/hoard_page.prn -- the Hoard's page, in PARENA, emitted as plain JavaScript (`parena build
+;; hoard_page.prn -o app.js`; the TypeScript emitter, unannotated, so no Node and no download). Founder,
+;; 2026-11-17: "we need to use virtual paging the page runs out of memory or something do an optim pass" and "use
+;; svelt js and ts via PARENA to optim" -- with "No downloads": no Svelte compiler, so the Svelte idea is done by
+;; hand here. Each component builds its DOM once and then patches only what changed; nothing is re-rendered from
+;; an HTML string.
+;;
+;; Components (page.html holds the static shell and the styles):
+;;   stats      four numbers, text patched only when they change
+;;   watch      the "last /reload" line
+;;   post       mail in flight
+;;   items      a WINDOWED list: a fixed pool of row nodes, recycled as you scroll, so the DOM holds about one
+;;              screen of rows however many kinds of item the account has
+;;   chars      PAGED cards: card-page-size characters per page, with Prev / Next
+;;
+;; Data: the page polls /api/version (a tiny {"etag"}; the server stats the save, no Lua) every poll-ms while the
+;; tab is visible, and fetches /api/hoard only when the etag changed (ETag/304 underneath). Hidden tab: no polling.
+;; An error doubles the wait, up to max-backoff-ms. The poll is a setTimeout chain, never overlapping.
+
+(module hoard_page)
+
+;; ---- constants ---------------------------------------------------------------------------------------------------
+(def row-h 46)
+(def row-overscan 6)
+(def card-page-size 12)
+(def poll-ms 4000)
+(def max-backoff-ms 60000)
+(def max-chips 6)
+
+;; ---- state -------------------------------------------------------------------------------------------------------
+(def have-data false)
+(def data (js/obj))
+(def items-f (js/array))
+(def chars-f (js/array))
+(def gen 0)
+(def view "items")
+(def query "")
+(def etag "")
+(def pending-etag "")
+(def delay-ms 4000)
+(def timer 0)
+(def fresh-until 0)
+(def card-page 0)
+(def frame-pending false)
+(def filter-timer 0)
+(def last-stats "")
+
+;; DOM built once by mount-items
+(def vlist (js/obj))
+(def vspacer (js/obj))
+(def pool (js/array))
+
+;; ---- DOM helpers -------------------------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+(defn h [(tag : String) (cls : String)] : Any
+  (let [e (js/call (doc) "createElement" tag)]
+    (do (when (not (= cls "")) (js/set! e "className" cls))
+        e)))
+(defn add [(parent : Any) (child : Any)] : Any (js/call parent "appendChild" child))
+(defn ht [(tag : String) (cls : String) (text : String)] : Any
+  (let [e (h tag cls)]
+    (do (js/set! e "textContent" text) e)))
+(defn set-text [(e : Any) (text : String)] : Unit
+  (when (not (= (js/get e "textContent") text)) (js/set! e "textContent" text)))
+(defn clear [(e : Any)] : Unit (js/call e "replaceChildren"))
+(defn now-s [] : F64 (/ (js/call (js/global "Date") "now") 1000.0))
+(defn floor [(x : F64)] : I32 (js/call (js/global "Math") "floor" x))
+(defn fmt [(n : Any)] : String (js/call (js/call-fn (js/global "Number") n) "toLocaleString" "en-US"))
+(defn lower [(s : Any)] : String (js/call (str "" s) "toLowerCase"))
+(defn has-q [(s : Any)] : Bool (or (= query "") (js/call (lower s) "includes" query)))
+(defn len [(a : Any)] : I32 (js/get a "length"))
+(defn item-name [(s : Any)] : String
+  (if (= (js/get s "name") "") (str "item " (js/get s "id")) (js/get s "name")))
+
+(defn ago [(t : Any)] : String
+  (if (= t 0)
+    "never"
+    (let [d (- (now-s) t)]
+      (if (< d 60.0) "just now"
+        (if (< d 3600.0) (str (floor (/ d 60.0)) " min ago")
+          (if (< d 86400.0) (str (floor (/ d 3600.0)) " h ago")
+            (str (floor (/ d 86400.0)) " d ago")))))))
+
+(defn clock [(t : Any)] : String
+  (js/call (js/new "Date" (* t 1000)) "toLocaleString" (js/array)
+           (js/obj "weekday" "short" "hour" "2-digit" "minute" "2-digit")))
+
+;; copper -> <span class="coin"><span class="g">1g</span> <span class="s">2s</span> <span class="c">3c</span></span>
+(defn coin [(c : Any)] : Any
+  (let [w (h "span" "coin")
+        g (floor (/ c 10000.0))
+        s (floor (/ (- c (* g 10000)) 100.0))
+        k (- (- c (* g 10000)) (* s 100))]
+    (do (when (> g 0) (do (add w (ht "span" "g" (str (fmt g) "g"))) (add w (js/call (doc) "createTextNode" " "))))
+        (when (or (> g 0) (> s 0)) (do (add w (ht "span" "s" (str s "s"))) (add w (js/call (doc) "createTextNode" " "))))
+        (add w (ht "span" "c" (str k "c")))
+        w)))
+
+;; ---- filtering (derived state) -----------------------------------------------------------------------------------
+(defn holders-match [(it : Any)] : Bool
+  (let [hs (js/get it "holders")
+        found false]
+    (do (dotimes [i (len hs)]
+          (when (has-q (js/get (js/aget hs i) "character")) (set! found true)))
+        found)))
+
+(defn stacks-match [(list : Any)] : Bool
+  (let [found false]
+    (do (dotimes [i (len list)]
+          (let [s (js/aget list i)]
+            (when (or (has-q (js/get s "name")) (has-q (js/get s "id"))) (set! found true))))
+        found)))
+
+(defn char-match [(c : Any)] : Bool
+  (or (has-q (js/get c "name"))
+      (or (has-q (js/get c "realm"))
+          (or (stacks-match (js/get c "equipped"))
+              (or (stacks-match (js/get c "bags")) (or (stacks-match (js/get c "bank")) (stacks-match (js/get c "mail"))))))))
+
+(defn refilter [] : Unit
+  (let [items (js/get data "items")
+        chars (js/get data "characters")
+        fi (js/array)
+        fc (js/array)]
+    (do (dotimes [i (len items)]
+          (let [it (js/aget items i)]
+            (when (or (has-q (js/get it "name")) (or (has-q (js/get it "id")) (holders-match it)))
+              (js/call fi "push" it))))
+        (dotimes [i (len chars)]
+          (when (char-match (js/aget chars i)) (js/call fc "push" (js/aget chars i))))
+        (set! items-f fi)
+        (set! chars-f fc)
+        (set! gen (+ gen 1)))))
+
+;; ---- items: the windowed list ------------------------------------------------------------------------------------
+(defn make-row [] : Any
+  (let [r (h "div" "vrow")
+        name-cell (h "div" "vname")
+        a (h "a" "iname")
+        iid (h "span" "iid")
+        total (h "div" "vtotal num-col")
+        chips (h "div" "chips vchips")]
+    (do (js/set! a "target" "_blank")
+        (js/set! a "rel" "noopener")
+        (add name-cell a)
+        (add name-cell iid)
+        (add r name-cell)
+        (add r total)
+        (add r chips)
+        (js/set! r "hidden" true)
+        r)))
+
+(defn chip [(hd : Any)] : Any
+  (let [b (h "button" "chip")]
+    (do (js/set! b "type" "button")
+        (js/set! (js/get b "dataset") "char" (js/get hd "character"))
+        (add b (ht "b" "" (js/get hd "character")))
+        (add b (js/call (doc) "createTextNode" (str " " (fmt (js/get hd "count")))))
+        (when (not (= (js/get hd "where") "bags")) (add b (ht "span" "where" (str " " (js/get hd "where")))))
+        b)))
+
+(defn fill-row [(r : Any) (idx : I32)] : Unit
+  (let [key (str gen ":" idx)]
+    (when (not (= (js/get (js/get r "dataset") "key") key))
+      (let [it (js/aget items-f idx)
+            kids (js/get r "children")
+            a (js/get (js/get (js/aget kids 0) "children") 0)
+            iid (js/get (js/get (js/aget kids 0) "children") 1)
+            chips (js/aget kids 2)
+            hs (js/get it "holders")
+            n (len hs)]
+        (do (js/set! (js/get r "dataset") "key" key)
+            (js/set! (js/get r "style") "top" (str (* idx row-h) "px"))
+            (js/set! a "textContent" (item-name it))
+            (js/set! a "href" (str "https://www.wowhead.com/classic/item=" (js/get it "id")))
+            (js/set! iid "textContent" (str "#" (js/get it "id")))
+            (js/set! (js/aget kids 1) "textContent" (fmt (js/get it "total")))
+            (clear chips)
+            (dotimes [i (if (> n max-chips) max-chips n)]
+              (add chips (chip (js/aget hs i))))
+            (when (> n max-chips) (add chips (ht "span" "more" (str "+" (- n max-chips) " more"))))
+            (js/set! r "hidden" false))))))
+
+;; Show the rows the viewport can see, plus row-overscan either side; every other pooled row is hidden.
+(defn render-window [] : Unit
+  (let [n (len items-f)
+        top (js/get vlist "scrollTop")
+        height (js/get vlist "clientHeight")
+        first (- (floor (/ top row-h)) row-overscan)
+        start (if (< first 0) 0 first)
+        want (+ (floor (/ height row-h)) (* 2 row-overscan) 2)]
+    (do (js/set! (js/get vspacer "style") "height" (str (* n row-h) "px"))
+        (while-pool want)
+        (dotimes [k (len pool)]
+          (let [r (js/aget pool k)
+                idx (+ start k)]
+            (if (< idx n)
+              (fill-row r idx)
+              (when (not (js/get r "hidden")) (do (js/set! r "hidden" true) (js/set! (js/get r "dataset") "key" ""))))))
+        (set! frame-pending false))))
+
+;; Grow the row pool to `want` rows (it never shrinks; it is one screen's worth).
+(defn while-pool [(want : I32)] : Unit
+  (loop [k (len pool)]
+    (when (< k want)
+      (let [r (make-row)]
+        (do (js/call pool "push" r)
+            (add vspacer r)
+            (recur (+ k 1)))))))
+
+(defn on-scroll [] : Unit
+  (when (not frame-pending)
+    (do (set! frame-pending true)
+        (js/call (js/global "window") "requestAnimationFrame" (callback render-window)))))
+
+(defn mount-items [] : Any
+  (let [wrap (h "div" "plate")
+        inner (h "div" "in")
+        head (h "div" "vhead")
+        list (h "div" "vlist")
+        spacer (h "div" "vspacer")]
+    (do (add head (ht "div" "vname" "Item"))
+        (add head (ht "div" "vtotal num-col" "Total"))
+        (add head (ht "div" "" "Who holds it"))
+        (add inner head)
+        (add list spacer)
+        (add inner list)
+        (add wrap inner)
+        (js/call list "addEventListener" "scroll" (callback on-scroll) (js/obj "passive" true))
+        (set! vlist list)
+        (set! vspacer spacer)
+        (set! pool (js/array))
+        wrap)))
+
+;; ---- chars: paged cards ------------------------------------------------------------------------------------------
+(defn stack-list [(card : Any) (title : String) (stacks : Any) (read : Bool) (q : String)] : Unit
+  (do (add card (ht "h3" "" title))
+      (if (not read)
+        (add card (ht "p" "empty" "Not opened since Fafnir's Bed arrived."))
+        (if (= (len stacks) 0)
+          (add card (ht "p" "empty" "Empty."))
+          (let [ul (h "ul" "")]
+            (do (dotimes [i (len stacks)]
+                  (let [s (js/aget stacks i)]
+                    (when (or (= q "") (or (js/call (lower (js/get s "name")) "includes" q) (js/call (lower (js/get s "id")) "includes" q)))
+                      (let [li (h "li" "")]
+                        (do (add li (ht "span" "" (item-name s)))
+                            (add li (ht "span" "n" (fmt (js/get s "count"))))
+                            (add ul li))))))
+                (add card ul)))))))
+
+(defn gear-list [(card : Any) (c : Any)] : Unit
+  (do (add card (ht "h3" "" "Equipped"))
+      (if (not (js/get c "gearRead"))
+        (add card (ht "p" "empty" "Not seen since Fafnir's Bed learned to read gear: log this character in once."))
+        (let [gear (js/get c "gear")]
+          (if (= (len gear) 0)
+            (add card (ht "p" "empty" "Wearing nothing."))
+            (let [ul (h "ul" "")]
+              (do (dotimes [i (len gear)]
+                    (let [g (js/aget gear i)
+                          li (h "li" "")
+                          left (h "span" "")]
+                      (do (add left (ht "span" "slot" (js/get g "slotName")))
+                          (add left (js/call (doc) "createTextNode" (str " " (item-name g))))
+                          (add li left)
+                          (add li (ht "span" "n" (str "#" (js/get g "id"))))
+                          (add ul li))))
+                  (add card ul))))))))
+
+(defn row-kv [(card : Any) (label : String) (value : Any)] : Unit
+  (let [r (h "div" "row")
+        b (h "b" "")]
+    (do (add r (ht "span" "" label))
+        (if (= (js/typeof value) "string") (js/set! b "textContent" value) (add b value))
+        (add r b)
+        (add card r))))
+
+(defn make-card [(c : Any) (q : String)] : Any
+  (let [art (h "article" "plate char")
+        card (h "div" "in")
+        post (js/get data "post")]
+    (do (add card (ht "h2" "" (js/get c "name")))
+        (add card (ht "p" "realm" (js/get c "realm")))
+        (row-kv card "Purse" (coin (js/get c "copper")))
+        (row-kv card "Items" (str (fmt (js/get c "items")) " · " (fmt (js/get c "distinct")) " kinds"))
+        (row-kv card "Last saved" (if (= (js/get c "seen") 0) "never" (str (clock (js/get c "seen")) " · " (ago (js/get c "seen")))))
+        (gear-list card c)
+        (stack-list card "Bags" (js/get c "bags") true q)
+        (stack-list card "Bank" (js/get c "bank") (js/get c "bankRead") q)
+        (when (> (len (js/get c "mail")) 0) (stack-list card "Mail" (js/get c "mail") (js/get c "mailRead") q))
+        (dotimes [i (len post)]
+          (let [p (js/aget post i)]
+            (when (= (js/get p "to") (js/get c "key"))
+              (do (add card (ht "h3" "" (str "In the post from " (js/get p "fromName"))))
+                  (add card (ht "p" "empty" (str (parcel-what p) " · sent " (ago (js/get p "at")))))))))
+        (add art card)
+        art)))
+
+(defn pages [] : I32
+  (let [n (len chars-f)]
+    (if (= n 0) 1 (floor (/ (+ n (- card-page-size 1)) card-page-size)))))
+
+(defn render-chars [] : Unit
+  (let [v (el "view")
+        n (len chars-f)
+        last-page (- (pages) 1)
+        pg (if (> card-page last-page) last-page card-page)
+        q (if (or (= query "") (chars-named)) "" query)
+        pager (h "div" "pager")
+        prev (ht "button" "" "‹ Prev")
+        next (ht "button" "" "Next ›")
+        grid (h "div" "grid")]
+    (do (set! card-page pg)
+        (clear v)
+        (if (= n 0)
+          (add v (empty-plate (str "No character matches “" query "”.")))
+          (do (js/set! prev "type" "button")
+              (js/set! next "type" "button")
+              (js/set! prev "disabled" (= pg 0))
+              (js/set! next "disabled" (= pg last-page))
+              (js/call prev "addEventListener" "click" (callback page-prev))
+              (js/call next "addEventListener" "click" (callback page-next))
+              (add pager prev)
+              (add pager (ht "span" "pageno" (str "Page " (+ pg 1) " of " (+ last-page 1) " · " n " characters")))
+              (add pager next)
+              (add v pager)
+              (dotimes [i card-page-size]
+                (let [idx (+ (* pg card-page-size) i)]
+                  (when (< idx n) (add grid (make-card (js/aget chars-f idx) q)))))
+              (add v grid))))))
+
+;; When the search names a character, show that character's whole card, not just the matching items.
+(defn chars-named [] : Bool
+  (let [found false]
+    (do (dotimes [i (len chars-f)]
+          (let [c (js/aget chars-f i)]
+            (when (or (has-q (js/get c "name")) (has-q (js/get c "realm"))) (set! found true))))
+        found)))
+
+(defn page-prev [] : Unit (do (set! card-page (- card-page 1)) (render-chars) (js/call (el "view") "scrollIntoView")))
+(defn page-next [] : Unit (do (set! card-page (+ card-page 1)) (render-chars) (js/call (el "view") "scrollIntoView")))
+
+(defn empty-plate [(text : String)] : Any
+  (let [p (h "div" "plate soft")
+        i (h "div" "in")]
+    (do (add i (ht "p" "empty" text)) (add p i) p)))
+
+;; ---- post (mail in flight) ---------------------------------------------------------------------------------------
+(defn parcel-what [(p : Any)] : String
+  (let [items (js/get p "items")
+        parts (js/array)]
+    (do (dotimes [i (len items)]
+          (let [s (js/aget items i)]
+            (js/call parts "push" (str (fmt (js/get s "count")) " × " (item-name s)))))
+        (when (> (js/get p "copper") 0) (js/call parts "push" (coin-text (js/get p "copper"))))
+        (js/call parts "join" ", "))))
+
+(defn coin-text [(c : Any)] : String (js/get (coin c) "textContent"))
+
+(defn parcel-match [(p : Any)] : Bool
+  (or (has-q (js/get p "toName")) (or (has-q (js/get p "fromName")) (stacks-match (js/get p "items")))))
+
+(defn render-post [] : Unit
+  (let [box (el "post")
+        post (js/get data "post")
+        shown (js/array)]
+    (do (dotimes [i (len post)] (when (parcel-match (js/aget post i)) (js/call shown "push" (js/aget post i))))
+        (clear box)
+        (if (= (len shown) 0)
+          (when (= (len post) 0)
+            (add box (ht "p" "empty" "Nothing in the post. Mail you send shows here until the recipient opens their mailbox.")))
+          (let [plate (h "div" "plate post")
+                inner (h "div" "in")]
+            (do (add inner (ht "h2" "" "In the post"))
+                (dotimes [i (len shown)]
+                  (let [p (js/aget shown i)
+                        row (h "div" "parcel")
+                        route (h "div" "route")]
+                    (do (add route (js/call (doc) "createTextNode" (js/get p "fromName")))
+                        (add route (ht "span" "arrow" "→"))
+                        (add route (js/call (doc) "createTextNode" (js/get p "toName")))
+                        (when (not (js/get p "onAccount")) (add route (ht "span" "tag" "leaves the account")))
+                        (add row route)
+                        (add row (ht "div" "what" (parcel-what p)))
+                        (add row (ht "div" "when" (str "sent " (ago (js/get p "at")))))
+                        (add inner row))))
+                (add plate inner)
+                (add box plate)))))))
+
+;; ---- the whole page ----------------------------------------------------------------------------------------------
+(defn render-view [] : Unit
+  (when have-data
+    (do (render-post)
+        (if (= view "items")
+          (let [v (el "view")]
+            (do (when (not (= (js/get vlist "isConnected") true))
+                  (do (clear v) (add v (mount-items))))
+                (if (= (len items-f) 0)
+                  (do (clear v) (set! vlist (js/obj)) (add v (empty-plate (str "Nothing in the hoard matches “" query "”."))))
+                  (do (js/set! vlist "scrollTop" (js/get vlist "scrollTop")) (render-window)))))
+          (do (set! vlist (js/obj)) (render-chars))))))
+
+(defn render-stats [] : Unit
+  (let [chars (js/get data "characters")
+        total 0]
+    (do (dotimes [i (len chars)] (set! total (+ total (js/get (js/aget chars i) "items"))))
+        (set-text (el "s-chars") (fmt (len chars)))
+        (set-text (el "s-kinds") (fmt (len (js/get data "items"))))
+        (set-text (el "s-items") (fmt total))
+        (set-text (el "s-gold") (str (js/call (/ (js/get data "copper") 10000.0) "toLocaleString" "en-US"
+                                              (js/obj "maximumFractionDigits" 2)) "g"))
+        (set-text (el "eyebrow-right") (str "Saved " (clock (js/get data "savedAt"))))
+        (let [box (el "problems")
+              probs (js/get data "problems")]
+          (do (clear box)
+              (dotimes [i (len probs)] (add box (ht "p" "problem" (js/aget probs i)))))))))
+
+(defn render-watch [(down : String)] : Unit
+  (let [w (el "watch")]
+    (if (not (= down ""))
+      (do (js/set! w "className" "watch down") (set-text (el "watch-text") (str "Can't read the hoard: " down)))
+      (when have-data
+        (let [fresh (< (now-s) fresh-until)]
+          (do (js/set! w "className" (if fresh "watch fresh" "watch"))
+              (set-text (el "watch-text")
+                        (if fresh
+                          (str "Updated from your /reload, saved " (ago (js/get data "savedAt")) ".")
+                          (str "Watching the saved file. Last /reload or logout: " (clock (js/get data "savedAt"))
+                               " (" (ago (js/get data "savedAt")) ").")))))))))
+
+(defn set-view [(v : String)] : Unit
+  (do (set! view v)
+      (js/call (js/global "localStorage") "setItem" "hoard.view" v)
+      (js/call (el "v-items") "setAttribute" "aria-pressed" (str (= v "items")))
+      (js/call (el "v-chars") "setAttribute" "aria-pressed" (str (= v "chars")))
+      (render-view)))
+
+;; ---- polling: /api/version, then /api/hoard only when it changed --------------------------------------------------
+(defn schedule [] : Unit
+  (do (js/call-fn (js/global "clearTimeout") timer)
+      (set! timer (js/call-fn (js/global "setTimeout") (callback tick) delay-ms))))
+
+(defn tick [] : Unit
+  (when (not (js/get (doc) "hidden"))
+    (js/call
+      (js/call
+        (js/call (js/call-fn (js/global "fetch") "/api/version" (js/obj "cache" "no-store")) "then" (callback json-or-fail))
+        "then" (callback on-version))
+      "catch" (callback on-fail))))
+
+(defn json-or-fail [(r : Any)] : Any
+  (if (js/get r "ok")
+    (js/call r "json")
+    (js/call (js/global "Promise") "reject" (js/new "Error" (str "HTTP " (js/get r "status"))))))
+
+(defn on-version [(v : Any)] : Unit
+  (if (and have-data (= (js/get v "etag") etag))
+    (do (set! delay-ms poll-ms) (render-watch "") (schedule))
+    (do (set! pending-etag (js/get v "etag"))
+        (js/call
+          (js/call
+            (js/call (js/call-fn (js/global "fetch") "/api/hoard" (js/obj "cache" "no-cache")) "then" (callback json-or-fail))
+            "then" (callback on-hoard))
+          "catch" (callback on-fail)))))
+
+(defn on-hoard [(d : Any)] : Unit
+  (let [changed have-data]
+    (do (set! data d)
+        (set! have-data true)
+        (set! etag pending-etag)
+        (when changed (set! fresh-until (+ (now-s) 20.0)))
+        (refilter)
+        (render-stats)
+        (render-view)
+        (set! delay-ms poll-ms)
+        (render-watch "")
+        (schedule))))
+
+(defn on-fail [(e : Any)] : Unit
+  (do (set! delay-ms (if (> (* delay-ms 2) max-backoff-ms) max-backoff-ms (* delay-ms 2)))
+      (render-watch (str (js/get e "message") " (retrying in " (floor (/ delay-ms 1000.0)) " s)"))
+      (schedule)))
+
+(defn on-visibility [] : Unit
+  (if (js/get (doc) "hidden")
+    (js/call-fn (js/global "clearTimeout") timer)
+    (do (set! delay-ms poll-ms) (tick))))
+
+;; ---- input -------------------------------------------------------------------------------------------------------
+(defn apply-filter [] : Unit
+  (do (set! query (js/call (js/call (js/get (el "q") "value") "trim") "toLowerCase"))
+      (set! card-page 0)
+      (when have-data (do (refilter) (when (= view "items") (js/set! vlist "scrollTop" 0)) (render-view)))))
+
+(defn on-input [] : Unit
+  (do (js/call-fn (js/global "clearTimeout") filter-timer)
+      (set! filter-timer (js/call-fn (js/global "setTimeout") (callback apply-filter) 120))))
+
+(defn on-items [] : Unit (set-view "items"))
+(defn on-chars [] : Unit (set-view "chars"))
+
+;; A holder chip in the items list: show that character's card.
+(defn on-view-click [(e : Any)] : Unit
+  (let [c (js/call (js/get e "target") "closest" ".chip[data-char]")]
+    (when (not (js/null? c))
+      (do (js/set! (el "q") "value" (js/get (js/get c "dataset") "char"))
+          (set! query (lower (js/get (js/get c "dataset") "char")))
+          (set! card-page 0)
+          (refilter)
+          (set-view "chars")))))
+
+(defn on-resize [] : Unit (when (= view "items") (on-scroll)))
+
+(defn main [] : Unit
+  (let [saved (js/call (js/global "localStorage") "getItem" "hoard.view")]
+    (do (when (= saved "chars") (set! view "chars"))
+        (js/call (el "q") "addEventListener" "input" (callback on-input))
+        (js/call (el "v-items") "addEventListener" "click" (callback on-items))
+        (js/call (el "v-chars") "addEventListener" "click" (callback on-chars))
+        (js/call (el "view") "addEventListener" "click" (callback on-view-click))
+        (js/call (doc) "addEventListener" "visibilitychange" (callback on-visibility))
+        (js/call (js/global "window") "addEventListener" "resize" (callback on-resize))
+        (set-view view)
+        (tick))))
+
+(start (main))

@@ -3,7 +3,9 @@
 ;; name is one of the spec's own for it). A REFLUX mod.
 ;;
 ;; The model, in one account-wide SavedVariables table (## SavedVariables: FafnirsBedDB):
-;;   db.chars[character] = { gold = copper, seen = time, loc = { bags = {[itemID] = n}, bank = {...}, mail = {...} } }
+;;   db.chars[character] = { gold = copper, seen = time, loc = { bags = {[itemID] = n}, bank = {...}, mail = {...},
+;;                                                                  equipped = {...} },
+;;                           slots = {[inventorySlotId] = itemID} }   -- slots: what is worn where (1 head .. 19 tabard)
 ;;   db.names[itemID]    = the item's name, as last seen in a link (for search)
 ;;   db.post[recipient][n] = { from = sender, at = time, copper = n, items = {[itemID] = n} }: mail IN FLIGHT,
 ;;                           sent by one of your characters and not yet seen in the recipient's mailbox. It is
@@ -14,7 +16,7 @@
 ;;
 ;; Every change is DISPATCHED into REFLUX, so the journal (journal.prn) makes net inventory a time series the
 ;; reader carries into the event store. Addon 2's block is 2010-2019 (ids.prn):
-;;   2010 item count changed     a = itemID, b = signed delta, c = location (1 bags, 2 bank, 3 mail)
+;;   2010 item count changed     a = itemID, b = signed delta, c = location (1 bags, 2 bank, 3 mail, 4 equipped)
 ;;   2011 gold changed           a = signed copper delta, b = new total in whole gold, c = 0
 ;;   2012 location re-read       a = location, b = distinct items held there, c = total count held there
 ;;
@@ -25,7 +27,7 @@
 ;;   parena build stdlib/reflux/reflux.prn stdlib/collection/ids.prn stdlib/collection/inventory.prn -o inv.lua
 
 (module collection/inventory)
-(export inv-init inv-character inv-location-code inv-apply-snapshot inv-set-gold inv-net inv-who inv-gold-total
+(export inv-init inv-character inv-location-code inv-apply-snapshot inv-set-slots inv-set-gold inv-net inv-who inv-gold-total
         inv-find inv-remember-name inv-totals inv-post inv-post-arrived)
 
 (defn inv-zero [(v : Any)] : Any (if (lua/nil? v) 0 v))
@@ -48,7 +50,7 @@
       (lua/aget (lua/get db "chars") character)))
 
 (defn inv-location-code [(loc : String)] : I32
-  (if (= loc "bags") 1 (if (= loc "bank") 2 (if (= loc "mail") 3 0))))
+  (if (= loc "bags") 1 (if (= loc "bank") 2 (if (= loc "mail") 3 (if (= loc "equipped") 4 0)))))
 
 ;; Pass 1: items in the new snapshot -- dispatch the delta against the old one. Returns n + changes.
 (defn inv-diff-new [(snap : Any) (old : Any) (k : Any) (code : I32) (n : I32)] : I32
@@ -93,6 +95,12 @@
               (reflux-dispatch (collection-action-type 2 2) code (lua/aget counts 1) (lua/aget counts 2))
               changed)))))
 
+;; Record what the character wears, slot by slot: {[inventorySlotId] = itemID}. The counts go through
+;; inv-apply-snapshot under "equipped" (so REFLUX sees them); this keeps the slot each item sits in.
+(defn inv-set-slots [(db : Any) (character : String) (slots : Any) (now : I32)] : Any
+  (let [ch (inv-character db character now)]
+    (do (lua/set! ch "slots" slots) slots)))
+
 ;; Record the character's money. Dispatches 2011 when it moved. Returns the signed copper delta.
 (defn inv-set-gold [(db : Any) (character : String) (copper : I32) (now : I32)] : I32
   (let [ch (inv-character db character now)
@@ -119,12 +127,13 @@
 (defn inv-remember-name [(db : Any) (item : I32) (name : Any)] : Any
   (if (lua/nil? name) 0 (lua/aset! (lua/get db "names") item name)))
 
-;; One character's count of an item across bags, bank and mail.
+;; One character's count of an item across bags, bank, mail and what they wear.
 (defn inv-char-count [(ch : Any) (item : I32)] : I32
   (let [locs (lua/get ch "loc")]
     (+ (+ (if (lua/nil? (lua/get locs "bags")) 0 (inv-zero (lua/aget (lua/get locs "bags") item)))
           (if (lua/nil? (lua/get locs "bank")) 0 (inv-zero (lua/aget (lua/get locs "bank") item))))
-       (if (lua/nil? (lua/get locs "mail")) 0 (inv-zero (lua/aget (lua/get locs "mail") item))))))
+       (+ (if (lua/nil? (lua/get locs "mail")) 0 (inv-zero (lua/aget (lua/get locs "mail") item)))
+          (if (lua/nil? (lua/get locs "equipped")) 0 (inv-zero (lua/aget (lua/get locs "equipped") item)))))))
 
 (defn inv-who-walk [(chars : Any) (k : Any) (item : I32) (out : Any)] : Any
   (let [nk (inv-next chars k)]

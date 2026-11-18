@@ -1,0 +1,436 @@
+;; stdlib/collection/ledger.prn -- the gear ledger: Fafnir's Bed's SavedVariables, every account, turned into one view
+;; of what every character holds (worn, bags, bank, mail, and mail in flight between your own characters), and that
+;; view as JSON (for tools/hoard's page) or CSV. Founder, 2026-11-17: "i need to start managing my gear without having
+;; to log in to all the characters to see whats on them. it can be a csv to start ... but we want a gui web interface
+;; too", and "all mods first parena first dev".
+;;
+;; Pure over plain Lua tables: nothing here reads a file or calls the WoW API. The host (runtime/wow/ledger_export.lua)
+;; loads each FafnirsBed.lua with the journal reader's sandboxed loader and hands the tables in:
+;;   acc = ledger-new()
+;;   ledger-add(acc, account, file, FafnirsBedDB)      -- once per account
+;;   ledger-problem(acc, text)                          -- a file that could not be read
+;;   v = ledger-view(acc, savedAt)                      -- totals, "who holds it", everything sorted
+;;   ledger-json(v) / ledger-csv(v)
+;;
+;; The model it reads is inventory.prn's (db.chars[key] = {gold, seen, loc = {bags, bank, mail, equipped}, slots},
+;; db.names, db.post). A location that was never read stays "not read" (bankRead/mailRead/gearRead false), never empty.
+;;
+;; Mail to someone outside the account has left the hoard: it is listed in `post` but not counted, and has no CSV row.
+;;
+;; Sorting: PARENA's Lua target cannot pass a defn as a value yet (a comparator would emit an unbound name), so every
+;; element gets a unique sortable key `_k` and table.sort compares the strings (lg-sort). Numbers in keys are zero-
+;; padded; "descending" is 2000000000 - n, inside the 32-bit range string.format("%d") has on Windows.
+;;
+;; Build: parena build stdlib/collection/ledger.prn -o ledger.lua
+
+(module collection/ledger)
+(export ledger-new ledger-add ledger-problem ledger-view ledger-json ledger-csv)
+
+;; ---- small helpers -------------------------------------------------------------------------------------------
+(defn lg-next [(t : Any) (k : Any)] : Any (lua/call-fn (lua/global "next") t k))
+(defn lg-num [(v : Any)] : Any (if (lua/nil? v) 0 v))
+(defn lg-str-or [(v : Any)] : Any (if (lua/nil? v) "" v))
+(defn lg-len [(t : Any)] : I32 (lua/call-fn (lua/global "table.getn") t))
+(defn lg-push [(t : Any) (v : Any)] : Any (lua/aset! t (+ (lg-len t) 1) v))
+;; `type` is on the emitter's Luau-reserved list, so lua/global refuses it; _G["type"] is the same function.
+(defn lg-type [(v : Any)] : String (lua/call-fn (lua/get (lua/global "_G") "type") v))
+(defn lg-tostr [(v : Any)] : String (lua/call-fn (lua/global "tostring") v))
+(defn lg-pad [(n : Any)] : String (lua/call-fn (lua/global "string.format") "%010d" n))
+(defn lg-desc [(n : Any)] : String (lg-pad (- 2000000000 n)))
+(defn lg-sep [] : String (lua/call-fn (lua/global "string.char") 1))
+
+;; "Name-Realm" -> "Name" / "Realm" (a key with no "-" is all name).
+(defn lg-name-of [(key : Any)] : Any
+  (let [m (lua/call-fn (lua/global "string.match") (lg-tostr key) "^([^-]+)%-")]
+    (if (lua/nil? m) (lg-tostr key) m)))
+
+(defn lg-realm-of [(key : Any)] : Any
+  (let [m (lua/call-fn (lua/global "string.match") (lg-tostr key) "^[^-]+%-(.*)$")]
+    (if (lua/nil? m) "" m)))
+
+;; WoW's inventory slot ids (INVSLOT_*, every 1.x-era client). An id outside the table is "slot N", not a guess.
+(defn lg-slot-name [(slot : Any)] : Any
+  (if (= slot 0)
+      "Ammo"
+      (let [n (lua/aget (lua/array "Head" "Neck" "Shoulder" "Shirt" "Chest" "Waist" "Legs" "Feet" "Wrist" "Hands"
+                                   "Finger 1" "Finger 2" "Trinket 1" "Trinket 2" "Back" "Main hand" "Off hand"
+                                   "Ranged" "Tabard")
+                        slot)]
+        (if (lua/nil? n) (str "slot " slot) n))))
+
+;; ---- sorting by key --------------------------------------------------------------------------------------------
+(defn lg-sort-keys [(arr : Any) (i : I32) (n : I32) (keys : Any) (by : Any)] : Any
+  (if (> i n)
+      keys
+      (let [k (str (lua/get (lua/aget arr i) "_k") (lg-sep) (lg-pad i))]
+        (do (lg-push keys k)
+            (lua/aset! by k (lua/aget arr i))
+            (lg-sort-keys arr (+ i 1) n keys by)))))
+
+(defn lg-sort-out [(keys : Any) (i : I32) (n : I32) (by : Any) (out : Any)] : Any
+  (if (> i n)
+      out
+      (do (lg-push out (lua/aget by (lua/aget keys i)))
+          (lg-sort-out keys (+ i 1) n by out))))
+
+;; A new array of arr's elements in ascending `_k` order; ties keep their original order.
+(defn lg-sort [(arr : Any)] : Any
+  (let [n (lg-len arr)
+        keys (lua/array)
+        by (lua/obj)]
+    (do (lg-sort-keys arr 1 n keys by)
+        (lua/call-fn (lua/global "table.sort") keys)
+        (lg-sort-out keys 1 n by (lua/array)))))
+
+;; ---- reading one account ---------------------------------------------------------------------------------------
+;; {[itemID] = count} -> [{id, count, name}] (zero and non-numeric entries dropped).
+(defn lg-stacks-walk [(t : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lg-next t k)]
+    (if (lua/nil? nk)
+        out
+        (do (if (= (lg-type nk) "number")
+                (if (= (lg-type (lua/aget t nk)) "number")
+                    (if (> (lua/aget t nk) 0) (lg-push out (lua/obj "id" nk "count" (lua/aget t nk) "name" "")) 0)
+                    0)
+                0)
+            (lg-stacks-walk t nk out)))))
+
+(defn lg-stacks [(t : Any)] : Any
+  (if (= (lg-type t) "table") (lg-stacks-walk t (lua/nil) (lua/array)) (lua/array)))
+
+;; {[slot] = itemID} -> [{slot, slotName, id, name}].
+(defn lg-gear-walk [(t : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lg-next t k)]
+    (if (lua/nil? nk)
+        out
+        (do (if (= (lg-type nk) "number")
+                (if (= (lg-type (lua/aget t nk)) "number")
+                    (lg-push out (lua/obj "slot" nk "slotName" (lg-slot-name nk) "id" (lua/aget t nk) "name" ""
+                                          "_k" (lg-pad nk)))
+                    0)
+                0)
+            (lg-gear-walk t nk out)))))
+
+(defn lg-gear [(t : Any)] : Any
+  (if (= (lg-type t) "table") (lg-sort (lg-gear-walk t (lua/nil) (lua/array))) (lua/array)))
+
+(defn lg-is-table [(v : Any)] : Bool (= (lg-type v) "table"))
+
+(defn lg-char [(account : Any) (key : Any) (ct : Any)] : Any
+  (let [loc (if (lg-is-table (lua/get ct "loc")) (lua/get ct "loc") (lua/obj))
+        slots (lua/get ct "slots")]
+    (lua/obj "key" key "name" (lg-name-of key) "realm" (lg-realm-of key) "account" account
+             "seen" (lg-num (lua/get ct "seen")) "copper" (lg-num (lua/get ct "gold"))
+             "bags" (lg-stacks (lua/get loc "bags")) "bank" (lg-stacks (lua/get loc "bank"))
+             "mail" (lg-stacks (lua/get loc "mail")) "equipped" (lg-stacks (lua/get loc "equipped"))
+             "bankRead" (lg-is-table (lua/get loc "bank")) "mailRead" (lg-is-table (lua/get loc "mail"))
+             "gear" (lg-gear slots) "gearRead" (lg-is-table slots)
+             "items" 0 "distinct" 0)))
+
+(defn lg-add-chars [(acc : Any) (account : Any) (chars : Any) (k : Any)] : Any
+  (let [nk (lg-next chars k)]
+    (if (lua/nil? nk)
+        acc
+        (do (if (lg-is-table (lua/aget chars nk)) (lg-push (lua/get acc "chars") (lg-char account nk (lua/aget chars nk))) 0)
+            (lg-add-chars acc account chars nk)))))
+
+(defn lg-add-parcels [(acc : Any) (to : Any) (box : Any) (k : Any)] : Any
+  (let [nk (lg-next box k)]
+    (if (lua/nil? nk)
+        acc
+        (let [pt (lua/aget box nk)]
+          (do (if (lg-is-table pt)
+                  (let [items (lg-stacks (lua/get pt "items"))
+                        copper (lg-num (lua/get pt "copper"))]
+                    (if (or (> (lg-len items) 0) (> copper 0))
+                        (lg-push (lua/get acc "post")
+                                 (lua/obj "to" to "from" (lg-str-or (lua/get pt "from")) "at" (lg-num (lua/get pt "at"))
+                                          "copper" copper "items" items))
+                        0))
+                  0)
+              (lg-add-parcels acc to box nk))))))
+
+(defn lg-add-post [(acc : Any) (post : Any) (k : Any)] : Any
+  (let [nk (lg-next post k)]
+    (if (lua/nil? nk)
+        acc
+        (do (if (lg-is-table (lua/aget post nk)) (lg-add-parcels acc nk (lua/aget post nk) (lua/nil)) 0)
+            (lg-add-post acc post nk)))))
+
+(defn lg-merge-names [(into : Any) (names : Any) (k : Any)] : Any
+  (let [nk (lg-next names k)]
+    (if (lua/nil? nk)
+        into
+        (do (if (= (lg-type (lua/aget names nk)) "string") (lua/aset! into nk (lua/aget names nk)) 0)
+            (lg-merge-names into names nk)))))
+
+(defn ledger-new [] : Any
+  (lua/obj "chars" (lua/array) "post" (lua/array) "names" (lua/obj) "files" (lua/array) "problems" (lua/array)))
+
+(defn ledger-problem [(acc : Any) (text : String)] : Any
+  (do (lg-push (lua/get acc "problems") text) acc))
+
+;; One account's FafnirsBedDB. Anything that is not the expected shape is skipped, not fatal.
+(defn ledger-add [(acc : Any) (account : String) (file : String) (db : Any)] : Any
+  (do (lg-push (lua/get acc "files") file)
+      (if (lg-is-table db)
+          (do (if (lg-is-table (lua/get db "names")) (lg-merge-names (lua/get acc "names") (lua/get db "names") (lua/nil)) 0)
+              (if (lg-is-table (lua/get db "post")) (lg-add-post acc (lua/get db "post") (lua/nil)) 0)
+              (if (lg-is-table (lua/get db "chars")) (lg-add-chars acc account (lua/get db "chars") (lua/nil)) 0)
+              acc)
+          (ledger-problem acc (str file " holds no Fafnir's Bed table")))))
+
+;; ---- the view ----------------------------------------------------------------------------------------------------
+;; Count `cnt` of item `id` as held by `who` at `where`.
+(defn lg-hold [(by-id : Any) (id : Any) (nm : Any) (who : Any) (where : String) (cnt : Any)] : Any
+  (do (if (lua/nil? (lua/aget by-id id)) (lua/aset! by-id id (lua/obj "id" id "name" nm "total" 0 "holders" (lua/array))) 0)
+      (let [it (lua/aget by-id id)]
+        (do (lua/set! it "total" (+ (lua/get it "total") cnt))
+            (lg-push (lua/get it "holders") (lua/obj "character" who "where" where "count" cnt "_k" (lg-desc cnt)))
+            it))))
+
+(defn lg-view-part [(ch : Any) (where : String) (list : Any) (i : I32) (names : Any) (by-id : Any) (seen : Any)] : Any
+  (if (> i (lg-len list))
+      ch
+      (let [s (lua/aget list i)
+            id (lua/get s "id")
+            cnt (lua/get s "count")
+            nm (lg-str-or (lua/aget names id))]
+        (do (lua/set! s "name" nm)
+            (lua/set! s "_k" (str (lg-desc cnt) (lg-pad id)))
+            (lua/set! ch "items" (+ (lua/get ch "items") cnt))
+            (if (lua/nil? (lua/aget seen id))
+                (do (lua/aset! seen id 1) (lua/set! ch "distinct" (+ (lua/get ch "distinct") 1)))
+                0)
+            (lg-hold by-id id nm (lua/get ch "name") where cnt)
+            (lg-view-part ch where list (+ i 1) names by-id seen)))))
+
+(defn lg-name-gear [(gear : Any) (i : I32) (names : Any)] : Any
+  (if (> i (lg-len gear))
+      gear
+      (do (lua/set! (lua/aget gear i) "name" (lg-str-or (lua/aget names (lua/get (lua/aget gear i) "id"))))
+          (lg-name-gear gear (+ i 1) names))))
+
+(defn lg-view-chars [(v : Any) (chars : Any) (i : I32) (names : Any) (by-id : Any) (keys : Any)] : Any
+  (if (> i (lg-len chars))
+      v
+      (let [ch (lua/aget chars i)
+            seen (lua/obj)]
+        (do (lua/aset! keys (lua/get ch "key") ch)
+            (lg-view-part ch "equipped" (lua/get ch "equipped") 1 names by-id seen)
+            (lg-view-part ch "bags" (lua/get ch "bags") 1 names by-id seen)
+            (lg-view-part ch "bank" (lua/get ch "bank") 1 names by-id seen)
+            (lg-view-part ch "mail" (lua/get ch "mail") 1 names by-id seen)
+            (lg-name-gear (lua/get ch "gear") 1 names)
+            (lua/set! ch "equipped" (lg-sort (lua/get ch "equipped")))
+            (lua/set! ch "bags" (lg-sort (lua/get ch "bags")))
+            (lua/set! ch "bank" (lg-sort (lua/get ch "bank")))
+            (lua/set! ch "mail" (lg-sort (lua/get ch "mail")))
+            (lua/set! ch "_k" (str (lg-desc (lua/get ch "seen")) (lg-tostr (lua/get ch "key"))))
+            (lua/set! v "copper" (+ (lua/get v "copper") (lua/get ch "copper")))
+            (lg-view-chars v chars (+ i 1) names by-id keys)))))
+
+;; Parcels to your own characters still belong to the account: counted as "post", held by the recipient.
+(defn lg-view-parcel-items [(p : Any) (items : Any) (i : I32) (names : Any) (by-id : Any)] : Any
+  (if (> i (lg-len items))
+      p
+      (let [s (lua/aget items i)
+            nm (lg-str-or (lua/aget names (lua/get s "id")))]
+        (do (lua/set! s "name" nm)
+            (lua/set! s "_k" (str (lg-desc (lua/get s "count")) (lg-pad (lua/get s "id"))))
+            (if (lua/get p "onAccount") (lg-hold by-id (lua/get s "id") nm (lua/get p "toName") "post" (lua/get s "count")) 0)
+            (lg-view-parcel-items p items (+ i 1) names by-id)))))
+
+(defn lg-view-post [(v : Any) (post : Any) (i : I32) (names : Any) (by-id : Any) (keys : Any)] : Any
+  (if (> i (lg-len post))
+      v
+      (let [p (lua/aget post i)]
+        (do (lua/set! p "toName" (lg-name-of (lua/get p "to")))
+            (lua/set! p "fromName" (lg-name-of (lua/get p "from")))
+            (lua/set! p "onAccount" (not (lua/nil? (lua/aget keys (lua/get p "to")))))
+            (lg-view-parcel-items p (lua/get p "items") 1 names by-id)
+            (lua/set! p "items" (lg-sort (lua/get p "items")))
+            (if (lua/get p "onAccount") (lua/set! v "copper" (+ (lua/get v "copper") (lua/get p "copper"))) 0)
+            (lua/set! p "_k" (lg-desc (lua/get p "at")))
+            (lg-view-post v post (+ i 1) names by-id keys)))))
+
+(defn lg-items-out [(by-id : Any) (k : Any) (out : Any)] : Any
+  (let [nk (lg-next by-id k)]
+    (if (lua/nil? nk)
+        out
+        (let [it (lua/aget by-id nk)]
+          (do (lua/set! it "holders" (lg-sort (lua/get it "holders")))
+              (lua/set! it "_k" (str (lg-desc (lua/get it "total")) (lg-pad (lua/get it "id"))))
+              (lg-push out it)
+              (lg-items-out by-id nk out))))))
+
+;; Everything the page shows: characters newest first, items most-held first, post newest first.
+(defn ledger-view [(acc : Any) (saved-at : Any)] : Any
+  (let [v (lua/obj "savedAt" saved-at "files" (lua/get acc "files") "problems" (lua/get acc "problems") "copper" 0)
+        by-id (lua/obj)
+        keys (lua/obj)
+        names (lua/get acc "names")]
+    (do (lg-view-chars v (lua/get acc "chars") 1 names by-id keys)
+        (lg-view-post v (lua/get acc "post") 1 names by-id keys)
+        (lua/set! v "characters" (lg-sort (lua/get acc "chars")))
+        (lua/set! v "post" (lg-sort (lua/get acc "post")))
+        (lua/set! v "items" (lg-sort (lg-items-out by-id (lua/nil) (lua/array))))
+        v)))
+
+;; ---- JSON --------------------------------------------------------------------------------------------------------
+;; The escape table for string.gsub: quote, backslash and every control character.
+(defn lg-esc-fill [(t : Any) (c : I32)] : Any
+  (if (> c 31)
+      t
+      (do (lua/aset! t (lua/call-fn (lua/global "string.char") c) (lua/call-fn (lua/global "string.format") "\\u%04x" c))
+          (lg-esc-fill t (+ c 1)))))
+
+(defn lg-esc-table [] : Any
+  (lg-esc-fill (lua/obj "\"" "\\\"" "\\" "\\\\") 0))
+
+(defn lg-js [(e : Any) (s : Any)] : String
+  (str "\"" (lua/call-fn (lua/global "string.gsub") (lg-tostr s) "[%c\"\\]" e) "\""))
+
+(defn lg-jb [(b : Any)] : String (if b "true" "false"))
+(defn lg-jn [(n : Any)] : String (lg-tostr (lg-num n)))
+(defn lg-kv [(k : String) (json : String)] : String (str "\"" k "\":" json))
+
+(defn lg-enc-stack [(e : Any) (s : Any)] : String
+  (str "{" (lg-kv "id" (lg-jn (lua/get s "id"))) "," (lg-kv "name" (lg-js e (lua/get s "name"))) ","
+       (lg-kv "count" (lg-jn (lua/get s "count"))) "}"))
+
+(defn lg-enc-worn [(e : Any) (g : Any)] : String
+  (str "{" (lg-kv "slot" (lg-jn (lua/get g "slot"))) "," (lg-kv "slotName" (lg-js e (lua/get g "slotName"))) ","
+       (lg-kv "id" (lg-jn (lua/get g "id"))) "," (lg-kv "name" (lg-js e (lua/get g "name"))) "}"))
+
+(defn lg-enc-holder [(e : Any) (h : Any)] : String
+  (str "{" (lg-kv "character" (lg-js e (lua/get h "character"))) "," (lg-kv "where" (lg-js e (lua/get h "where"))) ","
+       (lg-kv "count" (lg-jn (lua/get h "count"))) "}"))
+
+(defn lg-enc-item [(e : Any) (it : Any)] : String
+  (str "{" (lg-kv "id" (lg-jn (lua/get it "id"))) "," (lg-kv "name" (lg-js e (lua/get it "name"))) ","
+       (lg-kv "total" (lg-jn (lua/get it "total"))) "," (lg-kv "holders" (lg-list e "holder" (lua/get it "holders"))) "}"))
+
+(defn lg-enc-char [(e : Any) (c : Any)] : String
+  (str "{" (lg-kv "key" (lg-js e (lua/get c "key"))) "," (lg-kv "name" (lg-js e (lua/get c "name"))) ","
+       (lg-kv "realm" (lg-js e (lua/get c "realm"))) "," (lg-kv "account" (lg-js e (lua/get c "account"))) ","
+       (lg-kv "seen" (lg-jn (lua/get c "seen"))) "," (lg-kv "copper" (lg-jn (lua/get c "copper"))) ","
+       (lg-kv "bags" (lg-list e "stack" (lua/get c "bags"))) "," (lg-kv "bank" (lg-list e "stack" (lua/get c "bank"))) ","
+       (lg-kv "mail" (lg-list e "stack" (lua/get c "mail"))) ","
+       (lg-kv "equipped" (lg-list e "stack" (lua/get c "equipped"))) ","
+       (lg-kv "gear" (lg-list e "worn" (lua/get c "gear"))) ","
+       (lg-kv "bankRead" (lg-jb (lua/get c "bankRead"))) "," (lg-kv "mailRead" (lg-jb (lua/get c "mailRead"))) ","
+       (lg-kv "gearRead" (lg-jb (lua/get c "gearRead"))) ","
+       (lg-kv "items" (lg-jn (lua/get c "items"))) "," (lg-kv "distinct" (lg-jn (lua/get c "distinct"))) "}"))
+
+(defn lg-enc-parcel [(e : Any) (p : Any)] : String
+  (str "{" (lg-kv "to" (lg-js e (lua/get p "to"))) "," (lg-kv "toName" (lg-js e (lua/get p "toName"))) ","
+       (lg-kv "from" (lg-js e (lua/get p "from"))) "," (lg-kv "fromName" (lg-js e (lua/get p "fromName"))) ","
+       (lg-kv "at" (lg-jn (lua/get p "at"))) "," (lg-kv "copper" (lg-jn (lua/get p "copper"))) ","
+       (lg-kv "items" (lg-list e "stack" (lua/get p "items"))) "," (lg-kv "onAccount" (lg-jb (lua/get p "onAccount"))) "}"))
+
+(defn lg-enc [(e : Any) (kind : String) (x : Any)] : String
+  (if (= kind "stack") (lg-enc-stack e x)
+      (if (= kind "worn") (lg-enc-worn e x)
+          (if (= kind "holder") (lg-enc-holder e x)
+              (if (= kind "item") (lg-enc-item e x)
+                  (if (= kind "char") (lg-enc-char e x)
+                      (if (= kind "parcel") (lg-enc-parcel e x)
+                          (lg-js e x))))))))
+
+(defn lg-enc-each [(e : Any) (kind : String) (arr : Any) (i : I32) (parts : Any)] : Any
+  (if (> i (lg-len arr))
+      parts
+      (do (lg-push parts (lg-enc e kind (lua/aget arr i)))
+          (lg-enc-each e kind arr (+ i 1) parts))))
+
+(defn lg-list [(e : Any) (kind : String) (arr : Any)] : String
+  (str "[" (lua/call-fn (lua/global "table.concat") (lg-enc-each e kind arr 1 (lua/array)) ",") "]"))
+
+(defn ledger-json [(v : Any)] : String
+  (let [e (lg-esc-table)]
+    (str "{" (lg-kv "savedAt" (lg-jn (lua/get v "savedAt"))) "," (lg-kv "files" (lg-list e "str" (lua/get v "files"))) ","
+         (lg-kv "characters" (lg-list e "char" (lua/get v "characters"))) ","
+         (lg-kv "items" (lg-list e "item" (lua/get v "items"))) "," (lg-kv "post" (lg-list e "parcel" (lua/get v "post"))) ","
+         (lg-kv "copper" (lg-jn (lua/get v "copper"))) "," (lg-kv "problems" (lg-list e "str" (lua/get v "problems"))) "}")))
+
+;; ---- CSV ---------------------------------------------------------------------------------------------------------
+;; character, realm, account, location, slot, item_id, name, count -- a row per stack per character per location and
+;; a row per equipped slot, sorted by character, realm, location (equipped, bags, bank, mail, post), slot, name, id.
+;; `slot` is only filled for equipped rows: bags, bank and mail are kept as counts per item, not per bag slot.
+(defn lg-csv-field [(v : Any)] : String
+  (let [s (lg-tostr v)]
+    (if (lua/nil? (lua/call-fn (lua/global "string.find") s "[,\"%c]"))
+        s
+        (str "\"" (lua/call-fn (lua/global "string.gsub") s "\"" "\"\"") "\""))))
+
+(defn lg-loc-order [(loc : String)] : String
+  (if (= loc "equipped") "0" (if (= loc "bags") "1" (if (= loc "bank") "2" (if (= loc "mail") "3" "4")))))
+
+;; slot is the slot id, or -1 for "not an equipped slot".
+(defn lg-row [(rows : Any) (name : Any) (realm : Any) (account : Any) (loc : String) (slot : Any) (id : Any) (nm : Any) (cnt : Any)] : Any
+  (let [sep (lg-sep)]
+    (lg-push rows
+             (lua/obj "_k" (str name sep realm sep (lg-loc-order loc) sep (lg-pad (+ slot 1)) sep nm sep (lg-pad id))
+                      "line" (str (lg-csv-field name) "," (lg-csv-field realm) "," (lg-csv-field account) "," loc ","
+                                  (if (< slot 0) "" (lg-csv-field (lg-slot-name slot))) "," (lg-tostr id) ","
+                                  (lg-csv-field nm) "," (lg-tostr cnt))))))
+
+(defn lg-rows-stacks [(rows : Any) (ch : Any) (loc : String) (list : Any) (i : I32)] : Any
+  (if (> i (lg-len list))
+      rows
+      (let [s (lua/aget list i)]
+        (do (lg-row rows (lua/get ch "name") (lua/get ch "realm") (lua/get ch "account") loc -1
+                    (lua/get s "id") (lua/get s "name") (lua/get s "count"))
+            (lg-rows-stacks rows ch loc list (+ i 1))))))
+
+(defn lg-rows-gear [(rows : Any) (ch : Any) (gear : Any) (i : I32)] : Any
+  (if (> i (lg-len gear))
+      rows
+      (let [g (lua/aget gear i)]
+        (do (lg-row rows (lua/get ch "name") (lua/get ch "realm") (lua/get ch "account") "equipped"
+                    (lua/get g "slot") (lua/get g "id") (lua/get g "name") 1)
+            (lg-rows-gear rows ch gear (+ i 1))))))
+
+(defn lg-rows-chars [(rows : Any) (chars : Any) (i : I32) (acct : Any)] : Any
+  (if (> i (lg-len chars))
+      rows
+      (let [ch (lua/aget chars i)]
+        (do (lua/aset! acct (lua/get ch "key") (lua/get ch "account"))
+            (if (lua/get ch "gearRead")
+                (lg-rows-gear rows ch (lua/get ch "gear") 1)
+                (lg-rows-stacks rows ch "equipped" (lua/get ch "equipped") 1))
+            (lg-rows-stacks rows ch "bags" (lua/get ch "bags") 1)
+            (lg-rows-stacks rows ch "bank" (lua/get ch "bank") 1)
+            (lg-rows-stacks rows ch "mail" (lua/get ch "mail") 1)
+            (lg-rows-chars rows chars (+ i 1) acct)))))
+
+(defn lg-rows-parcel [(rows : Any) (p : Any) (items : Any) (i : I32) (acct : Any)] : Any
+  (if (> i (lg-len items))
+      rows
+      (let [s (lua/aget items i)]
+        (do (lg-row rows (lua/get p "toName") (lg-realm-of (lua/get p "to")) (lg-str-or (lua/aget acct (lua/get p "to")))
+                    "post" -1 (lua/get s "id") (lua/get s "name") (lua/get s "count"))
+            (lg-rows-parcel rows p items (+ i 1) acct)))))
+
+(defn lg-rows-post [(rows : Any) (post : Any) (i : I32) (acct : Any)] : Any
+  (if (> i (lg-len post))
+      rows
+      (let [p (lua/aget post i)]
+        (do (if (lua/get p "onAccount") (lg-rows-parcel rows p (lua/get p "items") 1 acct) 0)
+            (lg-rows-post rows post (+ i 1) acct)))))
+
+(defn lg-lines [(rows : Any) (i : I32) (out : Any)] : Any
+  (if (> i (lg-len rows))
+      out
+      (do (lg-push out (lua/get (lua/aget rows i) "line"))
+          (lg-lines rows (+ i 1) out))))
+
+(defn ledger-csv [(v : Any)] : String
+  (let [acct (lua/obj)
+        rows (lg-rows-chars (lua/array) (lua/get v "characters") 1 acct)]
+    (do (lg-rows-post rows (lua/get v "post") 1 acct)
+        (str (lua/call-fn (lua/global "table.concat")
+                          (lg-lines (lg-sort rows) 1 (lua/array "character,realm,account,location,slot,item_id,name,count"))
+                          "\n")
+             "\n"))))

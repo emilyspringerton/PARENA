@@ -64,6 +64,14 @@ local function session(world, saved)
             return "tex", c.n, false, 1, false, false, "|Hitem:" .. c.id .. "|h[" .. c.name .. "]|h", false, false, c.id
         end
     end
+    -- equipped gear: slot range from the client's globals, items by id and by link
+    env.INVSLOT_FIRST_EQUIPPED = 1
+    env.INVSLOT_LAST_EQUIPPED = 19
+    env.GetInventoryItemID = function(unit, slot) local g = world.gear and world.gear[slot]; return g and g.id end
+    env.GetInventoryItemLink = function(unit, slot)
+        local g = world.gear and world.gear[slot]
+        return g and ("|Hitem:" .. g.id .. "|h[" .. g.name .. "]|h") or nil
+    end
     env.GetInboxNumItems = function() return #world.mail end
     env.GetInboxItem = function(i, j) local m = world.mail[i] and world.mail[i][j]; if m then return m.name, m.id, "tex", m.n end end
     -- the send side of the mailbox (mail in flight)
@@ -121,6 +129,8 @@ local world = {
     bags = { [0] = { item(2770, "Copper Ore", 20), item(2770, "Copper Ore", 5), {}, item(6948, "Hearthstone", 1) },
              [1] = { item(2589, "Linen Cloth", 12) } },
     mail = {},
+    gear = { [1] = item(4373, "Shadowskin Gloves", 1), [11] = item(5009, "Mindbender Loop", 1),
+             [12] = item(5009, "Mindbender Loop", 1), [16] = item(2207, "Jambiya", 1) },
 }
 local saved = {}
 
@@ -138,6 +148,21 @@ local inv = s.env.FafnirsBedDB
 eq(inv.chars["Emily-Forever"].loc.bags[2770], 25, "two ore stacks counted as 25")
 eq(inv.chars["Emily-Forever"].gold, 1234567, "gold read")
 eq(inv.names[2770], "Copper Ore", "item names learned from links")
+
+-- equipped gear: counted as a location, and the slot map kept
+local emily = inv.chars["Emily-Forever"]
+eq(emily.loc.equipped and emily.loc.equipped[5009], 2, "two of the same ring count as 2 equipped")
+eq(emily.slots and emily.slots[16], 2207, "the main-hand slot holds the dagger")
+eq(inv.names[2207], "Jambiya", "equipped item names learned from links")
+local saved_gear = world.gear
+world.gear = {}
+s.fire("PLAYER_LOGIN")
+eq(emily.slots[16], 2207, "an all-empty read at login is not trusted (gear not loaded yet)")
+world.gear = { [1] = saved_gear[1], [11] = saved_gear[11], [12] = saved_gear[12] }
+s.fire("PLAYER_EQUIPMENT_CHANGED", 16, true)
+eq(emily.slots[16], nil, "taking off the dagger empties the slot")
+eq(emily.loc.equipped[2207], nil, "and drops it from the equipped counts")
+world.gear = {}
 
 -- loot 10 ore, sell the linen, earn money
 world.bags[0][3] = item(2770, "Copper Ore", 10)

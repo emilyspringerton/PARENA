@@ -1442,6 +1442,11 @@ test-reflux-wow: .parena-bootstrap runtime/wow/reflux_host.lua tests/reflux_wow/
 	@# COV-REFLUX-IDS: the Collection's reserved action-type range, 2000-2999, ten per addon.
 	./.parena-bootstrap build stdlib/collection/ids.prn -o $(REFLUX_WOW_OUT)/ids.lua
 	$(LUA51) tests/reflux_wow/ids_test.lua $(REFLUX_WOW_OUT)/ids.lua
+	@# The gear ledger (tools/hoard): Fafnir's Bed's SavedVariables -> the JSON the page reads and the CSV.
+	./.parena-bootstrap build stdlib/collection/ledger.prn -o $(REFLUX_WOW_OUT)/ledger.lua
+	rm -rf $(REFLUX_WOW_OUT)/ledger && mkdir -p $(REFLUX_WOW_OUT)/ledger
+	$(LUA51) tests/reflux_wow/ledger_test.lua runtime/wow/ledger_export.lua runtime/wow/journal_reader.lua \
+		$(REFLUX_WOW_OUT)/ledger.lua $(REFLUX_WOW_OUT)/ledger $(LUA51)
 	@# COV-6b: the external SavedVariables reader, on journals the real journal module wrote...
 	rm -rf $(REFLUX_WOW_OUT)/reader && mkdir -p "$(REFLUX_WOW_OUT)/reader/wtf/Account/1234#1/Realm Name/Emily/SavedVariables"
 	$(LUA51) tests/reflux_wow/journal_reader_test.lua runtime/wow/reflux_host.lua $(REFLUX_WOW_OUT)/journal.lua \

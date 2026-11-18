@@ -55,4 +55,8 @@
  * established. */
 const char *emit_ts(Arena *arena, Node *program, const char **out_error);
 
+/* emit_js -- emit_ts with every type annotation left out: plain JavaScript (an ES module) a browser loads
+ * directly, no TypeScript toolchain needed. `-o x.js`. */
+const char *emit_js(Arena *arena, Node *program, const char **out_error);
+
 #endif /* PARENA_EMIT_TS_H */
