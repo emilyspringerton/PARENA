@@ -54,7 +54,7 @@ should-try-same-origin 3 = 1
 
 # probe-timeout-ms candidate configured-ms
 probe-timeout-ms 1 0 = 1000
-probe-timeout-ms 0 0 = 1500
+probe-timeout-ms 0 0 = 5000
 probe-timeout-ms 2 0 = 4000
 probe-timeout-ms 1 250 = 250
 probe-timeout-ms 2 50 = 100

@@ -39,7 +39,7 @@ Some details:
   from anywhere else does not: a browser would ask that visitor for local-network access, and a stranger's localhost is
   not this deployment's IDUNA. A developer can force it either way with `IDUNA_LOCAL_FIRST=1|0` (native) or
   localStorage `iduna_local_first` (browser).
-- **Timeouts.** Local 1000 ms, own origin 1500 ms, cloud 4000 ms. `IDUNA_PROBE_TIMEOUT_MS` overrides all three,
+- **Timeouts.** Local 1000 ms, cloud 4000 ms, own origin 5000 ms (it just served the page, so slow means busy). `IDUNA_PROBE_TIMEOUT_MS` overrides all three,
   clamped to 100-30000 ms.
 - **Cache.** A verified choice is reused for 10 minutes. An unverified one is re-checked after 15 s, so an IDUNA started
   a moment later is found on the next page.
