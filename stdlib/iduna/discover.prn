@@ -95,13 +95,16 @@
     (if (= cand 1) 1000 (if (= cand 0) 5000 4000))))
 
 ;; ---- the session cache -------------------------------------------------------------------------------------------------
-;; A verified choice is reused for ttl-ms. An unverified one (nothing answered, so the cloud is merely attempted) is
-;; re-checked after at most 15 s, so an IDUNA started a moment later is found on the next page. A negative age (the
-;; clock moved back) is never fresh.
-(defn cache-fresh [(age-ms : I32) (ttl-ms : I32) (verified : I32)] : I32
+;; A verified choice is reused for ttl-ms, except a LOCAL one, at most 60 s: a developer starts and stops a local IDUNA,
+;; and pages must not keep pointing at a stopped one for long. An unverified one (nothing answered, so the cloud is merely
+;; attempted) is re-checked after at most 15 s, so an IDUNA started a moment later is found on the next page. A negative
+;; age (the clock moved back) is never fresh. cand is the candidate the choice came from (cand-same-origin ...).
+(defn cache-fresh [(age-ms : I32) (ttl-ms : I32) (verified : I32) (cand : I32)] : I32
   (if (< age-ms 0) 0
     (if (= verified 1)
-      (if (< age-ms ttl-ms) 1 0)
+      (if (= cand 1)
+        (if (< age-ms (if (< ttl-ms 60000) ttl-ms 60000)) 1 0)
+        (if (< age-ms ttl-ms) 1 0))
       (if (< age-ms (if (< ttl-ms 15000) ttl-ms 15000)) 1 0))))
 
 ;; When nothing answered: attempt the cloud.

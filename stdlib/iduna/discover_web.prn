@@ -107,11 +107,14 @@
 (defn idunaForget [] : Unit
   (set! st-result null))
 
+(defn cand-of-source [(s : String)] : I32
+  (if (= s "same-origin") (cand-same-origin) (if (= s "local") (cand-local) (cand-cloud))))
+
 (defn cached-ok [(c : Any)] : Bool
   (if (js/null? c) false
     (if (not (= (js/get c "key") st-key)) false
       (= (cache-fresh (- (now-ms) (js/get c "at")) (opt-number st-opts "ttlMs" 600000.0)
-                      (if (js/get c "verified") 1 0))
+                      (if (js/get c "verified") 1 0) (cand-of-source (js/get c "source")))
          1))))
 
 (defn idunaDiscover [(opts : Any)] : Any

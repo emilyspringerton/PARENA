@@ -27,7 +27,7 @@ static int call_rule(const char *fn, int n, const int *a, int *out) {
     if (strcmp(fn, "should-try-local") == 0) { ARGS(2); *out = should_try_local(a[0], a[1]); return 1; }
     if (strcmp(fn, "should-try-same-origin") == 0) { ARGS(1); *out = should_try_same_origin(a[0]); return 1; }
     if (strcmp(fn, "probe-timeout-ms") == 0) { ARGS(2); *out = probe_timeout_ms(a[0], a[1]); return 1; }
-    if (strcmp(fn, "cache-fresh") == 0) { ARGS(3); *out = cache_fresh(a[0], a[1], a[2]); return 1; }
+    if (strcmp(fn, "cache-fresh") == 0) { ARGS(4); *out = cache_fresh(a[0], a[1], a[2], a[3]); return 1; }
     if (strcmp(fn, "fallback-source") == 0) { ARGS(0); *out = fallback_source(); return 1; }
 #undef ARGS
     return 0;

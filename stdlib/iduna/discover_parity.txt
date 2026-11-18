@@ -61,14 +61,18 @@ probe-timeout-ms 2 50 = 100
 probe-timeout-ms 0 99999 = 30000
 probe-timeout-ms 2 -5 = 4000
 
-# cache-fresh age-ms ttl-ms verified
-cache-fresh 0 600000 1 = 1
-cache-fresh 599999 600000 1 = 1
-cache-fresh 600000 600000 1 = 0
-cache-fresh -1 600000 1 = 0
-cache-fresh 14999 600000 0 = 1
-cache-fresh 15000 600000 0 = 0
-cache-fresh 2999 3000 0 = 1
-cache-fresh 5000 3000 0 = 0
+# cache-fresh age-ms ttl-ms verified candidate (a verified local choice lives at most 60 s)
+cache-fresh 0 600000 1 0 = 1
+cache-fresh 599999 600000 1 2 = 1
+cache-fresh 600000 600000 1 0 = 0
+cache-fresh -1 600000 1 2 = 0
+cache-fresh 14999 600000 0 2 = 1
+cache-fresh 15000 600000 0 2 = 0
+cache-fresh 2999 3000 0 2 = 1
+cache-fresh 5000 3000 0 2 = 0
+cache-fresh 59999 600000 1 1 = 1
+cache-fresh 60000 600000 1 1 = 0
+cache-fresh 30000 20000 1 1 = 0
+cache-fresh 19999 20000 1 1 = 1
 
 fallback-source = 2
