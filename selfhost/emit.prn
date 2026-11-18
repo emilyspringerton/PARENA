@@ -256,7 +256,7 @@
       (vec/push! &parts "arena_strdup(")
       (vec/push! &parts arena-ref)
       (vec/push! &parts ", \"")
-      (vec/push! &parts lit-text)
+      (vec/push! &parts (escape-c-string lit-text dest))
       (vec/push! &parts "\", ")
       (vec/push! &parts (string/i32-to-string (string/length lit-text) dest))
       (vec/push! &parts ")")
@@ -1879,6 +1879,25 @@
         (mangle fn-text dest)
         (mangle (vec/get &parts (- n 1)) dest)))))
 
+;; escape-c-string -- re-escapes a lexed string literal's raw bytes for a C string literal, matching src/emit.c's
+;; NODE_STRING path: the lexer decodes \n \t \r \" \ into raw bytes, so a quote, backslash, newline, tab or CR
+;; must be written back as its escape or gcc rejects the emitted C ("missing terminating \" character").
+(defn escape-c-string [(s : String @ Region) (dest : Arena @ Region)] : String @ Region
+  (let [bs (string/char-from-code 92 dest)]
+  (loop [i 0 acc ""]
+    (if (>= i (string/length s))
+      acc
+      (let [c (string/char-at s i)]
+        (recur (+ i 1)
+               (string/concat acc
+                              (if (= c 34) (string/concat bs "\"" dest)
+                                (if (= c 92) (string/concat bs bs dest)
+                                  (if (= c 10) (string/concat bs "n" dest)
+                                    (if (= c 9) (string/concat bs "t" dest)
+                                      (if (= c 13) (string/concat bs "r" dest)
+                                        (string/substring s i (+ i 1) dest))))))
+                              dest)))))))
+
 ;; emit-string-literal -- real, narrow `"lit"` -> `"lit"` re-wrap
 ;; (2026-08-28), the SAME real, honest, no-re-escaping convention
 ;; emit-alloc-call's own literal-string argument already relies on --
@@ -1891,7 +1910,7 @@
   (let [parts (vec/new dest)]
     (do
       (vec/push! &parts "\"")
-      (vec/push! &parts (get-field node :text))
+      (vec/push! &parts (escape-c-string (get-field node :text) dest))
       (vec/push! &parts "\"")
       (emit-join-all &parts dest))))
 
