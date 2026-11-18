@@ -1798,3 +1798,8 @@ test-forgedlevel: build
 	$(CC) -std=c99 -Wall -Wextra -pedantic -Werror -I runtime -I tests tests/test_forgedlevel.c \
 		runtime/parena_runtime.c -o /tmp/test_forgedlevel_bin -lm
 	/tmp/test_forgedlevel_bin
+
+# test-js-target -- `parena build x.prn -o x.js`: the TypeScript emitter, unannotated (tests/js_target).
+test-js-target: .parena-bootstrap
+	bash tests/js_target/js_target_test.sh ./.parena-bootstrap
+.PHONY: test-js-target

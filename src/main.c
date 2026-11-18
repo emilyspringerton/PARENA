@@ -329,11 +329,16 @@ static int cmd_build(const char **paths, size_t path_count, const char *out_path
     int is_java_target = out_path_len >= 5 && strcmp(out_path + out_path_len - 5, ".java") == 0;
     int is_llvm_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".ll") == 0;
     int is_lua_target = out_path_len >= 4 && strcmp(out_path + out_path_len - 4, ".lua") == 0;
+    /* `-o output.js`: the TypeScript emitter with the annotations left out (emit_ts.h), so a browser page needs
+       no TypeScript toolchain (no Node) between PARENA and the browser. */
+    int is_js_target = out_path_len >= 3 && strcmp(out_path + out_path_len - 3, ".js") == 0;
 
     const char *emit_err = NULL;
     const char *emitted_source;
     if (is_ts_target) {
         emitted_source = emit_ts(&arena, program, &emit_err);
+    } else if (is_js_target) {
+        emitted_source = emit_js(&arena, program, &emit_err);
     } else if (is_java_target) {
         const char *class_name = java_class_name_from_path(&arena, out_path);
         const char *package_name = java_package_name_from_path(&arena, out_path);
