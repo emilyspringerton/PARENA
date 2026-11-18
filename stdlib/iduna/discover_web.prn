@@ -1,0 +1,251 @@
+;; stdlib/iduna/discover_web.prn -- the browser half of IDUNA discovery: which IDUNA should this page talk to?
+;;
+;; Built WITH the rules into one JavaScript module (no Node anywhere):
+;;   parena build stdlib/iduna/discover.prn stdlib/iduna/discover_web.prn -o iduna-discover.js
+;; WOTAN serves that file as /js/iduna-discover.js; js/iduna-sso.js imports it.
+;;
+;;   idunaDiscover(opts) -> Promise of the choice. Each candidate (iduna/discover.prn: the page's own origin, the local
+;;     IDUNA, the cloud IDUNA) gets one GET <base>/health with that candidate's timeout, one at a time, in the rules'
+;;     order; the first that answers as IDUNA wins. When none does, the result is the cloud IDUNA, ATTEMPTED and
+;;     unverified, with `error` saying what each candidate did. Concurrent callers share one discovery, and the choice
+;;     is reused for the page's life while cache-fresh says so.
+;;   idunaForget()  drops the remembered choice, so the next call probes again (a call to the chosen IDUNA failed).
+;;
+;; opts (all optional; the host reads them from its own config):
+;;   localUrl    default http://localhost:8080 (IDUNA's own IDUNA_ADDR and BASE_URL defaults)
+;;   cloudUrl    default https://iam.okemily.com (EMILY gitops 92-iduna-routes.yaml)
+;;   timeoutMs   one timeout for every probe; 0 = the rules' per-candidate defaults
+;;   ttlMs       how long a verified choice is reused (default 600000, 10 min)
+;;   localFirst  "1" / "0": the developer's override of whether this page probes the local IDUNA
+;;   cached      a result this module returned before (the host keeps it in sessionStorage across pages)
+;;   fresh       true: ignore every cache and probe now
+;; The result: {source: "same-origin" | "local" | "cloud", base: "" for the page's own origin or the IDUNA URL,
+;;   loginUrl: the SSO login page to send a "Sign in" link to (append URLSearchParams), verified, error, checks, at, key}.
+;;
+;; Storage stays with the host (sessionStorage can throw, and PARENA has no try); this module decides whether a cached
+;; choice is still good. A page that is not IDUNA's own origin can only read an IDUNA that allows its origin (IDUNA's
+;; IDUNA_CORS_ORIGINS), so "no answer" covers "does not allow this page" too, and the error says so.
+
+(module iduna/discover-web)
+(import iduna/discover)
+(export idunaDiscover idunaForget)
+
+(def st-promise null)      ; the discovery in flight, shared by concurrent callers
+(def st-resolve null)
+(def st-result null)       ; the last result, for this page's life
+(def st-opts null)
+(def st-local "")
+(def st-cloud "")
+(def st-key "")
+(def st-configured 0)
+(def st-try-same 0)
+(def st-try-local 0)
+(def st-cand -1)
+(def st-path 0)            ; which of the candidate's health paths is being tried
+(def st-url "")
+(def st-ms 0)
+(def st-t0 0.0)
+(def st-ctrl null)
+(def st-timer null)
+(def st-status 0)
+(def st-timed-out 0)
+(def st-checks null)
+(def st-why "")
+
+(defn win [] : Any (js/global "window"))
+(defn now-ms [] : F64 (js/call (js/global "Date") "now"))
+
+;; ---- config ----------------------------------------------------------------------------------------------------------
+(defn opt-get [(opts : Any) (k : String)] : Any
+  (if (js/null? opts) null (js/get opts k)))
+
+(defn opt-string [(opts : Any) (k : String) (fallback : String)] : String
+  (let [v (opt-get opts k)]
+    (if (js/null? v) fallback (if (= v "") fallback (str v)))))
+
+(defn opt-number [(opts : Any) (k : String) (fallback : F64)] : F64
+  (let [v (opt-get opts k)]
+    (if (js/null? v) fallback (js/call-fn (js/global "Number") v))))
+
+(defn no-trailing-slash [(u : String)] : String
+  (js/call u "replace" (js/new "RegExp" "/+$") ""))
+
+(defn local-first-opt [(v : String)] : I32
+  (if (= v "1") (opt-local-on) (if (= v "true") (opt-local-on)
+    (if (= v "0") (opt-local-off) (if (= v "false") (opt-local-off) (opt-default))))))
+
+;; ---- where this page lives -------------------------------------------------------------------------------------------
+(defn loopback-host [(h : String)] : I32
+  (if (= h "localhost") 1
+    (if (= h "[::1]") 1
+      (if (js/call h "startsWith" "127.") 1
+        (if (js/call h "endsWith" ".localhost") 1 0)))))
+
+(defn page-kind [] : I32
+  (let [loc (js/get (win) "location")]
+    (if (= (js/get loc "protocol") "file:")
+      (page-file)
+      (if (= (loopback-host (js/get loc "hostname")) 1) (page-loopback) (page-other)))))
+
+(defn page-origin [] : String (js/get (js/get (win) "location") "origin"))
+
+(defn cand-name [(cand : I32)] : String
+  (if (= cand (cand-same-origin)) "same-origin" (if (= cand (cand-local)) "local" "cloud")))
+
+(defn cand-label [(cand : I32)] : String
+  (if (= cand (cand-same-origin)) (str "this site " (page-origin))
+    (if (= cand (cand-local)) (str "local " st-local) (str "cloud " st-cloud))))
+
+;; the URL a candidate's API calls start with: "" keeps them on the page's own origin
+(defn cand-base [(cand : I32)] : String
+  (if (= cand (cand-same-origin)) "" (if (= cand (cand-local)) st-local st-cloud)))
+
+(defn login-url [(base : String)] : String
+  (str (if (= base "") (page-origin) base) "/api/v1/auth/sso/login?"))
+
+;; ---- the API ---------------------------------------------------------------------------------------------------------
+(defn idunaForget [] : Unit
+  (set! st-result null))
+
+(defn cand-of-source [(s : String)] : I32
+  (if (= s "same-origin") (cand-same-origin) (if (= s "local") (cand-local) (cand-cloud))))
+
+(defn cached-ok [(c : Any)] : Bool
+  (if (js/null? c) false
+    (if (not (= (js/get c "key") st-key)) false
+      (= (cache-fresh (- (now-ms) (js/get c "at")) (opt-number st-opts "ttlMs" 600000.0)
+                      (if (js/get c "verified") 1 0) (cand-of-source (js/get c "source")))
+         1))))
+
+(defn idunaDiscover [(opts : Any)] : Any
+  (if (not (js/null? st-promise))
+    st-promise
+    (start-or-reuse opts)))
+
+(defn start-or-reuse [(opts : Any)] : Any
+  (do
+    (set! st-opts opts)
+    (set! st-local (no-trailing-slash (opt-string opts "localUrl" "http://localhost:8080")))
+    (set! st-cloud (no-trailing-slash (opt-string opts "cloudUrl" "https://iam.okemily.com")))
+    (set! st-key (str st-local "|" st-cloud "|" (opt-string opts "localFirst" "") "|" (page-origin)))
+    (if (and (not (opt-get opts "fresh")) (cached-ok st-result))
+        (js/call (js/global "Promise") "resolve" st-result)
+        (if (and (not (opt-get opts "fresh")) (cached-ok (opt-get opts "cached")))
+          (do (set! st-result (opt-get opts "cached"))
+              (js/call (js/global "Promise") "resolve" st-result))
+          (do (set! st-configured (opt-number opts "timeoutMs" 0.0))
+              (set! st-try-same (should-try-same-origin (page-kind)))
+              (set! st-try-local (should-try-local (page-kind) (local-first-opt (opt-string opts "localFirst" ""))))
+              (set! st-cand -1)
+              (set! st-checks (js/array))
+              (set! st-why "")
+              (set! st-promise (js/new "Promise" (callback capture-resolve)))
+              (step-next)
+              st-promise)))))
+
+(defn capture-resolve [(resolve : Any) (reject : Any)] : Unit
+  (set! st-resolve resolve))
+
+;; ---- one candidate at a time -----------------------------------------------------------------------------------------
+(defn step-next [] : Unit
+  (do
+    (set! st-cand (next-candidate st-cand st-try-same st-try-local))
+    (set! st-path 0)
+    (if (= st-cand (cand-done)) (finish st-cloud (fallback-source) false) (probe-cand))))
+
+;; IDUNA answers its health at /health and /api/v1/health. A page's own origin may be IDUNA itself (IDUNA's WOTAN
+;; listener) or nginx sending only /api/ to IDUNA (WOTAN ops/nginx-wotan.conf), so it is asked at /api/v1/health first,
+;; then /health. A local or cloud base is IDUNA itself: /health, which every IDUNA release answers.
+(defn health-path-count [(cand : I32)] : I32
+  (if (= cand (cand-same-origin)) 2 1))
+
+(defn health-path [(cand : I32) (i : I32)] : String
+  (if (and (= cand (cand-same-origin)) (= i 0)) "/api/v1/health" "/health"))
+
+(defn http-url [(u : String)] : Bool
+  (or (js/call u "startsWith" "http://") (js/call u "startsWith" "https://")))
+
+(defn probe-cand [] : Unit
+  (do
+    (set! st-url (str (if (= st-cand (cand-same-origin)) (page-origin) (cand-base st-cand)) (health-path st-cand st-path)))
+    (set! st-ms (probe-timeout-ms st-cand st-configured))
+    (set! st-t0 (now-ms))
+    (if (http-url st-url) (probe-url) (do (set! st-status -1) (record (verdict-unreachable))))))
+
+(defn probe-url [] : Unit
+  (do
+    (set! st-status 0)
+    (set! st-timed-out 0)
+    (set! st-t0 (now-ms))
+    (set! st-ctrl (if (js/defined? "AbortController") (js/new "AbortController") null))
+    (set! st-timer (js/call-fn (js/global "setTimeout") (callback on-probe-timeout) st-ms))
+    (js/call
+      (js/call
+        (js/call
+          (js/call-fn (js/global "fetch") st-url
+                      (js/obj "cache" "no-store" "credentials" "omit" "redirect" "manual"
+                              "signal" (if (js/null? st-ctrl) null (js/get st-ctrl "signal"))))
+          "then" (callback on-probe-response))
+        "then" (callback on-probe-body))
+      "catch" (callback on-probe-error))))
+
+(defn on-probe-timeout [] : Unit
+  (do
+    (set! st-timed-out 1)
+    (when (not (js/null? st-ctrl)) (js/call st-ctrl "abort"))))
+
+(defn on-probe-response [(r : Any)] : Any
+  (do
+    (set! st-status (js/get r "status"))
+    (js/call r "text")))
+
+(defn says-iduna-text [(body : String)] : I32
+  (if (>= (js/call body "indexOf" "\"service\":\"iduna\"") 0)
+    (if (>= (js/call body "indexOf" "\"ok\":true") 0) 1 0)
+    0))
+
+(defn on-probe-body [(body : Any)] : Unit
+  (do
+    (js/call-fn (js/global "clearTimeout") st-timer)
+    (record (probe-verdict st-status (says-iduna-text (str body)) 0))))
+
+;; no response, an aborted one (the timer fired), or a body that never finished
+(defn on-probe-error [(e : Any)] : Unit
+  (do
+    (js/call-fn (js/global "clearTimeout") st-timer)
+    (record (probe-verdict st-status 0 st-timed-out))))
+
+(defn verdict-phrase [(v : I32)] : String
+  (if (= v (verdict-iduna)) "IDUNA"
+    (if (= v (verdict-not-iduna)) (str "answered HTTP " st-status ", but not as IDUNA")
+      (if (= v (verdict-timeout)) (str "no answer within " st-ms " ms")
+        (if (= st-status -1) "not an http(s) URL"
+          "no answer (not running, unreachable, or not allowing this page's origin)")))))
+
+(defn record [(v : I32)] : Unit
+  (do
+    (js/call st-checks "push"
+             (js/obj "candidate" (cand-name st-cand) "url" st-url "verdict" v "status" st-status
+                     "ms" (- (now-ms) st-t0)))
+    (if (= (verdict-usable v) 1)
+      (finish (cand-base st-cand) st-cand true)
+      (if (< (+ st-path 1) (health-path-count st-cand))
+        (do (set! st-path (+ st-path 1)) (probe-cand))
+        (do (set! st-why (str st-why " " (cand-label st-cand) ": " (verdict-phrase v) "."))
+            (step-next))))))
+
+(defn finish [(base : String) (cand : I32) (verified : Bool)] : Unit
+  (let [r (js/obj "source" (cand-name cand)
+                  "base" base
+                  "loginUrl" (login-url base)
+                  "verified" verified
+                  "error" (if verified "" (str "No IDUNA answered." st-why " Using the cloud IDUNA anyway."))
+                  "checks" st-checks
+                  "at" (now-ms)
+                  "key" st-key)
+        resolve st-resolve]
+    (do
+      (set! st-result r)
+      (set! st-promise null)
+      (set! st-resolve null)
+      (js/call-fn resolve r))))

@@ -22,8 +22,14 @@
      (inc! x) (dec! x) (add! x v) (sub! x v) (mul! x v)   compound assignment to a let/loop binding
      (+ a b c ...) likewise - * and or bit-and bit-or bit-xor    left-folded to binary form        */
 static Node *mk_list(Arena *arena, int line) { return node_new_compound(arena, NODE_LIST, line); }
+/* The text is copied into the arena: node_new_atom keeps the pointer it is given, and the gensyms below
+ * (`__dn<n>`, `__case<n>`) are built in stack buffers -- once those went out of scope the TS/JS output named
+ * the dotimes limit with whatever the stack held next (`let P???g = len(hs)`), found by tools/hoard/hoard_page.prn. */
 static Node *mk_sym(Arena *arena, const char *text, int line) {
-    return node_new_atom(arena, NODE_SYMBOL, text, strlen(text), line);
+    size_t n = strlen(text);
+    char *copy = (char *)arena_alloc(arena, n + 1);
+    memcpy(copy, text, n + 1);
+    return node_new_atom(arena, NODE_SYMBOL, copy, n, line);
 }
 static Node *mk_call2(Arena *arena, const char *head, Node *a, Node *b, int line) {
     Node *n = mk_list(arena, line);

@@ -5119,4 +5119,219 @@ static inline int slot_set_impl(int k, int v) { if (k >= 0 && k < PARENA_SLOTS) 
  * tests/test_json.c, tests/test_webdriver.c. */
 extern char *host_json_unescape(char *s, int start, int end, char *out);
 
+
+/* ---- stdlib/net/http_probe.prn host glue (2026-11-17) ----------------------------------------------------------------
+ * One bounded HTTP GET: is anything answering at host:port, and what does it say? Written for stdlib/iduna/discover.prn's
+ * local-first IDUNA discovery (founder 2026-11-17: "it checks to see if there is a local iduna and connects to that and
+ * if not it attempts to use cloud iduna"), where a missing server must cost a short, bounded wait. tcp_connect_impl's
+ * connect blocks (about 21 s against an address that drops packets) and tcp_read_impl waits 30 s on an idle peer: right
+ * for the programs they serve, wrong for a probe.
+ *
+ * http_probe_impl(host, port, path, timeout_ms) sends `GET path HTTP/1.0` (1.0, so the answer is never chunked) and
+ * returns the response's HTTP status, or 0 when no HTTP response came back: no such host, refused, reset, cut off by
+ * the deadline, or not HTTP at all. Everything after name resolution (the system resolver keeps its own timeouts)
+ * shares one deadline, timeout_ms from the call: the non-blocking connect is waited on with select(), and so is every
+ * read. When a name has several addresses ("localhost" is ::1 and 127.0.0.1), each attempt gets an equal share of the
+ * time left, so an address that never answers can't starve the next one. Windows retries a refused loopback connect
+ * for about a second, longer than a local probe's whole budget, and IDUNA_ADDR=127.0.0.1:8080 leaves ::1 refusing.
+ * http_probe_status_impl() repeats the last probe's status, http_probe_timed_out_impl() says whether it ran out of time,
+ * and http_probe_body_impl(dest) copies the last response body, at most HTTP_PROBE_BODY_MAX bytes (IDUNA's health answer
+ * is under 100), into dest.
+ * Plain HTTP only. There is no TLS on this path (see net/http.prn), so an https base is the caller's to handle.
+ * One process-wide result, like cururl and slots above: probes run one after another by design.
+ * POSIX and Windows share this code; only the socket type, close, the non-blocking switch, the "connect in progress"
+ * error and the clock differ. */
+#if !defined(PARENA_FREESTANDING)
+#ifndef _WIN32
+#include <sys/select.h>
+#include <sys/time.h>
+#endif
+#ifndef HTTP_PROBE_BODY_MAX
+#define HTTP_PROBE_BODY_MAX 4096
+#endif
+#define HTTP_PROBE_RAW_MAX (8192 + HTTP_PROBE_BODY_MAX) /* status line + headers + body we are willing to read */
+#ifdef MSG_NOSIGNAL
+#define HTTP_PROBE_SEND_FLAGS MSG_NOSIGNAL /* a server that hangs up first must not kill us with SIGPIPE */
+#else
+#define HTTP_PROBE_SEND_FLAGS 0
+#endif
+
+static int g_http_probe_timed_out = 0;
+static int g_http_probe_status = 0;
+static size_t g_http_probe_body_len = 0;
+static char g_http_probe_body[HTTP_PROBE_BODY_MAX + 1];
+static char g_http_probe_raw[HTTP_PROBE_RAW_MAX + 1];
+
+#ifdef _WIN32
+typedef SOCKET http_probe_sock_t;
+#define HTTP_PROBE_BAD_SOCK INVALID_SOCKET
+static inline void http_probe_close(http_probe_sock_t s) { closesocket(s); }
+static inline void http_probe_nonblock(http_probe_sock_t s) { u_long one = 1; ioctlsocket(s, FIONBIO, &one); }
+static inline int http_probe_in_progress(void) {
+    int e = WSAGetLastError();
+    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
+}
+static inline int http_probe_would_block(void) { return WSAGetLastError() == WSAEWOULDBLOCK; }
+static inline long long http_probe_now_ms(void) { return (long long)GetTickCount64(); }
+#else
+typedef int http_probe_sock_t;
+#define HTTP_PROBE_BAD_SOCK (-1)
+static inline void http_probe_close(http_probe_sock_t s) { close(s); }
+static inline void http_probe_nonblock(http_probe_sock_t s) {
+    int f = fcntl(s, F_GETFL, 0);
+    if (f >= 0) fcntl(s, F_SETFL, f | O_NONBLOCK);
+}
+static inline int http_probe_in_progress(void) { return errno == EINPROGRESS || errno == EINTR; }
+static inline int http_probe_would_block(void) { return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR; }
+static inline long long http_probe_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + (long long)(ts.tv_nsec / 1000000);
+}
+#endif
+
+/* Wait until s is readable (want_write 0) or writable (1) before deadline: 1 ready, 0 out of time, -1 failed. Windows
+ * reports a failed connect in the except set; POSIX reports it as writable with SO_ERROR set (the caller checks). */
+static inline int http_probe_wait(http_probe_sock_t s, int want_write, long long deadline) {
+    for (;;) {
+        long long left = deadline - http_probe_now_ms();
+        fd_set rw, ex;
+        struct timeval tv;
+        int r;
+        if (left <= 0) return 0;
+        FD_ZERO(&rw);
+        FD_ZERO(&ex);
+        FD_SET(s, &rw);
+        FD_SET(s, &ex);
+        tv.tv_sec = (long)(left / 1000);
+        tv.tv_usec = (long)((left % 1000) * 1000);
+        r = select((int)s + 1, want_write ? NULL : &rw, want_write ? &rw : NULL, &ex, &tv);
+        if (r > 0) return FD_ISSET(s, &rw) ? 1 : -1;
+        if (r == 0) continue; /* select's own rounding: loop back and let `left` decide */
+#ifndef _WIN32
+        if (errno == EINTR) continue;
+#endif
+        return -1;
+    }
+}
+
+static inline int http_probe_sock_error(http_probe_sock_t s) {
+    int err = 0;
+    socklen_t len = (socklen_t)sizeof err;
+    if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char *)&err, &len) != 0) return -1;
+    return err;
+}
+
+/* Connect to host:port before deadline, trying each address in turn with an equal share of the time left. */
+static inline http_probe_sock_t http_probe_connect(const char *host, int port, long long deadline) {
+    struct addrinfo hints, *res = NULL, *rp;
+    char portstr[16];
+    long long addrs_left = 0;
+    http_probe_sock_t s = HTTP_PROBE_BAD_SOCK;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    snprintf(portstr, sizeof portstr, "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || res == NULL) return HTTP_PROBE_BAD_SOCK;
+    for (rp = res; rp != NULL; rp = rp->ai_next) addrs_left++;
+    for (rp = res; rp != NULL; rp = rp->ai_next, addrs_left--) {
+        long long now = http_probe_now_ms();
+        long long share_end;
+        if (now >= deadline) break;
+        share_end = now + (deadline - now) / addrs_left;
+        s = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (s == HTTP_PROBE_BAD_SOCK) continue;
+        http_probe_nonblock(s);
+        if (connect(s, rp->ai_addr, (int)rp->ai_addrlen) == 0) break; /* loopback can connect at once */
+        if (http_probe_in_progress() && http_probe_wait(s, 1, share_end) == 1 && http_probe_sock_error(s) == 0) break;
+        http_probe_close(s);
+        s = HTTP_PROBE_BAD_SOCK;
+    }
+    freeaddrinfo(res);
+    return s;
+}
+
+static inline int http_probe_run(const char *host, int port, const char *path, int timeout_ms) {
+    long long deadline;
+    http_probe_sock_t s;
+    char req[1024];
+    size_t len = 0, sent = 0;
+    int n, status = 0;
+    const char *body, *sp, *hdr_end;
+    g_http_probe_timed_out = 0;
+    g_http_probe_body_len = 0;
+    g_http_probe_body[0] = '\0';
+    if (host == NULL || host[0] == '\0' || port <= 0 || port > 65535) return 0;
+    if (path == NULL || path[0] != '/') path = "/";
+    if (timeout_ms < 1) timeout_ms = 1;
+#ifdef _WIN32
+    if (parena_wsa_start() != 0) return 0;
+#endif
+    deadline = http_probe_now_ms() + timeout_ms;
+    s = http_probe_connect(host, port, deadline);
+    if (s == HTTP_PROBE_BAD_SOCK) {
+        g_http_probe_timed_out = http_probe_now_ms() >= deadline;
+        return 0;
+    }
+    n = snprintf(req, sizeof req,
+                 "GET %s HTTP/1.0\r\nHost: %s:%d\r\nAccept: application/json\r\nUser-Agent: parena-http-probe\r\n"
+                 "Connection: close\r\n\r\n", path, host, port);
+    if (n <= 0 || (size_t)n >= sizeof req) { http_probe_close(s); return 0; }
+    while (sent < (size_t)n) {
+        int w = (int)send(s, req + sent, (int)((size_t)n - sent), HTTP_PROBE_SEND_FLAGS);
+        if (w > 0) { sent += (size_t)w; continue; }
+        if (w < 0 && http_probe_would_block()) {
+            int r = http_probe_wait(s, 1, deadline);
+            if (r == 1) continue;
+            if (r == 0) g_http_probe_timed_out = 1;
+        }
+        http_probe_close(s);
+        return 0;
+    }
+    for (;;) {
+        int r;
+        if (len >= HTTP_PROBE_RAW_MAX) break; /* enough to judge; the rest is never read */
+        r = (int)recv(s, g_http_probe_raw + len, (int)(HTTP_PROBE_RAW_MAX - len), 0);
+        if (r > 0) { len += (size_t)r; continue; }
+        if (r == 0) break; /* the server closed: the whole answer is here */
+        if (http_probe_would_block()) {
+            int w = http_probe_wait(s, 0, deadline);
+            if (w == 1) continue;
+            if (w == 0) g_http_probe_timed_out = 1;
+        }
+        break; /* out of time, or reset */
+    }
+    http_probe_close(s);
+    g_http_probe_raw[len] = '\0';
+    /* "HTTP/1.x NNN reason\r\n headers \r\n\r\n body": no status until the headers are complete */
+    if (len < 12 || strncmp(g_http_probe_raw, "HTTP/", 5) != 0) return 0;
+    sp = strchr(g_http_probe_raw, ' ');
+    hdr_end = strstr(g_http_probe_raw, "\r\n\r\n");
+    if (sp == NULL || hdr_end == NULL || sp > hdr_end) return 0;
+    if (!isdigit((unsigned char)sp[1]) || !isdigit((unsigned char)sp[2]) || !isdigit((unsigned char)sp[3])) return 0;
+    status = (sp[1] - '0') * 100 + (sp[2] - '0') * 10 + (sp[3] - '0');
+    body = hdr_end + 4;
+    g_http_probe_body_len = len - (size_t)(body - g_http_probe_raw);
+    if (g_http_probe_body_len > HTTP_PROBE_BODY_MAX) g_http_probe_body_len = HTTP_PROBE_BODY_MAX;
+    memcpy(g_http_probe_body, body, g_http_probe_body_len);
+    g_http_probe_body[g_http_probe_body_len] = '\0';
+    return status;
+}
+
+static inline int http_probe_impl(const char *host, int port, const char *path, int timeout_ms) {
+    g_http_probe_status = http_probe_run(host, port, path, timeout_ms);
+    return g_http_probe_status;
+}
+
+static inline int http_probe_status_impl(void) { return g_http_probe_status; }
+static inline int http_probe_timed_out_impl(void) { return g_http_probe_timed_out; }
+
+static inline char *http_probe_body_impl(Arena *dest) {
+    char *out = (char *)arena_alloc(dest, g_http_probe_body_len + 1);
+    memcpy(out, g_http_probe_body, g_http_probe_body_len);
+    out[g_http_probe_body_len] = '\0';
+    return out;
+}
+#endif /* !PARENA_FREESTANDING -- end of net/http_probe.prn host glue */
+
 #endif /* PARENA_RUNTIME_H */

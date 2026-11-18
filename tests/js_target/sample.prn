@@ -1,0 +1,23 @@
+;; tests/js_target/sample.prn -- the `-o *.js` target's fixture: module state, typed params and return, a local let,
+;; a dotimes whose limit is an expression (it needs a generated temporary), a callback and the js bridge.
+(module sample)
+
+(def total 0)
+
+(defn len [(a : Any)] : I32 (js/get a "length"))
+
+(defn sum-lengths [(xs : Any)] : I32
+  (let [acc 0]
+    (do (dotimes [i (len xs)]
+          (set! acc (+ acc (len (js/aget xs i)))))
+        acc)))
+
+(defn label [(n : I32) (s : String)] : String
+  (let [k (+ n 1)]
+    (str s ": " k)))
+
+(defn on-click [(e : Any)] : Unit
+  (set! total (+ total 1)))
+
+(defn wire [(b : Any)] : Unit
+  (js/call b "addEventListener" "click" (callback on-click)))
