@@ -1,0 +1,180 @@
+;; stdlib/shankpit/groove_combat_rules.prn -- groove combat: close-quarters fighting that is timed to the music.
+;;
+;; Founder 2026-11-18: "bring in combat affordances i want to add smooth criminal style fighting ... all PARENA
+;; powered all mods first all reflux powered", then "bring it all into the construct and zombie sandbox
+;; environments with real player facing affordances". The style asked for is dance-fighting: sharp leans, spins,
+;; snap kicks, glides that slip a hit, and a held freeze that ends a combo. The moves below are original; nothing
+;; here copies any routine.
+;;
+;; The beat is MIXFORGE's: the host passes the playing deck's beat phase (audio_dsp_gen's deck_beat_phase, scaled
+;; to 0..999 per beat). A move that starts on the beat hits harder, builds the combo and fills the style meter;
+;; off the beat it still works, it just does not grow. With no deck playing the host passes the engine's own
+;; fallback tempo, so the grading never switches off.
+;;
+;; All I32, total, no state -- the same pure-evaluation contract as anim_rules.prn. The host
+;; (SHANKPIT packages/simulation/groove_combat.h) keeps each fighter's move, tick, combo and style, applies damage
+;; and dispatches the REFLUX actions (1200-1299). Every number here is a tunable, not a measurement: retune in this
+;; file and `make regen-groove-combat`.
+(module shankpit/groove-combat-rules)
+(export gc-move-count gc-move-none gc-move-jab gc-move-snap-kick gc-move-spin gc-move-lean gc-move-glide
+        gc-move-sweep gc-move-freeze
+        gc-startup-ticks gc-active-ticks gc-recovery-ticks gc-total-ticks gc-phase
+        gc-damage gc-range-milli gc-arc-deg gc-knockback-milli gc-knockdown gc-iframes gc-hits-all-around
+        gc-grade gc-grade-perfect gc-grade-good gc-grade-off gc-grade-mult-pct
+        gc-can-chain gc-can-cancel gc-combo-next gc-combo-mult-pct
+        gc-style-gain gc-style-decay gc-style-max gc-freeze-cost gc-freeze-radius-milli gc-freeze-stagger-ticks
+        gc-final-damage gc-move-for-input gc-anim-clip gc-move-name-id)
+
+;; ---- the moves ----------------------------------------------------------------------------------------------------
+;; 0 NONE   1 JAB        quick straight strike, the combo starter
+;;          2 SNAP_KICK  forward kick with reach and knockback
+;;          3 SPIN       a full turn with an arm out: hits everything around you
+;;          4 LEAN       a steep forward lean: ducks high attacks, then a shoulder check
+;;          5 GLIDE      a smooth backward glide: invulnerable while it runs, no damage
+;;          6 SWEEP      low kick that knocks a standing target down
+;;          7 FREEZE     a held pose that ends a combo: costs style, staggers everyone near you
+(defn gc-move-count [] : I32 8)
+(defn gc-move-none [] : I32 0)
+(defn gc-move-jab [] : I32 1)
+(defn gc-move-snap-kick [] : I32 2)
+(defn gc-move-spin [] : I32 3)
+(defn gc-move-lean [] : I32 4)
+(defn gc-move-glide [] : I32 5)
+(defn gc-move-sweep [] : I32 6)
+(defn gc-move-freeze [] : I32 7)
+
+;; ---- frame data (engine ticks; the lobby runs 60) -----------------------------------------------------------------
+;; startup: before the hit can land.  active: the hit window.  recovery: committed, but a chain can cancel it.
+(defn gc-startup-ticks [(m : I32)] : I32
+  (if (= m 1) 4 (if (= m 2) 7 (if (= m 3) 6 (if (= m 4) 5 (if (= m 5) 1 (if (= m 6) 8 (if (= m 7) 10 0))))))))
+
+(defn gc-active-ticks [(m : I32)] : I32
+  (if (= m 1) 3 (if (= m 2) 4 (if (= m 3) 12 (if (= m 4) 4 (if (= m 5) 18 (if (= m 6) 5 (if (= m 7) 6 0))))))))
+
+(defn gc-recovery-ticks [(m : I32)] : I32
+  (if (= m 1) 8 (if (= m 2) 14 (if (= m 3) 16 (if (= m 4) 10 (if (= m 5) 8 (if (= m 6) 18 (if (= m 7) 20 0))))))))
+
+(defn gc-total-ticks [(m : I32)] : I32
+  (+ (gc-startup-ticks m) (+ (gc-active-ticks m) (gc-recovery-ticks m))))
+
+;; 0 startup, 1 active, 2 recovery, 3 done -- for tick t since the move began (t >= 0).
+(defn gc-phase [(m : I32) (t : I32)] : I32
+  (if (= m 0) 3
+    (if (< t (gc-startup-ticks m)) 0
+      (if (< t (+ (gc-startup-ticks m) (gc-active-ticks m))) 1
+        (if (< t (gc-total-ticks m)) 2 3)))))
+
+;; ---- what a hit does ------------------------------------------------------------------------------------------------
+;; Base damage in the engine's health units (a player has 100). Zombies take the same numbers.
+(defn gc-damage [(m : I32)] : I32
+  (if (= m 1) 9 (if (= m 2) 16 (if (= m 3) 12 (if (= m 4) 11 (if (= m 6) 10 (if (= m 7) 6 0)))))))
+
+;; Reach in engine units x 1000 (a player is 6.47 units tall; the knife reaches ~15.8, physics.h MELEE_RANGE_SQ):
+;; empty-handed moves reach less than a blade, the kick reaches furthest.
+(defn gc-range-milli [(m : I32)] : I32
+  (if (= m 1) 9000 (if (= m 2) 13000 (if (= m 3) 11000 (if (= m 4) 8000 (if (= m 6) 11000 0))))))
+
+;; Half-angle of the hit cone in front of the fighter; a spin hits all around (180 = full circle).
+(defn gc-arc-deg [(m : I32)] : I32
+  (if (= m 1) 35 (if (= m 2) 30 (if (= m 3) 180 (if (= m 4) 45 (if (= m 6) 60 0))))))
+
+(defn gc-hits-all-around [(m : I32)] : I32 (if (>= (gc-arc-deg m) 180) 1 0))
+
+;; Push on the victim, units/tick x 1000, along the attacker's facing (or outward, for a spin).
+(defn gc-knockback-milli [(m : I32)] : I32
+  (if (= m 1) 60 (if (= m 2) 260 (if (= m 3) 180 (if (= m 4) 200 (if (= m 6) 40 0))))))
+
+;; 1 when the hit puts a standing target on the ground (the host starts the ragdoll/get-up).
+(defn gc-knockdown [(m : I32)] : I32 (if (= m 6) 1 0))
+
+;; Ticks of invulnerability from the move's start: the glide slips everything, the lean slips a high hit early.
+(defn gc-iframes [(m : I32)] : I32 (if (= m 5) 18 (if (= m 4) 5 0)))
+
+;; ---- on the beat ----------------------------------------------------------------------------------------------------
+;; phase-milli: where the move started inside the current beat, 0..999. Distance to the nearest beat decides the grade.
+(defn gc-grade-perfect [] : I32 2)
+(defn gc-grade-good [] : I32 1)
+(defn gc-grade-off [] : I32 0)
+
+(defn gc-beat-distance [(phase-milli : I32)] : I32
+  (let [p (if (< phase-milli 0) 0 (if (> phase-milli 999) 999 phase-milli))]
+    (if (< p 500) p (- 1000 p))))
+
+(defn gc-grade [(phase-milli : I32)] : I32
+  (let [d (gc-beat-distance phase-milli)]
+    (if (<= d 80) 2 (if (<= d 180) 1 0))))
+
+(defn gc-grade-mult-pct [(grade : I32)] : I32 (if (= grade 2) 150 (if (= grade 1) 115 100)))
+
+;; ---- combos ---------------------------------------------------------------------------------------------------------
+;; Which move may follow which: jab -> kick/spin/lean/sweep, kick -> spin/sweep, lean -> spin/kick,
+;; sweep/spin -> freeze, glide -> anything but another glide. Freeze ends the chain.
+(defn gc-can-chain [(from : I32) (to : I32)] : I32
+  (if (or (= to 0) (= from 7)) 0
+    (if (= from 0) 1
+      (if (= from 1) (if (or (= to 2) (or (= to 3) (or (= to 4) (= to 6)))) 1 0)
+        (if (= from 2) (if (or (= to 3) (= to 6)) 1 0)
+          (if (= from 4) (if (or (= to 3) (= to 2)) 1 0)
+            (if (or (= from 3) (= from 6)) (if (= to 7) 1 0)
+              (if (= from 5) (if (= to 5) 0 1) 0))))))))
+
+;; A new move may start at tick t of the current one when the current one is done, or when it is recovering and the
+;; chain allows it. A glide can also be cancelled out of startup -- the evade has to be there when you need it.
+(defn gc-can-cancel [(from : I32) (to : I32) (t : I32)] : I32
+  (let [ph (gc-phase from t)]
+    (if (= ph 3) 1
+      (if (and (= to 5) (= ph 0)) 1
+        (if (and (= ph 2) (= (gc-can-chain from to) 1)) 1 0)))))
+
+;; The combo count after starting `to` from `from` with this grade: on-beat chained moves grow it, an off-beat
+;; move or a broken chain starts it again at 1 (0 for a glide, which is not an attack).
+(defn gc-combo-next [(combo : I32) (from : I32) (to : I32) (grade : I32) (chained : I32)] : I32
+  (if (= to 5) combo
+    (if (and (= chained 1) (and (> grade 0) (= (gc-can-chain from to) 1))) (+ combo 1) 1)))
+
+;; +10% per combo step past the first, capped at +50%.
+(defn gc-combo-mult-pct [(combo : I32)] : I32
+  (let [steps (if (< combo 1) 0 (- combo 1))]
+    (+ 100 (* 10 (if (> steps 5) 5 steps)))))
+
+(defn gc-final-damage [(m : I32) (grade : I32) (combo : I32)] : I32
+  (/ (* (* (gc-damage m) (gc-grade-mult-pct grade)) (gc-combo-mult-pct combo)) 10000))
+
+;; ---- style ----------------------------------------------------------------------------------------------------------
+(defn gc-style-max [] : I32 1000)
+
+;; Style earned by starting a move: on-beat moves pay, a perfect pays double, longer combos pay more.
+(defn gc-style-gain [(m : I32) (grade : I32) (combo : I32)] : I32
+  (if (or (= m 0) (= m 7)) 0
+    (* (if (= grade 2) 2 (if (= grade 1) 1 0)) (+ 40 (* 12 (if (> combo 6) 6 combo))))))
+
+;; Lost per tick while not fighting (the host calls this every tick no move is running).
+(defn gc-style-decay [] : I32 2)
+
+(defn gc-freeze-cost [] : I32 600)
+(defn gc-freeze-radius-milli [] : I32 30000)
+(defn gc-freeze-stagger-ticks [] : I32 90)
+
+;; ---- input ----------------------------------------------------------------------------------------------------------
+;; The player-facing mapping (host buttons are 0/1):
+;;   attack                 JAB          attack + forward   SNAP_KICK     attack + crouch   SWEEP
+;;   style                  SPIN         style + forward    LEAN          style + back      GLIDE
+;;   attack + style         FREEZE (only with style >= gc-freeze-cost; otherwise a SPIN)
+;; Airborne: attack is a SNAP_KICK (a jumping kick), style is a SPIN; no glide, lean, sweep or freeze in the air.
+(defn gc-move-for-input [(attack : I32) (style-btn : I32) (fwd : I32) (back : I32) (crouch : I32) (airborne : I32) (style : I32)] : I32
+  (if (and (= attack 0) (= style-btn 0)) 0
+    (if (= airborne 1) (if (= attack 1) 2 3)
+      (if (and (= attack 1) (= style-btn 1)) (if (>= style (gc-freeze-cost)) 7 3)
+        (if (= attack 1) (if (= crouch 1) 6 (if (= fwd 1) 2 1))
+          (if (= back 1) 5 (if (= fwd 1) 4 3)))))))
+
+;; ---- what it looks like ---------------------------------------------------------------------------------------------
+;; The anim_rules.prn clip each move plays until a dedicated groove clip set is imported: strikes use MELEE_SWING
+;; (10), the spin and the freeze use ABILITY (11), the glide uses SLIDE (7), the lean uses CROUCH_WALK (4).
+(defn gc-anim-clip [(m : I32)] : I32
+  (if (or (= m 1) (or (= m 2) (= m 6))) 10
+    (if (or (= m 3) (= m 7)) 11
+      (if (= m 5) 7 (if (= m 4) 4 0)))))
+
+;; A stable id per move for the HUD's name table (the host owns the text, in every locale).
+(defn gc-move-name-id [(m : I32)] : I32 (if (and (>= m 0) (< m 8)) m 0))
