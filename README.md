@@ -96,6 +96,46 @@ courses + 10 mm joints is 3 courses, 36 blocks, 432000 cm3, 1036.8 kg of concret
 floor slabs, lintels, adjacency/joinery, the bevel pass, mechanical FK/IK, RL actuators, SDF/3D
 print, serialization, host — see `stdlib/forgedlevel/NORTHSTAR.md`.
 
+## The Hoard: your WoW gear manager, on this PC
+
+One page that shows every character's equipped gear, bags, bank and mail, plus mail in flight between your
+characters. Search for an item to see who has it, or for a character to see what they carry. It runs on this
+machine, needs no login and no public hosting, and only you can reach it (it listens on 127.0.0.1 only).
+
+**Start it** from Git Bash, in the PARENA checkout (`D:/WORKSPACE/MONOREPO/PARENA`):
+
+```bash
+bash scripts/hoard.sh
+```
+
+**Then open:** http://127.0.0.1:8765/ (http://localhost:8765/ works too). Leave the window running; `Ctrl+C` stops it.
+
+**CSV instead of the page:**
+
+```bash
+bash scripts/hoard.sh -csv D:/WORKSPACE/data/collection/hoard.csv
+```
+
+The CSV columns are `character, realm, account, location, slot, item_id, name, count`. While the server runs, the
+same CSV is also at http://127.0.0.1:8765/api/hoard.csv (the page's **Download CSV** button).
+
+**Settings.** `scripts/hoard.sh` reads `../scripts/collection-env.sh` itself, so on this PC there is nothing to set.
+Elsewhere, set these env vars:
+
+| var | what |
+|---|---|
+| `WOW_WTF_DIR` | the client's `WTF` folder (required, no default) |
+| `HOARD_PORT` | port, default `8765` |
+| `LUA51` | a Lua 5.1 interpreter (MSYS2 `mingw-w64-ucrt-x86_64-lua51`) |
+| `COLLECTION_TMP` | where the server is built (outside the repo) |
+
+It needs `gcc` (MSYS2 UCRT64) and the bootstrap compiler `.parena-bootstrap`, the same toolchain as the rest of
+PARENA.
+
+**Getting characters onto it:** install the addons, then log each character in once and `/reload` (open the bank
+and a mailbox once too). WoW saves only on `/reload` or logout, and the page follows within a few seconds. The full
+steps are in [`docs/HOARD.md`](docs/HOARD.md).
+
 ## Standard library — full planned API surface
 
 Every package below is designed in `STDLIB.md` with real function signatures (region-typed,
