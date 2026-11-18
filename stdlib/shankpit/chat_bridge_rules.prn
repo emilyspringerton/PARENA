@@ -1,0 +1,63 @@
+;; stdlib/shankpit/chat_bridge_rules.prn -- the global chat bridge: what crosses between worlds over IDUNA's chat bus
+;; (founder, 2026-11-17: "WE NEED THE CHAT BRIDGE TO WORK GLOBALY"). One rulebook for every host:
+;;   C    SHANKPIT's server (packages/chat/chat_bridge.c)        -- scripts/gen_chat_bridge_rules.sh
+;;   Java GTA7 / EINHORN_SURVIVAL (generated/ChatBridgeRules.java)
+;;   Go   GFD, later, through BURROW
+;; IDUNA's bus (POST/GET /api/v1/chat/messages) already joins GFD's mud and server, the Battlegrounds client, BIG_O,
+;; GTA7 and the SHANKPIT phone app -- but each side shows only some of the others. Here every world shows every
+;; OTHER world, tagged with where the line came from, and nothing ever comes back to where it started.
+;;
+;; Only a world's public room crosses: SHANKPIT's General channel (never say, yell, whispers or a custom channel --
+;; those are the back channels and stay in the world). Integers only; a host maps sender_source strings to the codes.
+
+(module shankpit/chat-bridge-rules)
+(export src-mud src-battlegrounds src-gfd src-minecraft src-bigo src-shankpit-phone src-shankpit src-twitch
+        src-discord src-slack src-last br-source-valid br-multi-instance br-shows br-should-post br-tag br-poll-ms br-max-per-poll
+        br-name-max br-body-max br-post-queue rx-bridge-out rx-bridge-in)
+
+;; --- where a line came from (IDUNA's sender_source) ---------------------------------------------------------------
+(defn src-mud [] : I32 1)              ;; "mud"               GFD telnet MUD
+(defn src-battlegrounds [] : I32 2)    ;; "battlegrounds"     REDGARDEN's Battlegrounds client
+(defn src-gfd [] : I32 3)              ;; "gfd_server"        GFD's UDP server
+(defn src-minecraft [] : I32 4)        ;; "einhorn_survival"  GTA7 on EINHORN_SURVIVAL
+(defn src-bigo [] : I32 5)             ;; "bigo_server"       BIG_O
+(defn src-shankpit-phone [] : I32 6)   ;; "shankpit_client"   a SHANKPIT player's GFD phone app
+(defn src-shankpit [] : I32 7)         ;; "shankpit_server"   a SHANKPIT world's General channel
+(defn src-twitch [] : I32 8)           ;; reserved: a Twitch chat bridge
+(defn src-discord [] : I32 9)          ;; reserved: a Discord bridge
+(defn src-slack [] : I32 10)           ;; reserved: a Slack bridge
+(defn src-last [] : I32 10)
+
+(defn br-source-valid [(s : I32)] : I32 (if (< s 1) 0 (if (> s (src-last)) 0 1)))
+
+;; Sources that many worlds post under at once (every SHANKPIT server is "shankpit_server"): their hosts guard against
+;; loops by remembering the ids of their own posts, so two SHANKPIT worlds still hear each other.
+(defn br-multi-instance [(src : I32)] : I32 (if (= src (src-shankpit)) 1 0))
+
+;; Does world `dst` show a line from `src`? own: 1 when the line is one this very host posted (by id). Every valid
+;; source shows except a world's own lines: for a single-instance source that is the whole source, for a
+;; multi-instance one only its own post ids. (The host also never re-posts a line that arrived over the bridge.)
+(defn br-shows [(dst : I32) (src : I32) (own : I32)] : I32
+  (if (= own 1) 0
+    (if (= (br-source-valid src) 0) 0
+      (if (= (br-source-valid dst) 0) 0
+        (if (= src dst) (br-multi-instance dst) 1)))))
+
+;; Does a line from this world go out to the bus? kind: chat_channel_rules.prn's chk-* (3 = channel).
+;; is-general: 1 when the channel is the world's public room. via-bridge: 1 when the line itself came over the bridge.
+(defn br-should-post [(kind : I32) (is-general : I32) (via-bridge : I32)] : I32
+  (if (= via-bridge 1) 0 (if (= kind 3) (if (= is-general 1) 1 0) 0)))
+
+;; The tag a host prints before a bridged name ("[MC] Steve"); the host maps the code to its text.
+(defn br-tag [(src : I32)] : I32 (if (= (br-source-valid src) 0) 0 src))
+
+;; --- pacing ---------------------------------------------------------------------------------------------------------
+(defn br-poll-ms [] : I32 2000)        ;; how often a host asks the bus for new lines
+(defn br-max-per-poll [] : I32 25)     ;; lines a host takes per poll (the rest wait for the next one)
+(defn br-name-max [] : I32 16)         ;; a bridged name is cut to this before its tag goes on
+(defn br-body-max [] : I32 200)        ;; the shortest world limit (SHANKPIT chat); the bus itself keeps 512
+(defn br-post-queue [] : I32 64)       ;; lines a host holds while the bus is unreachable; the oldest go first
+
+;; --- REFLUX (SHANKPIT's chat family, reflux_runtime.h) --------------------------------------------------------------
+(defn rx-bridge-out [] : I32 1205)     ;; a = kind, b = sender slot, c = 1 queued / 0 dropped (queue full)
+(defn rx-bridge-in [] : I32 1206)      ;; a = source, b = 0, c = lines shown from that source in this poll

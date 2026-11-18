@@ -1,0 +1,152 @@
+;; stdlib/shankpit/chat_channel_rules.prn -- World of Warcraft style chat channels for SHANKPIT, the telepresence
+;; app (founder, 2026-11-17: "the telepresence app is shankpit itself ... it will start with world of warcraft style
+;; chat channels for back channeling" / "PARENA FIRST MODS FIRST REFLUX ALL THE THINGS").
+;;
+;; Every decision about chat lives here; SHANKPIT's packages/chat/ is plumbing. Both the client
+;; (chat_client.c: typing, REFLUX, the chat mod that draws lines) and the server (chat_server.c: names, the channel
+;; table, routing) link the same generated C (scripts/gen_chat_channel_rules.sh). Integers only.
+;;
+;; The WoW shape it follows:
+;;   /s /say      nearby (40 m, the same radius as chat_rules.prn's say), same scene
+;;   /y /yell     far (300 m), same scene
+;;   /1 .. /10    a numbered channel you have joined; everyone starts in General as /1
+;;   /join name   joins (or creates) a channel; it takes the LOWEST free number, like WoW
+;;   /leave n     leaves one
+;;   /w name msg  whispers one person, anywhere; /r replies to whoever whispered you last
+;;   /who n       lists a channel's members
+;; Say, channel and whisper are "sticky" (Enter starts the next message the same way); yell is not.
+
+(module shankpit/chat-channel-rules)
+(export chk-say chk-yell chk-channel chk-whisper chk-system chk-whisper-to
+        op-say op-yell op-channel op-whisper op-join op-leave op-who op-name op-msg op-notice op-who-list
+        note-joined note-left note-named note-err-no-channel note-err-not-member note-err-too-many
+        note-err-name-bad note-err-name-taken note-err-no-player note-err-rate note-err-len
+        note-err-channel-bad note-err-server-full note-err-offline
+        chan-max-joined chan-server-max chan-name-max chan-msg-max chan-name-char-ok chan-name-len-ok
+        chan-msg-len-ok chan-number-ok chan-bit chan-first-free chan-say-radius-cm chan-yell-radius-cm
+        chan-delivers chan-rate-window-ms chan-rate-max chan-rate-ok chan-color chan-sticky
+        chan-hello-ms chan-ring
+        rx-chat-first rx-chat-message rx-chat-joined rx-chat-left rx-chat-notice rx-chat-routed rx-chat-last)
+
+;; --- chat kinds (what a line is) ------------------------------------------------------------------------------
+(defn chk-say [] : I32 1)
+(defn chk-yell [] : I32 2)
+(defn chk-channel [] : I32 3)
+(defn chk-whisper [] : I32 4)      ;; someone whispered you
+(defn chk-system [] : I32 5)       ;; joined/left/errors
+(defn chk-whisper-to [] : I32 6)   ;; your own whisper, echoed as "To [name]:"
+
+;; --- wire ops (PACKET_CHAT's op byte) --------------------------------------------------------------------------
+;; client -> server
+(defn op-say [] : I32 1)
+(defn op-yell [] : I32 2)
+(defn op-channel [] : I32 3)
+(defn op-whisper [] : I32 4)
+(defn op-join [] : I32 5)
+(defn op-leave [] : I32 6)
+(defn op-who [] : I32 7)
+(defn op-name [] : I32 8)          ;; hello: claim a display name (resent until the server answers)
+;; server -> client
+(defn op-msg [] : I32 20)
+(defn op-notice [] : I32 21)
+(defn op-who-list [] : I32 22)
+
+;; --- notices (PACKET_CHAT's code byte with op-notice) ----------------------------------------------------------
+(defn note-joined [] : I32 1)
+(defn note-left [] : I32 2)
+(defn note-named [] : I32 3)
+(defn note-err-no-channel [] : I32 4)
+(defn note-err-not-member [] : I32 5)
+(defn note-err-too-many [] : I32 6)
+(defn note-err-name-bad [] : I32 7)
+(defn note-err-name-taken [] : I32 8)
+(defn note-err-no-player [] : I32 9)
+(defn note-err-rate [] : I32 10)
+(defn note-err-len [] : I32 11)
+(defn note-err-channel-bad [] : I32 12)
+(defn note-err-server-full [] : I32 13)
+(defn note-err-offline [] : I32 14)
+
+;; --- limits ----------------------------------------------------------------------------------------------------
+(defn chan-max-joined [] : I32 10)    ;; numbers 1..10 per client, like WoW
+(defn chan-server-max [] : I32 64)    ;; channels one server holds at once
+(defn chan-name-max [] : I32 23)      ;; channel and player names: 1..23 characters
+(defn chan-msg-max [] : I32 200)      ;; chat_rules.prn's chat-max-len (GFD chat.go's Deliver cap)
+
+;; Names (players and channels): ASCII letters, digits, '-' and '_'. c is a byte value.
+(defn chan-name-char-ok [(c : I32)] : I32
+  (if (and (>= c 48) (<= c 57)) 1
+    (if (and (>= c 65) (<= c 90)) 1
+      (if (and (>= c 97) (<= c 122)) 1
+        (if (= c 45) 1 (if (= c 95) 1 0))))))
+
+(defn chan-name-len-ok [(n : I32)] : I32
+  (if (< n 1) 0 (if (> n (chan-name-max)) 0 1)))
+
+(defn chan-msg-len-ok [(n : I32)] : I32
+  (if (< n 1) 0 (if (> n (chan-msg-max)) 0 1)))
+
+(defn chan-number-ok [(n : I32)] : I32
+  (if (< n 1) 0 (if (> n (chan-max-joined)) 0 1)))
+
+;; Is channel number n taken in used (a bit set: bit n = number n)?
+(defn chan-pow2 [(n : I32)] : I32 (if (<= n 0) 1 (* 2 (chan-pow2 (- n 1)))))
+(defn chan-bit [(used : I32) (n : I32)] : I32 (- (/ used (chan-pow2 n)) (* 2 (/ used (chan-pow2 (+ n 1))))))
+
+;; WoW numbering: a newly joined channel takes the lowest free number; -1 when all ten are taken.
+(defn chan-first-free-from [(used : I32) (n : I32)] : I32
+  (if (> n (chan-max-joined)) -1 (if (= (chan-bit used n) 0) n (chan-first-free-from used (+ n 1)))))
+(defn chan-first-free [(used : I32)] : I32 (chan-first-free-from used 1))
+
+;; --- who hears what ---------------------------------------------------------------------------------------------
+(defn chan-say-radius-cm [] : I32 4000)     ;; 40 m, chat_rules.prn's chat-say-radius-cm
+(defn chan-yell-radius-cm [] : I32 30000)   ;; 300 m
+
+;; Does the receiver get this message? same-scene / is-member / is-target are 1 or 0; distance in cm. The sender
+;; hears its own say and yell (distance 0) and sees its own channel lines (it is a member); a whisper's sender gets
+;; an echo instead (chk-whisper-to), so the whisper itself goes to the target only.
+(defn chan-delivers [(kind : I32) (same-scene : I32) (distance-cm : I32) (is-member : I32) (is-target : I32)] : I32
+  (if (= kind (chk-say)) (if (= same-scene 1) (if (<= distance-cm (chan-say-radius-cm)) 1 0) 0)
+    (if (= kind (chk-yell)) (if (= same-scene 1) (if (<= distance-cm (chan-yell-radius-cm)) 1 0) 0)
+      (if (= kind (chk-channel)) is-member
+        (if (= kind (chk-whisper)) is-target 0)))))
+
+;; --- flood control: at most chan-rate-max messages per chan-rate-window-ms per sender -------------------------
+(defn chan-rate-window-ms [] : I32 5000)
+(defn chan-rate-max [] : I32 6)
+;; elapsed: ms since the sender's window opened; count: messages already in it. 1 = allowed.
+;; (A host restarts the window, count 0, once elapsed reaches the window.)
+(defn chan-rate-ok [(elapsed : I32) (count : I32)] : I32
+  (if (>= elapsed (chan-rate-window-ms)) 1 (if (< count (chan-rate-max)) 1 0)))
+
+;; --- how lines look and feel -----------------------------------------------------------------------------------
+;; Colour index for a kind: 1 white (say), 2 red (yell), 3 peach (channel), 4 pink (whisper in and out),
+;; 5 yellow (system). The host maps the index to RGB.
+(defn chan-color [(kind : I32)] : I32
+  (if (= kind (chk-say)) 1
+    (if (= kind (chk-yell)) 2
+      (if (= kind (chk-channel)) 3
+        (if (= kind (chk-whisper)) 4
+          (if (= kind (chk-whisper-to)) 4 5))))))
+
+;; WoW's sticky chat types: Enter starts the next message the same way.
+(defn chan-sticky [(kind : I32)] : I32
+  (if (= kind (chk-say)) 1 (if (= kind (chk-channel)) 1 (if (= kind (chk-whisper-to)) 1 0))))
+
+;; How often the client repeats its hello until the server names it (UDP may drop it).
+(defn chan-hello-ms [] : I32 2000)
+;; How many recent chat texts the client keeps for the REFLUX rows that point at them.
+(defn chan-ring [] : I32 64)
+
+;; --- REFLUX: the chat family, 1200-1219 (SHANKPIT's reflux_runtime.h) ------------------------------------------
+;; 1200 message (a = kind, b = channel number or 0, c = text seq), 1201 joined (a = number, c = text seq of the
+;; channel name), 1202 left (a = number, c = seq), 1203 notice (a = code, b = number, c = seq). Text seqs are unique
+;; across every chat client in a process, so a client only formats rows whose seq is in its own ring.
+(defn rx-chat-first [] : I32 1200)
+(defn rx-chat-message [] : I32 1200)
+(defn rx-chat-joined [] : I32 1201)
+(defn rx-chat-left [] : I32 1202)
+(defn rx-chat-notice [] : I32 1203)
+;; server side: one row per routed message (a = kind, b = sender slot, c = how many received it)
+(defn rx-chat-routed [] : I32 1204)
+(defn rx-chat-last [] : I32 1219)
