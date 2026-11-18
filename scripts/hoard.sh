@@ -21,13 +21,17 @@ die() { echo "hoard.sh: $*" >&2; exit 2; }
 [ -n "${WOW_WTF_DIR:-}" ] || die "WOW_WTF_DIR is not set (the WoW client's WTF folder); export it or source collection-env.sh"
 [ -n "${COLLECTION_TMP:-}" ] || die "COLLECTION_TMP is not set (collection-env.sh sets it)"
 lua="$(command -v "${LUA51:-lua5.1}" 2>/dev/null)" || die "no Lua 5.1 at LUA51=${LUA51:-lua5.1} (MSYS2: mingw-w64-ucrt-x86_64-lua51)"
-compiler="${PARENA_BIN:-$parena/.parena-bootstrap}"
+# The compiler from this same tree first: the page needs its `-o *.js` target, and PARENA_BIN (collection-env.sh)
+# may name another checkout's older build.
+if [ -x "$parena/.parena-bootstrap" ]; then compiler="$parena/.parena-bootstrap"; else compiler="${PARENA_BIN:-}"; fi
 [ -x "$compiler" ] || die "no PARENA compiler at $compiler (cd PARENA && make .parena-bootstrap)"
 winpath() { if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi; }
 
 out="$COLLECTION_TMP/hoard"
 mkdir -p "$out"
 "$compiler" build "$parena/stdlib/collection/ledger.prn" -o "$out/ledger.lua" >/dev/null
+# the page: PARENA emitted as plain JavaScript (`-o *.js`), no Node, no TypeScript toolchain
+"$compiler" build "$parena/tools/hoard/hoard_page.prn" -o "$out/app.js" >/dev/null
 cp "$parena/runtime/wow/ledger_export.lua" "$parena/runtime/wow/journal_reader.lua" "$parena/tools/hoard/page.html" "$out/"
 addon="${FAFNIR_ADDON:-FafnirsBed}"
 var="${FAFNIR_VAR:-FafnirsBedDB}"
