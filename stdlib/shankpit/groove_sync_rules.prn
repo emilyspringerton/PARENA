@@ -1,0 +1,130 @@
+;; stdlib/shankpit/groove_sync_rules.prn -- the beat, found and used: tap-tempo sync (the shank's special), BPM
+;; detection from the music, the AR synced to the beat, and the style ranks that pay out for staying on it.
+;;
+;; Founder 2026-11-18: "add bpm detection and powerups for matching the tempo of the beat similar to a devvil may cry
+;; combo with both physical combat and arsenal ... add a bpm sync device as the special for the shank so it sets your
+;; AR damage and rof based on the current beat you have to switch to 1 for knife sync the beat and then back to 3 to
+;; use it".
+;;
+;; How it plays:
+;;   1  Knife out (key 1). Its special is the SYNC DEVICE: tap it on the beat. After gs-min-taps steady taps the device
+;;      locks a tempo and a phase (REFLUX COMBAT_SYNC_LOCKED).
+;;   2  AR out (key 3). While the lock holds (gs-sync-beats beats), the AR fires on a subdivision of that beat instead
+;;      of its own rate, and hits harder the steadier your taps were (gs-sync-damage-pct). Then it lapses
+;;      (COMBAT_SYNC_EXPIRED) and you sync again.
+;;   Everything you do on the beat -- a groove-combat move, a gun hit -- feeds one style meter (groove_combat_rules.prn's,
+;;   0..1000). The meter is shown as a rank, D C B A S SS SSS, and each rank grants powerups. Doing the same thing over
+;;   and over earns less (gs-variety-pct): mix moves and guns to climb.
+;;
+;; BPM detection: the host turns the music into an onset strength per analysis frame (gs-onset-flux) and runs one comb
+;; filter per candidate tempo (gs-comb-update-milli over a delay of gs-lag-frames); the candidate whose comb rings
+;; loudest is the tempo (gs-bpm-x10-for-lag). No library: a comb-filter bank is the classic clean-room method.
+;;
+;; All I32, total, no state; the host is SHANKPIT packages/simulation/groove_sync.h. Tempos are BPM x 10.
+(module shankpit/groove-sync-rules)
+(export gs-min-bpm-x10 gs-max-bpm-x10 gs-min-taps gs-tap-interval-ok gs-bpm-x10-from-interval-ms
+        gs-interval-ms-from-bpm-x10 gs-confidence-milli gs-locked gs-lock-confidence-milli gs-phase-milli
+        gs-onset-flux gs-comb-alpha-milli gs-comb-update-milli gs-lag-frames gs-lag-milli gs-bpm-x10-for-lag
+        gs-sync-beats gs-subdivision gs-synced-cooldown-ms gs-sync-damage-pct
+        gs-rank-count gs-rank gs-rank-floor gs-rank-damage-pct gs-rank-rof-pct gs-rank-heal-per-hit
+        gs-variety-pct gs-gun-style-gain gs-weapon-knife gs-weapon-ar gs-sync-weapon gs-synced-weapon)
+
+;; ---- tempo range ----------------------------------------------------------------------------------------------------
+(defn gs-min-bpm-x10 [] : I32 600)
+(defn gs-max-bpm-x10 [] : I32 2000)
+
+(defn gs-bpm-x10-from-interval-ms [(ms : I32)] : I32 (if (<= ms 0) 0 (/ 600000 ms)))
+(defn gs-interval-ms-from-bpm-x10 [(bpm : I32)] : I32 (if (<= bpm 0) 0 (/ 600000 bpm)))
+
+;; ---- the sync device: tap tempo --------------------------------------------------------------------------------------
+(defn gs-min-taps [] : I32 4)
+
+;; A gap between two taps counts if it is a beat between 60 and 200 BPM (300..1000 ms).
+(defn gs-tap-interval-ok [(ms : I32)] : I32 (if (and (>= ms 300) (<= ms 1000)) 1 0))
+
+;; How steady the taps were: 1000 when every gap was the same, falling as the spread grows (min/max/avg gaps, ms).
+(defn gs-confidence-milli [(min-ms : I32) (max-ms : I32) (avg-ms : I32)] : I32
+  (if (<= avg-ms 0) 0
+    (let [spread (/ (* (- max-ms min-ms) 1000) avg-ms)
+          c (- 1000 (* 4 spread))]
+      (if (< c 0) 0 (if (> c 1000) 1000 c)))))
+
+(defn gs-lock-confidence-milli [] : I32 700)
+
+(defn gs-locked [(taps : I32) (confidence : I32)] : I32
+  (if (and (>= taps (gs-min-taps)) (>= confidence (gs-lock-confidence-milli))) 1 0))
+
+;; Where `now` falls in the beat (0..999), given a beat that started at `anchor` and lasts `interval` ms.
+(defn gs-phase-milli [(now-ms : I32) (anchor-ms : I32) (interval-ms : I32)] : I32
+  (if (<= interval-ms 0) 0
+    (let [d (- now-ms anchor-ms)
+          m (mod d interval-ms)
+          pos (if (< m 0) (+ m interval-ms) m)]
+      (/ (* pos 1000) interval-ms))))
+
+;; ---- BPM detection: onset flux into a comb-filter bank ---------------------------------------------------------------
+;; Onset strength: how much louder this frame is than the last (energy rising is a hit; falling is not).
+(defn gs-onset-flux [(prev-energy : I32) (energy : I32)] : I32 (if (> energy prev-energy) (- energy prev-energy) 0))
+
+;; Comb feedback x1000: how much of one beat ago rings into now. High enough to build up over a few bars.
+(defn gs-comb-alpha-milli [] : I32 850)
+
+;; One comb filter step: y[n] = alpha * y[n - lag] + (1 - alpha) * onset[n]  (all x1000).
+(defn gs-comb-update-milli [(delayed : I32) (onset : I32)] : I32
+  (/ (+ (* delayed (gs-comb-alpha-milli)) (* onset (- 1000 (gs-comb-alpha-milli)))) 1000))
+
+;; The delay, in analysis frames, of the comb for a tempo, and back.
+(defn gs-lag-frames [(bpm-x10 : I32) (fps : I32)] : I32
+  (if (<= bpm-x10 0) 0 (/ (+ (* fps 600) (/ bpm-x10 2)) bpm-x10)))
+(defn gs-bpm-x10-for-lag [(lag : I32) (fps : I32)] : I32
+  (if (<= lag 0) 0 (/ (* fps 600) lag)))
+
+;; The same delay x1000: a tempo rarely lands on a whole frame (90 BPM at 50 fps is 33.3 frames), and a comb that rounds
+;; its delay drifts off the beat and stops ringing. The host interpolates between the two frames either side.
+(defn gs-lag-milli [(bpm-x10 : I32) (fps : I32)] : I32
+  (if (<= bpm-x10 0) 0 (/ (* fps 600000) bpm-x10)))
+
+;; ---- the synced AR ---------------------------------------------------------------------------------------------------
+;; A lock lasts 32 beats (8 bars of 4).
+(defn gs-sync-beats [] : I32 32)
+
+;; Key 1 is the knife (WPN_KNIFE 0) and holds the sync device; key 3 is the AR (WPN_AR 2) and uses it.
+(defn gs-weapon-knife [] : I32 0)
+(defn gs-weapon-ar [] : I32 2)
+(defn gs-sync-weapon [(w : I32)] : I32 (if (= w 0) 1 0))
+(defn gs-synced-weapon [(w : I32)] : I32 (if (= w 2) 1 0))
+
+;; How many shots per beat bring the AR closest to its own rate (native cooldown ms) without beating it: 1..8.
+(defn gs-subdivision [(beat-ms : I32) (native-ms : I32)] : I32
+  (if (or (<= beat-ms 0) (<= native-ms 0)) 1
+    (let [n (/ beat-ms native-ms)]
+      (if (< n 1) 1 (if (> n 8) 8 n)))))
+
+(defn gs-synced-cooldown-ms [(beat-ms : I32) (native-ms : I32)] : I32
+  (/ beat-ms (gs-subdivision beat-ms native-ms)))
+
+;; Damage while synced: +10% for the lock, up to +30% more for steady taps, plus the rank's bonus.
+(defn gs-sync-damage-pct [(confidence : I32) (rank : I32)] : I32
+  (+ (+ 110 (/ (* 30 (if (< confidence 0) 0 (if (> confidence 1000) 1000 confidence))) 1000)) (- (gs-rank-damage-pct rank) 100)))
+
+;; ---- style ranks ------------------------------------------------------------------------------------------------------
+;; 0 D  1 C  2 B  3 A  4 S  5 SS  6 SSS, from the 0..1000 style meter.
+(defn gs-rank-count [] : I32 7)
+
+(defn gs-rank-floor [(rank : I32)] : I32
+  (if (<= rank 0) 0 (if (= rank 1) 150 (if (= rank 2) 300 (if (= rank 3) 450 (if (= rank 4) 600 (if (= rank 5) 750 900)))))))
+
+(defn gs-rank [(style : I32)] : I32
+  (if (>= style 900) 6 (if (>= style 750) 5 (if (>= style 600) 4 (if (>= style 450) 3 (if (>= style 300) 2 (if (>= style 150) 1 0)))))))
+
+;; Powerups: A and above hit harder; SS and above heal on every hit; SSS also fires faster.
+(defn gs-rank-damage-pct [(rank : I32)] : I32
+  (if (>= rank 6) 140 (if (= rank 5) 130 (if (= rank 4) 120 (if (= rank 3) 110 100)))))
+(defn gs-rank-rof-pct [(rank : I32)] : I32 (if (>= rank 6) 115 100))
+(defn gs-rank-heal-per-hit [(rank : I32)] : I32 (if (>= rank 6) 2 (if (= rank 5) 1 0)))
+
+;; Variety: the first use of a move or a gun earns full style; the same thing again earns 60%, a third time 30%.
+(defn gs-variety-pct [(repeats : I32)] : I32 (if (<= repeats 0) 100 (if (= repeats 1) 60 30)))
+
+;; A gun hit on the beat (grade 2 perfect, 1 good, 0 off) earns style too, a little less than a move.
+(defn gs-gun-style-gain [(grade : I32)] : I32 (if (= grade 2) 50 (if (= grade 1) 25 0)))
