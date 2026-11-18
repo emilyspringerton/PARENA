@@ -42,6 +42,31 @@ Status:
 | test | `lua5.1 tests/reflux_wow/selffound_test.lua <packaged client>`: 65 checks |
 | env | `SELFFOUND_ADDON` / `SELFFOUND_VAR` (folder and saved-variables name; default `SelfFound` / `SelfFoundDB`) |
 
+## The feed: Self Found outside the game (SHANKPIT's stream overlay)
+
+```bash
+WOW_WTF_DIR="<WoW>/_forever_/WTF" COLLECTION_FEED=D:/WORKSPACE/data/collection/feed.txt bash scripts/collection-sf-feed.sh
+```
+
+Run it after logging out of WoW (the client writes SavedVariables on logout). It reads every account's
+`SelfFound.lua` and writes one feed file. That file is REFLUX rows plus a name table:
+
+| row | a | b | c |
+| --- | --- | --- | --- |
+| 3072 character | name id | status | transactions |
+| 3073 broken | name id | kind that broke it | when |
+| 3074 vendor | name id | npc id | items |
+| 3075 summary (last) | characters | still self-found | vendors |
+
+Which rows get written is `selffound.prn` (`sf-feed-merge`, `sf-feed-summary-row`). `COLLECTION_FEED` has no
+default, and the file holds play data, so keep it outside every repository.
+
+SHANKPIT reads the same file through its own `COLLECTION_FEED`. In broadcast mode, **Ctrl+Shift+C** shows it on
+the stream (SHANKPIT `packages/collection/`). The overlay's decisions are PARENA too:
+`stdlib/shankpit/collection_overlay_rules.prn`.
+
+Test: `lua5.1 tests/reflux_wow/sf_feed_test.lua <compiled sf.lua> <scratch dir>`: 15 checks, two accounts.
+
 ## Known limits
 
 - None of the client calls is confirmed on WoW Forever yet. Each one is feature-tested, and `/sf why` names any

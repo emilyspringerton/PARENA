@@ -26,7 +26,8 @@
 (export sf-init sf-char sf-record sf-violates sf-vendor sf-vendor-item sf-status sf-keep
         sf-k-vendor-buy sf-k-vendor-sell sf-k-buyback sf-k-repair sf-k-ah-scan sf-k-ah-buy sf-k-ah-post
         sf-k-trade sf-k-mail-player sf-k-mail-other sf-k-mail-send sf-k-gbank-withdraw sf-k-gbank-deposit
-        sf-k-loot sf-k-quest sf-k-last sf-act-tx sf-act-broken)
+        sf-k-loot sf-k-quest sf-k-last sf-act-tx sf-act-broken
+        sf-act-feed-char sf-act-feed-broken sf-act-feed-vendor sf-act-feed-summary sf-feed-new sf-feed-merge sf-feed-summary-row)
 
 ;; --- transaction kinds --------------------------------------------------------------------------------------------
 (defn sf-k-vendor-buy [] : I32 1)
@@ -48,6 +49,12 @@
 
 (defn sf-act-tx [] : I32 3070)
 (defn sf-act-broken [] : I32 3071)
+;; The feed (sf-feed-build): Self Found's saved state as REFLUX rows, for hosts outside the game (SHANKPIT's stream
+;; overlay, terminal and APPS page). Strings travel in a separate name table; rows carry its 1-based ids.
+(defn sf-act-feed-char [] : I32 3072)      ;; a = name id, b = status, c = transactions
+(defn sf-act-feed-broken [] : I32 3073)    ;; a = name id, b = kind that broke it, c = when (epoch seconds)
+(defn sf-act-feed-vendor [] : I32 3074)    ;; a = name id, b = npc id, c = items on its list
+(defn sf-act-feed-summary [] : I32 3075)   ;; a = characters, b = still self-found, c = vendors found
 
 ;; How many transaction rows the account keeps; older rows are dropped from the low end.
 (defn sf-keep [] : I32 20000)
@@ -139,3 +146,57 @@
   (let [v (lua/aget (lua/get db "vendors") npc)]
     (if (lua/nil? v) 0
         (do (lua/aset! (lua/get v "items") item price) 1))))
+
+;; --- the feed ---------------------------------------------------------------------------------------------------
+;; A feed is { names = { "Ingrid-Forever", ... }, rows = { {type, a, b, c}, ... }, chars, sf, vendors }.
+;; sf-feed-merge adds one account's SelfFoundDB to it (a player's WTF folder holds one per account); the host
+;; writes the summary row last with sf-feed-summary-row.
+(defn sf-feed-new [] : Any
+  (lua/obj "names" (lua/array) "rows" (lua/array) "nrows" 0 "nnames" 0 "chars" 0 "sf" 0 "vendors" 0))
+
+(defn sf-feed-name [(feed : Any) (s : String)] : I32
+  (let [id (+ (lua/get feed "nnames") 1)]
+    (do (lua/aset! (lua/get feed "names") id s)
+        (lua/set! feed "nnames" id)
+        id)))
+
+(defn sf-feed-row [(feed : Any) (t : I32) (a : I32) (b : I32) (c : I32)] : I32
+  (let [n (+ (lua/get feed "nrows") 1)]
+    (do (lua/aset! (lua/get feed "rows") n (lua/array t a b c))
+        (lua/set! feed "nrows" n)
+        n)))
+
+(defn sf-feed-chars [(feed : Any) (chars : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") chars k)]
+    (if (lua/nil? nk) 0
+        (let [c (lua/aget chars nk)
+              id (sf-feed-name feed nk)
+              st (lua/get c "status")]
+          (do (sf-feed-row feed (sf-act-feed-char) id st (lua/get c "n"))
+              (if (= st 0) (sf-feed-row feed (sf-act-feed-broken) id (lua/get c "brokenKind") (lua/get c "brokenAt")) 0)
+              (lua/set! feed "chars" (+ (lua/get feed "chars") 1))
+              (if (> st 0) (lua/set! feed "sf" (+ (lua/get feed "sf") 1)) 0)
+              (sf-feed-chars feed chars nk))))))
+
+(defn sf-count-walk [(t : Any) (k : Any) (n : I32)] : I32
+  (let [nk (lua/call-fn (lua/global "next") t k)]
+    (if (lua/nil? nk) n (sf-count-walk t nk (+ n 1)))))
+
+(defn sf-feed-vendors [(feed : Any) (vs : Any) (k : Any)] : I32
+  (let [nk (lua/call-fn (lua/global "next") vs k)]
+    (if (lua/nil? nk) 0
+        (let [v (lua/aget vs nk)
+              id (sf-feed-name feed (lua/get v "name"))]
+          (do (sf-feed-row feed (sf-act-feed-vendor) id nk (sf-count-walk (lua/get v "items") (lua/nil) 0))
+              (lua/set! feed "vendors" (+ (lua/get feed "vendors") 1))
+              (sf-feed-vendors feed vs nk))))))
+
+;; Add one account's SelfFoundDB. Returns the feed's row count so far.
+(defn sf-feed-merge [(feed : Any) (db : Any)] : I32
+  (do (if (lua/nil? (lua/get db "chars")) 0 (sf-feed-chars feed (lua/get db "chars") (lua/nil)))
+      (if (lua/nil? (lua/get db "vendors")) 0 (sf-feed-vendors feed (lua/get db "vendors") (lua/nil)))
+      (lua/get feed "nrows")))
+
+;; The summary row, written after every account is merged.
+(defn sf-feed-summary-row [(feed : Any)] : I32
+  (sf-feed-row feed (sf-act-feed-summary) (lua/get feed "chars") (lua/get feed "sf") (lua/get feed "vendors")))
