@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
 # Builds netkit.wasm from stdlib/netkit/*.prn and runs every netkit test against the built artifact:
+#   - terminal     the SSH terminal emulator (xterm-style, raw keys) vs pyte and exact checks
 #   - DES          vs an independent implementation (pycryptodome) + the NIST vector
 #   - RFB (VNC)    a scripted fake server, every scenario fed whole / byte-by-byte / in random chunks
 #   - SSH          a PARENA SSH client vs asyncssh, and vs the real OpenSSH sshd (unprivileged, libnss_wrapper)
 #   - interop      a REAL VNC server (libvncserver, TightVNC's lineage; tests/netkit/vncd.c): real auth, real encoders,
 #                  final screen compared byte for byte. Skipped (loudly) if libvncserver headers are not installed.
-# Needs: the LLVM toolchain (see build_netkit_wasm.sh), python3 with wasmtime, pycryptodome, cryptography, asyncssh;
+# Needs: the LLVM toolchain (see build_netkit_wasm.sh), python3 with wasmtime, pycryptodome, cryptography, asyncssh, pyte;
 #        openssh-server + libnss-wrapper for the real-OpenSSH leg (skipped, loudly, without them).
 #   VNC_ROOT=<dir>   an extracted libvncserver1+libvncserver-dev (dpkg -x) when it is not installed system-wide
 set -euo pipefail
 cd "$(dirname "$0")/.."
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 scripts/build_netkit_wasm.sh "$W/netkit.wasm"
+scripts/build_netkit_term_wasm.sh "$W/nkterm.wasm"
 for t in tests/netkit/test_*.py; do
   case "$t" in */test_rfb_interop.py) continue;; esac
   echo "== $(basename "$t")"
-  python3 "$t" "$W/netkit.wasm" | tail -3
+  case "$t" in */test_term.py) python3 "$t" "$W/nkterm.wasm" | tail -3;; *) python3 "$t" "$W/netkit.wasm" | tail -3;; esac
 done
 echo "== test_rfb_interop.py (real VNC server)"
 INC=(); LIB=(); LD=""

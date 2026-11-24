@@ -1,0 +1,3 @@
+# the Netkit terminal's wasm source files, in build order (scripts/build_netkit_term_wasm.sh)
+stdlib/gfd/term_font.prn
+stdlib/netkit/term/nk_term.prn
