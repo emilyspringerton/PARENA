@@ -1,0 +1,4 @@
+;; stdlib/netkit/nk_ed25519.prn -- TEMPORARY STUB, replaced by the real Ed25519 verification in the next commit.
+;; ssh-verify-hostkey-real! must check the server's signature over the exchange hash H; until it does it returns 1
+;; WITHOUT setting g-ss-sigok, so nk-ssh-sigok stays 0 and no page may treat the host as authenticated.
+(defn ssh-verify-hostkey-real! [(sgp : I32) (sgl : I32)] : I32 1)

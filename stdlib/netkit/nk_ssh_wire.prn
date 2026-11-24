@@ -1,0 +1,186 @@
+;; stdlib/netkit/nk_ssh_wire.prn -- SSH wire format and packet framing (RFC 4251 / 4253) in PARENA: the memory map, the
+;; byte writers and readers, and the two packet layers: plain (before NEWKEYS) and OpenSSH's
+;; chacha20-poly1305@openssh.com AEAD (after). The protocol state machine is nk_ssh.prn; the primitives are nk_crypto.prn
+;; and nk_x25519.prn.
+;;
+;; chacha20-poly1305@openssh.com (OpenSSH PROTOCOL.chacha20poly1305), the only cipher this client speaks:
+;;   * a 64-byte key per direction = main key K_2 (first 32 bytes) || header key K_1 (last 32 bytes)
+;;   * nonce = the packet sequence number as an 8-byte big-endian integer (sequence numbers never reset, not even at NEWKEYS)
+;;   * the 4-byte length field is encrypted alone with K_1 (block counter 0)
+;;   * the Poly1305 key is the first 32 bytes of K_2's keystream block 0; the payload part (padding_length || payload ||
+;;     padding) is encrypted with K_2 from block counter 1
+;;   * the tag is Poly1305 over the ENCRYPTED length field || the ENCRYPTED payload part, 16 bytes appended
+;;   * padding makes (1 + payload + padding) a multiple of 8 (the length field is not counted), padding >= 4
+;; Before NEWKEYS: length || padding_length || payload || padding with (4 + 1 + payload + padding) a multiple of 8.
+;; Padding is zero bytes (RFC 4253 says "SHOULD be random"; it carries no information and is covered by the AEAD tag).
+;;
+;; Regions (SSH area, 0x200000..0x264000) -- G words 128..191 belong to nk_ssh*.prn.
+
+(defn rx-base [] : I32 2097152)       ; 0x200000  36864 B  current packet's payload (after unpadding): [0] = message type
+(defn tx-base [] : I32 2134016)       ; 0x209000  36864 B  outgoing payload being built
+(defn frame-base [] : I32 2170880)    ; 0x212000  40960 B  framed (and sealed) outgoing packet
+(defn hbuf-base [] : I32 2211840)     ; 0x21C000  16384 B  exchange-hash input / key-derivation input
+(defn isrv-base [] : I32 2228224)     ; 0x220000   8192 B  the server's KEXINIT payload (I_S)
+(defn iclt-base [] : I32 2236416)     ; 0x222000   2048 B  our KEXINIT payload (I_C)
+(defn vs-base [] : I32 2238464)       ; 0x222800    256 B  the server's identification string (V_S), no CR LF
+(defn keys-base [] : I32 2240512)     ; 0x223000   1024 B  key material, offsets below
+(defn cred-base [] : I32 2241536)     ; 0x223400    384 B  user (128) then password (256), NUL-padded
+(defn hostkey-base [] : I32 2242304)  ; 0x223700    512 B  the server's host key blob (K_S)
+(defn lists-base [] : I32 2242816)    ; 0x223900     80 B  ptr,len of the server's ten KEXINIT name-lists
+(defn txq-base [] : I32 2293760)      ; 0x230000  65536 B  typed bytes waiting for window / OUT space
+(defn dout-base [] : I32 2359296)     ; 0x240000 131072 B  decrypted channel data waiting for the page (the terminal)
+(defn uin-base [] : I32 2490368)      ; 0x260000  16384 B  the page's staging area for typed bytes
+
+;; offsets inside keys-base
+(defn k-c2s-main [] : I32 0)
+(defn k-c2s-hdr [] : I32 32)
+(defn k-s2c-main [] : I32 64)
+(defn k-s2c-hdr [] : I32 96)
+(defn k-sid [] : I32 128)             ; session identifier (= the first exchange hash)
+(defn k-h [] : I32 160)               ; this exchange's hash H
+(defn k-shared [] : I32 192)          ; X25519 shared secret K, 32 raw bytes
+(defn k-priv [] : I32 224)            ; our ephemeral private key
+(defn k-qc [] : I32 256)              ; our public key Q_C
+(defn k-qs [] : I32 288)              ; the server's public key Q_S
+(defn k-fp [] : I32 320)              ; SHA-256 of the host key blob
+(defn k-expect [] : I32 352)          ; the fingerprint the page trusts (when it has one)
+(defn k-entropy [] : I32 384)         ; 64 random bytes written by the page: cookie 16, private key 32, spare 16
+(defn k-polykey [] : I32 448)
+(defn k-nonce [] : I32 480)
+(defn k-len4 [] : I32 488)
+(defn k-tag [] : I32 512)
+(defn k-mpint [] : I32 528)           ; mpint(K), up to 37 bytes
+(defn k-tmp [] : I32 576)             ; 64 B scratch
+(defn key-at [(off : I32)] : I32 (+ (keys-base) off))
+
+;; G words
+(defn g-ss-state [] : I32 128)
+(defn g-ss-seqin [] : I32 129)
+(defn g-ss-seqout [] : I32 130)
+(defn g-ss-encin [] : I32 131)
+(defn g-ss-encout [] : I32 132)
+(defn g-ss-txpos [] : I32 133)        ; bytes written to tx-base so far
+(defn g-ss-rpos [] : I32 134)         ; read cursor in the current payload
+(defn g-ss-rlen [] : I32 135)         ; length of the current payload
+(defn g-ss-vslen [] : I32 136)
+(defn g-ss-iclen [] : I32 137)
+(defn g-ss-islen [] : I32 138)
+(defn g-ss-kslen [] : I32 139)
+(defn g-ss-hpos [] : I32 140)
+(defn g-ss-discard [] : I32 141)      ; 1 = the next packet is a wrong first-kex guess and must be dropped
+(defn g-ss-authphase [] : I32 142)    ; 0 none sent, 1 password sent, 2 keyboard-interactive sent
+(defn g-ss-triedkbd [] : I32 143)
+(defn g-ss-chremote [] : I32 144)     ; the server's channel number
+(defn g-ss-peerwin [] : I32 145)      ; bytes we may still send
+(defn g-ss-peermax [] : I32 146)      ; the server's maximum packet size
+(defn g-ss-myrwin [] : I32 147)       ; what the server may still send us
+(defn g-ss-pendreply [] : I32 148)    ; channel replies still expected (pty-req, shell)
+(defn g-ss-datalen [] : I32 149)      ; bytes waiting in dout-base
+(defn g-ss-txqhead [] : I32 150)
+(defn g-ss-txqlen [] : I32 151)
+(defn g-ss-cols [] : I32 152)
+(defn g-ss-rows [] : I32 153)
+(defn g-ss-ulen [] : I32 154)
+(defn g-ss-plen [] : I32 155)
+(defn g-ss-haveexp [] : I32 156)
+(defn g-ss-sigok [] : I32 157)        ; 1 once the host key signature over H has been verified
+(defn g-ss-trust [] : I32 158)        ; 0 unknown host, 1 matches the trusted fingerprint, 2 differs
+(defn g-ss-exit [] : I32 159)         ; remote exit status, -1 none
+(defn g-ss-disc [] : I32 160)         ; disconnect reason code received
+(defn g-ss-rp [] : I32 161)           ; out: address of the string rx-string! just read
+(defn g-ss-rl [] : I32 162)           ; out: its length
+(defn g-ss-bad [] : I32 163)          ; set when a read ran past the payload
+(defn g-ss-closesent [] : I32 164)
+(defn g-ss-kbdrounds [] : I32 165)
+(defn g-ss-rxseq [] : I32 166)        ; sequence number of the packet being handled (for UNIMPLEMENTED)
+
+(defn cstrlen [(a : I32)] : I32 (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1)))))
+
+;; ---- writers (build the outgoing payload at tx-base) -----------------------------------------------------------------------------
+(defn tx-begin! [(msg : I32)] : Unit (do (gi! (g-ss-txpos) 0) (store8! (tx-base) msg) (gi! (g-ss-txpos) 1)))
+(defn w8! [(v : I32)] : Unit
+  (let [p (gi (g-ss-txpos))]
+    (when (< p 36000) (store8! (+ (tx-base) p) (bit-and v 255)) (gi! (g-ss-txpos) (+ p 1)))))
+(defn w32! [(v : I32)] : Unit (do (w8! (ushr v 24)) (w8! (ushr v 16)) (w8! (ushr v 8)) (w8! v)))
+(defn wmem! [(src : I32) (n : I32)] : Unit
+  (let [p (gi (g-ss-txpos))]
+    (when (< (+ p n) 36000)
+      (copy-mem! (+ (tx-base) p) src n)
+      (gi! (g-ss-txpos) (+ p n)))))
+(defn wstr! [(src : I32) (n : I32)] : Unit (do (w32! n) (wmem! src n)))
+(defn wlit! [(lit : I32)] : Unit (wstr! lit (cstrlen lit)))        ; a string literal's address as an SSH string
+
+;; ---- readers (walk the current payload at rx-base) -----------------------------------------------------------------------------------
+(defn rx-left [] : I32 (- (gi (g-ss-rlen)) (gi (g-ss-rpos))))
+(defn rx8 [] : I32
+  (if (< (rx-left) 1) (do (gi! (g-ss-bad) 1) 0)
+      (let [v (load8 (+ (rx-base) (gi (g-ss-rpos))))]
+        (do (gi! (g-ss-rpos) (+ (gi (g-ss-rpos)) 1)) v))))
+(defn rx32 [] : I32
+  (if (< (rx-left) 4) (do (gi! (g-ss-bad) 1) 0)
+      (let [v (be32 (+ (rx-base) (gi (g-ss-rpos))))]
+        (do (gi! (g-ss-rpos) (+ (gi (g-ss-rpos)) 4)) v))))
+;; a string: g-ss-rp = where its bytes are, g-ss-rl = how long
+(defn rx-string! [] : Unit
+  (let [n (rx32)]
+    (if (or (< n 0) (> n (rx-left)))
+        (do (gi! (g-ss-bad) 1) (gi! (g-ss-rp) (rx-base)) (gi! (g-ss-rl) 0))
+        (do (gi! (g-ss-rp) (+ (rx-base) (gi (g-ss-rpos)))) (gi! (g-ss-rl) n)
+            (gi! (g-ss-rpos) (+ (gi (g-ss-rpos)) n))))))
+
+;; does the comma-separated name-list at (ptr,len) contain exactly the NUL-terminated name at lit? (1 / 0)
+(defn namelist-has [(ptr : I32) (len : I32) (lit : I32)] : I32
+  (let [nl (cstrlen lit)]
+    (loop [i 0 start 0 found 0]
+      (if (> i len) found
+          (if (or (= i len) (= (load8 (+ ptr i)) 44))
+              (let [m (if (= (- i start) nl)
+                          (loop [k 0 ok 1]
+                            (if (= k nl) ok
+                                (recur (+ k 1) (if (= (load8 (+ ptr (+ start k))) (load8 (+ lit k))) ok 0))))
+                          0)]
+                (recur (+ i 1) (+ i 1) (if (or (= found 1) (= m 1)) 1 0)))
+              (recur (+ i 1) start found))))))
+
+;; does the first name in the list equal lit? (1 / 0)
+(defn namelist-first-is [(ptr : I32) (len : I32) (lit : I32)] : I32
+  (let [nl (cstrlen lit)
+        end (loop [i 0] (if (or (= i len) (= (load8 (+ ptr i)) 44)) i (recur (+ i 1))))]
+    (if (= end nl)
+        (loop [k 0 ok 1]
+          (if (= k nl) ok (recur (+ k 1) (if (= (load8 (+ ptr k)) (load8 (+ lit k))) ok 0))))
+        0)))
+
+;; ---- packet framing: out ------------------------------------------------------------------------------------------------------------------
+(defn nonce-from-seq! [(addr : I32) (seq : I32)] : Unit (do (store32! addr 0) (put-be32! (+ addr 4) seq)))
+
+;; queue n bytes from src onto OUT; false (nothing queued) if they would not fit
+(defn out-room [(n : I32)] : Bool (< (+ (gi (g-out-len)) n) (out-cap)))
+(defn out-append! [(src : I32) (n : I32)] : Unit
+  (loop [i 0] (when (< i n) (put8! (load8 (+ src i))) (recur (+ i 1)))))
+
+;; Frame the payload in tx-base (txpos bytes) and queue it. Returns 1 if sent, 0 if OUT had no room (nothing sent, the
+;; sequence number is NOT consumed -- the caller decides).
+(defn ssh-send! [] : I32
+  (let [len (gi (g-ss-txpos))
+        f (frame-base)
+        enc (gi (g-ss-encout))
+        pad0 (if (= enc 1) (- 8 (mod (+ 1 len) 8)) (- 8 (mod (+ 5 len) 8)))
+        pad (if (< pad0 4) (+ pad0 8) pad0)
+        l (+ (+ 1 len) pad)
+        total (if (= enc 1) (+ (+ 4 l) 16) (+ 4 l))]
+    (if (not (out-room (+ total 8))) 0
+        (do (put-be32! f l)
+            (store8! (+ f 4) pad)
+            (copy-mem! (+ f 5) (tx-base) len)
+            (zero-mem! (+ f (+ 5 len)) pad)
+            (when (= enc 1)
+              (let [nonce (key-at (k-nonce))]
+                (do (nonce-from-seq! nonce (gi (g-ss-seqout)))
+                    (nk-chacha20-xor (key-at (k-c2s-main)) nonce 1 (+ f 4) (+ f 4) l)
+                    (nk-chacha20-polykey (key-at (k-c2s-main)) nonce (key-at (k-polykey)))
+                    (nk-chacha20-xor (key-at (k-c2s-hdr)) nonce 0 f f 4)
+                    (nk-poly1305 (+ f (+ 4 l)) f (+ 4 l) (key-at (k-polykey))))))
+            (out-append! f total)
+            (gi! (g-ss-seqout) (+ (gi (g-ss-seqout)) 1))
+            1))))

@@ -5,3 +5,6 @@ stdlib/netkit/nk_rfb.prn
 stdlib/netkit/nk_scan.prn
 stdlib/netkit/nk_crypto.prn
 stdlib/netkit/nk_x25519.prn
+stdlib/netkit/nk_ed25519.prn
+stdlib/netkit/nk_ssh_wire.prn
+stdlib/netkit/nk_ssh.prn

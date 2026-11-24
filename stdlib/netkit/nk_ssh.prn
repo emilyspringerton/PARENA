@@ -1,0 +1,604 @@
+;; stdlib/netkit/nk_ssh.prn -- an SSH-2 client (RFC 4253/4252/4254) as a sans-IO state machine in PARENA, compiled to wasm.
+;;
+;; Founder's VS0: SSH ships FIRST, "the only way into the screenless router Pi" -- "Existing Android SSH apps are not
+;; acceptable" -- and (2026-11-24) "ensure its all parena based mods first dev". So no libssh2, no JSch: the protocol, the
+;; key exchange (nk_x25519.prn), the cipher (nk_crypto.prn) and the framing (nk_ssh_wire.prn) are all PARENA.
+;;
+;; What it speaks (deliberately ONE algorithm per slot -- the set OpenSSH has defaulted to for a decade):
+;;     key exchange   curve25519-sha256 (and its @libssh.org alias)
+;;     host key       ssh-ed25519
+;;     cipher         chacha20-poly1305@openssh.com   (AEAD: no separate MAC; the KEXINIT "mac" list is a formality)
+;;     compression    none
+;;     authentication none (to learn the methods) -> password, or keyboard-interactive answering each prompt with the password
+;;     session        one channel, pty-req (xterm-256color) + shell, window-change on resize
+;; A server without chacha20 (an old Dropbear) is refused with a plain message naming what is missing -- never downgraded.
+;;
+;; HOST KEY TRUST (the part a toy client gets wrong): credentials are NEVER sent to a host that has not been accepted.
+;;   - If the page knows this device (it holds a saved fingerprint) it writes it at nk-ssh-expect-addr and passes
+;;     have_expected=1: a match goes on to authenticate; a mismatch fails with HOST_KEY and nothing is sent.
+;;   - Otherwise the state machine stops in phase 2 ("verify this device") with the fingerprint available; the page shows
+;;     it and, only if the user accepts, calls nk-ssh-accept-hostkey.
+;;   - The server's signature over the exchange hash is checked against its host key (nk_ed25519.prn) BEFORE either of the
+;;     above; a server that cannot prove it owns the key fails with msg 22.
+;;
+;; Page protocol (the module has no imports; the page host moves bytes):
+;;     entropy: 64 random bytes at nk-ssh-entropy-addr, user at nk-ssh-user-addr, password at nk-ssh-pass-addr, then
+;;     nk-ssh-begin(ulen, plen, cols, rows, have_expected)   -- OUT now holds our identification string
+;;     loop: socket bytes -> p = nk-in-reserve(); write n bytes at p; nk-ssh-feed(n)
+;;           OUT has bytes? -> send them, nk-out-clear(); then nk-ssh-pump() if nk-ssh-txq-pending() > 0
+;;           nk-ssh-data-len() > 0 -> feed those bytes to the terminal, then nk-ssh-data-clear()  (this also grants the server window)
+;;           typed bytes: write at nk-ssh-uin-addr, nk-ssh-send(n) -> bytes accepted (the rest: call again after nk-ssh-pump)
+;;
+;; G words 128..191 belong to nk_ssh*.prn.
+
+;; states
+(defn ss-idle [] : I32 0)
+(defn ss-ident [] : I32 1)
+(defn ss-kexinit [] : I32 2)
+(defn ss-kexreply [] : I32 3)
+(defn ss-newkeys [] : I32 4)
+(defn ss-hostkey [] : I32 5)
+(defn ss-service [] : I32 6)
+(defn ss-auth [] : I32 7)
+(defn ss-chopen [] : I32 8)
+(defn ss-chreq [] : I32 9)
+(defn ss-run [] : I32 10)
+(defn ss-closed [] : I32 98)
+(defn ss-failed [] : I32 99)
+
+(defn skip32! [] : Unit (do (rx32) unit))
+
+(defn ssh-fail! [(kind : I32) (msg : I32)] : I32
+  (do (gi! (g-err-kind) kind) (gi! (g-err-msg) msg) (gi! (g-ss-state) (ss-failed)) 0))
+
+;; our identification string (RFC 4253 s4.2), also V_C in the exchange hash (without the CR LF)
+(defn ssh-ident [] : String "SSH-2.0-ShankpitNetkit_1.0")
+
+;; ---- the exchange hash and key derivation (hash input is built at hbuf-base) -----------------------------------------------------------
+(defn h8! [(v : I32)] : Unit
+  (let [p (gi (g-ss-hpos))] (when (< p 16000) (store8! (+ (hbuf-base) p) (bit-and v 255)) (gi! (g-ss-hpos) (+ p 1)))))
+(defn h32! [(v : I32)] : Unit (do (h8! (ushr v 24)) (h8! (ushr v 16)) (h8! (ushr v 8)) (h8! v)))
+(defn hmem! [(src : I32) (n : I32)] : Unit
+  (let [p (gi (g-ss-hpos))] (when (< (+ p n) 16000) (copy-mem! (+ (hbuf-base) p) src n) (gi! (g-ss-hpos) (+ p n)))))
+(defn hstr! [(src : I32) (n : I32)] : Unit (do (h32! n) (hmem! src n)))
+
+;; K, the 32 raw bytes X25519 produced, written as an SSH mpint: big-endian, leading zero bytes dropped, a zero byte put
+;; in front if the top bit is set (OpenSSH's sshbuf_put_bignum2_bytes does exactly this with the raw output)
+(defn hmpint! [(addr : I32)] : Unit
+  (let [z (loop [i 0] (if (and (< i 32) (= (load8 (+ addr i)) 0)) (recur (+ i 1)) i))
+        n (- 32 z)]
+    (if (= n 0) (h32! 0)
+        (let [lead (if (>= (load8 (+ addr z)) 128) 1 0)]
+          (do (h32! (+ n lead))
+              (when (= lead 1) (h8! 0))
+              (hmem! (+ addr z) n))))))
+
+(defn ssh-compute-h! [] : Unit
+  (do (gi! (g-ss-hpos) 0)
+      (hstr! (str-addr (ssh-ident)) (cstrlen (str-addr (ssh-ident))))
+      (hstr! (vs-base) (gi (g-ss-vslen)))
+      (hstr! (iclt-base) (gi (g-ss-iclen)))
+      (hstr! (isrv-base) (gi (g-ss-islen)))
+      (hstr! (hostkey-base) (gi (g-ss-kslen)))
+      (hstr! (key-at (k-qc)) 32)
+      (hstr! (key-at (k-qs)) 32)
+      (hmpint! (key-at (k-shared)))
+      (nk-sha256 (hbuf-base) (gi (g-ss-hpos)) (key-at (k-h)))))
+
+;; RFC 4253 s7.2: 64 bytes of key for one direction = K1 || K2, K1 = H(K || H || letter || session_id), K2 = H(K || H || K1)
+(defn ssh-derive! [(letter : I32) (dst : I32)] : Unit
+  (do (gi! (g-ss-hpos) 0)
+      (hmpint! (key-at (k-shared))) (hmem! (key-at (k-h)) 32) (h8! letter) (hmem! (key-at (k-sid)) 32)
+      (nk-sha256 (hbuf-base) (gi (g-ss-hpos)) dst)
+      (gi! (g-ss-hpos) 0)
+      (hmpint! (key-at (k-shared))) (hmem! (key-at (k-h)) 32) (hmem! dst 32)
+      (nk-sha256 (hbuf-base) (gi (g-ss-hpos)) (+ dst 32))))
+
+(defn all-zero [(addr : I32) (n : I32)] : Bool
+  (= 0 (loop [i 0 acc 0] (if (= i n) acc (recur (+ i 1) (bit-or acc (load8 (+ addr i))))))))
+
+;; ---- messages we send ----------------------------------------------------------------------------------------------------------------------------
+(defn ssh-send-kexinit! [] : Unit
+  (do (tx-begin! 20)
+      (wmem! (key-at (k-entropy)) 16)
+      (wlit! (str-addr "curve25519-sha256,curve25519-sha256@libssh.org"))
+      (wlit! (str-addr "ssh-ed25519"))
+      (wlit! (str-addr "chacha20-poly1305@openssh.com"))
+      (wlit! (str-addr "chacha20-poly1305@openssh.com"))
+      (wlit! (str-addr "hmac-sha2-256"))
+      (wlit! (str-addr "hmac-sha2-256"))
+      (wlit! (str-addr "none"))
+      (wlit! (str-addr "none"))
+      (wlit! (str-addr ""))
+      (wlit! (str-addr ""))
+      (w8! 0) (w32! 0)
+      (copy-mem! (iclt-base) (tx-base) (gi (g-ss-txpos)))
+      (gi! (g-ss-iclen) (gi (g-ss-txpos)))
+      (ssh-send!)
+      unit))
+
+(defn ssh-send-userauth-none! [] : Unit
+  (do (tx-begin! 50)
+      (wstr! (cred-base) (gi (g-ss-ulen)))
+      (wlit! (str-addr "ssh-connection"))
+      (wlit! (str-addr "none"))
+      (ssh-send!) unit))
+
+(defn ssh-send-password! [] : Unit
+  (do (tx-begin! 50)
+      (wstr! (cred-base) (gi (g-ss-ulen)))
+      (wlit! (str-addr "ssh-connection"))
+      (wlit! (str-addr "password"))
+      (w8! 0)
+      (wstr! (+ (cred-base) 128) (gi (g-ss-plen)))
+      (ssh-send!)
+      (gi! (g-ss-authphase) 1)
+      unit))
+
+(defn ssh-send-kbd! [] : Unit
+  (do (tx-begin! 50)
+      (wstr! (cred-base) (gi (g-ss-ulen)))
+      (wlit! (str-addr "ssh-connection"))
+      (wlit! (str-addr "keyboard-interactive"))
+      (wlit! (str-addr ""))
+      (wlit! (str-addr ""))
+      (ssh-send!)
+      (gi! (g-ss-authphase) 2)
+      (gi! (g-ss-triedkbd) 1)
+      unit))
+
+(defn ssh-send-unimplemented! [] : Unit
+  (do (tx-begin! 3) (w32! (- (gi (g-ss-seqin)) 1)) (ssh-send!) unit))
+
+(defn ssh-send-chan-open! [] : Unit
+  (do (tx-begin! 90)
+      (wlit! (str-addr "session"))
+      (w32! 0)
+      (w32! 65536)
+      (w32! 16384)
+      (ssh-send!)
+      (gi! (g-ss-myrwin) 65536)
+      unit))
+
+(defn ssh-send-pty-shell! [] : Unit
+  (do (tx-begin! 98)
+      (w32! (gi (g-ss-chremote)))
+      (wlit! (str-addr "pty-req"))
+      (w8! 1)
+      (wlit! (str-addr "xterm-256color"))
+      (w32! (gi (g-ss-cols))) (w32! (gi (g-ss-rows))) (w32! 0) (w32! 0)
+      (wstr! (str-addr "") 1)                       ; encoded terminal modes: just TTY_OP_END (a single 0 byte)
+      (ssh-send!)
+      (tx-begin! 98)
+      (w32! (gi (g-ss-chremote)))
+      (wlit! (str-addr "shell"))
+      (w8! 1)
+      (ssh-send!)
+      (gi! (g-ss-pendreply) 2)
+      unit))
+
+(defn ssh-send-window-adjust! [(n : I32)] : Unit
+  (do (tx-begin! 93) (w32! (gi (g-ss-chremote))) (w32! n) (ssh-send!) unit))
+
+;; ---- sending typed bytes ------------------------------------------------------------------------------------------------------------------------
+(defn ssh-pump-tx! [] : Unit
+  (loop [go 1]
+    (when (and (= go 1) (and (= (gi (g-ss-state)) (ss-run)) (and (> (gi (g-ss-txqlen)) 0) (> (gi (g-ss-peerwin)) 0))))
+      (let [chunk (min-i (min-i (gi (g-ss-txqlen)) (gi (g-ss-peerwin))) (min-i (gi (g-ss-peermax)) 8192))]
+        (do (tx-begin! 94)
+            (w32! (gi (g-ss-chremote)))
+            (wstr! (+ (txq-base) (gi (g-ss-txqhead))) chunk)
+            (if (= (ssh-send!) 1)
+                (do (gi! (g-ss-txqhead) (+ (gi (g-ss-txqhead)) chunk))
+                    (gi! (g-ss-txqlen) (- (gi (g-ss-txqlen)) chunk))
+                    (gi! (g-ss-peerwin) (- (gi (g-ss-peerwin)) chunk))
+                    (when (= (gi (g-ss-txqlen)) 0) (gi! (g-ss-txqhead) 0))
+                    (recur 1))
+                (recur 0)))))))
+
+;; ---- what happens after the host key is accepted ----------------------------------------------------------------------------------------------
+(defn ssh-after-hostkey! [] : I32
+  (do (tx-begin! 5) (wlit! (str-addr "ssh-userauth")) (ssh-send!)
+      (gi! (g-ss-state) (ss-service))
+      1))
+
+;; ---- message handlers -------------------------------------------------------------------------------------------------------------------------------
+;; the server's KEXINIT: record it, check it offers what we speak, then send our ECDH init
+(defn st-kexinit [(t : I32)] : I32
+  (if (!= t 20) (ssh-fail! (ek-protocol) 14)
+      (let [n (gi (g-ss-rlen))]
+        (if (> n 8000) (ssh-fail! (ek-protocol) 14)
+            (do (copy-mem! (isrv-base) (rx-base) n)
+                (gi! (g-ss-islen) n)
+                (gi! (g-ss-rpos) 17)                  ; type byte + 16 cookie bytes
+                (dotimes [i 10]
+                  (do (rx-string!)
+                      (store32! (+ (lists-base) (shl i 3)) (gi (g-ss-rp)))
+                      (store32! (+ (lists-base) (+ (shl i 3) 4)) (gi (g-ss-rl)))))
+                (let [follows (rx8)]
+                  (if (= (gi (g-ss-bad)) 1) (ssh-fail! (ek-protocol) 14)
+                      (let [kexp (load32 (lists-base)) kexl (load32 (+ (lists-base) 4))
+                            hkp (load32 (+ (lists-base) 8)) hkl (load32 (+ (lists-base) 12))
+                            c2sp (load32 (+ (lists-base) 16)) c2sl (load32 (+ (lists-base) 20))
+                            s2cp (load32 (+ (lists-base) 24)) s2cl (load32 (+ (lists-base) 28))
+                            cmp1p (load32 (+ (lists-base) 48)) cmp1l (load32 (+ (lists-base) 52))
+                            cmp2p (load32 (+ (lists-base) 56)) cmp2l (load32 (+ (lists-base) 60))
+                            kex-ok (bit-or (namelist-has kexp kexl (str-addr "curve25519-sha256"))
+                                           (namelist-has kexp kexl (str-addr "curve25519-sha256@libssh.org")))
+                            ok (bit-and kex-ok
+                                 (bit-and (namelist-has hkp hkl (str-addr "ssh-ed25519"))
+                                   (bit-and (namelist-has c2sp c2sl (str-addr "chacha20-poly1305@openssh.com"))
+                                     (bit-and (namelist-has s2cp s2cl (str-addr "chacha20-poly1305@openssh.com"))
+                                       (bit-and (namelist-has cmp1p cmp1l (str-addr "none"))
+                                                (namelist-has cmp2p cmp2l (str-addr "none")))))))]
+                        (if (= ok 0) (ssh-fail! (ek-protocol) 11)
+                            (do
+                              ;; a first-kex guess the server got wrong must be dropped (RFC 4253 s7)
+                              (when (= follows 1)
+                                (when (= 0 (bit-and (namelist-first-is kexp kexl (str-addr "curve25519-sha256"))
+                                                    (namelist-first-is hkp hkl (str-addr "ssh-ed25519"))))
+                                  (gi! (g-ss-discard) 1)))
+                              ;; our ephemeral key from the page's entropy; Q_C = X25519(priv, 9)
+                              (copy-mem! (key-at (k-priv)) (+ (key-at (k-entropy)) 16) 32)
+                              (store8! (key-at (k-tmp)) 9)
+                              (zero-mem! (+ (key-at (k-tmp)) 1) 31)
+                              (nk-x25519 (key-at (k-qc)) (key-at (k-priv)) (key-at (k-tmp)))
+                              (tx-begin! 30)
+                              (wstr! (key-at (k-qc)) 32)
+                              (ssh-send!)
+                              (gi! (g-ss-state) (ss-kexreply))
+                              1))))))))))
+
+;; KEX_ECDH_REPLY: host key, server's ephemeral key, signature. Derive everything, send NEWKEYS.
+(defn st-kexreply [(t : I32)] : I32
+  (if (!= t 31) (ssh-fail! (ek-protocol) 14)
+      (do (rx-string!)
+          (let [ksp (gi (g-ss-rp)) ksl (gi (g-ss-rl))]
+            (do (rx-string!)
+                (let [qsp (gi (g-ss-rp)) qsl (gi (g-ss-rl))]
+                  (do (rx-string!)
+                      (let [sgp (gi (g-ss-rp)) sgl (gi (g-ss-rl))]
+                        (if (or (= (gi (g-ss-bad)) 1) (or (!= qsl 32) (or (> ksl 500) (< ksl 20))))
+                            (ssh-fail! (ek-protocol) 15)
+                            (do (copy-mem! (hostkey-base) ksp ksl)
+                                (gi! (g-ss-kslen) ksl)
+                                (copy-mem! (key-at (k-qs)) qsp 32)
+                                (nk-x25519 (key-at (k-shared)) (key-at (k-priv)) (key-at (k-qs)))
+                                (if (all-zero (key-at (k-shared)) 32)
+                                    (ssh-fail! (ek-protocol) 15)
+                                    (do (ssh-compute-h!)
+                                        (copy-mem! (key-at (k-sid)) (key-at (k-h)) 32)
+                                        (nk-sha256 (hostkey-base) ksl (key-at (k-fp)))
+                                        (if (= (ssh-verify-hostkey! sgp sgl) 0)
+                                            (ssh-fail! (ek-protocol) 22)
+                                            (do (ssh-derive! 67 (key-at (k-c2s-main)))      ; 'C': client-to-server encryption key
+                                                (ssh-derive! 68 (key-at (k-s2c-main)))      ; 'D': server-to-client
+                                                (tx-begin! 21)
+                                                (ssh-send!)
+                                                (gi! (g-ss-encout) 1)
+                                                (gi! (g-ss-state) (ss-newkeys))
+                                                1))))))))))))))
+
+;; Verify the signature over H with the server's host key. Returns 1 if good. (nk_ed25519.prn supplies the real check;
+;; this stub is replaced there, see ssh-verify-hostkey-real!)
+(defn ssh-verify-hostkey! [(sgp : I32) (sgl : I32)] : I32 (ssh-verify-hostkey-real! sgp sgl))
+
+(defn st-newkeys [(t : I32)] : I32
+  (if (!= t 21) (ssh-fail! (ek-protocol) 14)
+      (do (gi! (g-ss-encin) 1)
+          (if (= (gi (g-ss-haveexp)) 1)
+              (if (= (ct-eq (key-at (k-fp)) (key-at (k-expect)) 32) 1)
+                  (do (gi! (g-ss-trust) 1) (ssh-after-hostkey!))
+                  (do (gi! (g-ss-trust) 2) (ssh-fail! (ek-hostkey) 16)))
+              (do (gi! (g-ss-trust) 0) (gi! (g-ss-state) (ss-hostkey)) 1)))))
+
+(defn st-service [(t : I32)] : I32
+  (if (!= t 6) (ssh-fail! (ek-protocol) 14)
+      (do (ssh-send-userauth-none!) (gi! (g-ss-authphase) 0) (gi! (g-ss-state) (ss-auth)) 1)))
+
+;; USERAUTH_FAILURE: what can continue? try password, then keyboard-interactive, then give up
+(defn st-auth-failure [] : I32
+  (do (rx-string!)
+      (let [mp (gi (g-ss-rp)) ml (gi (g-ss-rl))
+            can-pw (namelist-has mp ml (str-addr "password"))
+            can-kbd (namelist-has mp ml (str-addr "keyboard-interactive"))
+            phase (gi (g-ss-authphase))]
+        (if (= (gi (g-ss-bad)) 1) (ssh-fail! (ek-protocol) 14)
+            (if (= phase 0)
+                (if (= can-pw 1) (do (ssh-send-password!) 1)
+                    (if (= can-kbd 1) (do (ssh-send-kbd!) 1)
+                        (ssh-fail! (ek-auth-failed) 18)))
+                (if (and (= phase 1) (and (= can-kbd 1) (= (gi (g-ss-triedkbd)) 0)))
+                    (do (ssh-send-kbd!) 1)
+                    (ssh-fail! (ek-auth-failed) 5)))))))
+
+;; keyboard-interactive INFO_REQUEST: answer every prompt of the first round with the password
+(defn st-kbd-info [] : I32
+  (do (gi! (g-ss-kbdrounds) (+ (gi (g-ss-kbdrounds)) 1))
+      (rx-string!) (rx-string!) (rx-string!)
+      (let [n (rx32)]
+        (if (or (= (gi (g-ss-bad)) 1) (or (< n 0) (> n 8) (> (gi (g-ss-kbdrounds)) 1)))
+            (ssh-fail! (ek-auth-failed) 17)
+            (do (tx-begin! 61)
+                (w32! n)
+                (dotimes [i n] (wstr! (+ (cred-base) 128) (gi (g-ss-plen))))
+                (ssh-send!)
+                1)))))
+
+(defn st-auth [(t : I32)] : I32
+  (cond
+    (= t 52) (do (ssh-send-chan-open!) (gi! (g-ss-state) (ss-chopen)) 1)
+    (= t 51) (st-auth-failure)
+    (= t 53) 1
+    (= t 60) (if (= (gi (g-ss-authphase)) 1) (ssh-fail! (ek-auth-failed) 17)
+                 (if (= (gi (g-ss-authphase)) 2) (st-kbd-info) (ssh-fail! (ek-protocol) 14)))
+    :else (do (ssh-send-unimplemented!) 1)))
+
+(defn st-chopen [(t : I32)] : I32
+  (cond
+    (= t 91) (do (skip32!)                                 ; our channel number (0)
+                 (gi! (g-ss-chremote) (rx32))
+                 (gi! (g-ss-peerwin) (rx32))
+                 (gi! (g-ss-peermax) (rx32))
+                 (if (= (gi (g-ss-bad)) 1) (ssh-fail! (ek-protocol) 14)
+                     (do (ssh-send-pty-shell!) (gi! (g-ss-state) (ss-chreq)) 1)))
+    (= t 92) (ssh-fail! (ek-protocol) 19)
+    (= t 93) 1
+    :else (do (ssh-send-unimplemented!) 1)))
+
+;; channel traffic: valid once the channel is open (states 9 and 10)
+(defn st-channel [(t : I32)] : I32
+  (cond
+    (or (= t 94) (= t 95))
+      (do (skip32!)                                       ; recipient channel
+          (when (= t 95) (skip32!))                       ; data type code (1 = stderr): shown like stdout on a pty
+          (rx-string!)
+          (let [n (gi (g-ss-rl)) src (gi (g-ss-rp))]
+            (if (or (= (gi (g-ss-bad)) 1) (> (+ (gi (g-ss-datalen)) n) 131072) (> n (gi (g-ss-myrwin))))
+                (ssh-fail! (ek-protocol) 14)
+                (do (copy-mem! (+ (dout-base) (gi (g-ss-datalen))) src n)
+                    (gi! (g-ss-datalen) (+ (gi (g-ss-datalen)) n))
+                    (gi! (g-ss-myrwin) (- (gi (g-ss-myrwin)) n))
+                    1))))
+    (= t 93) (do (skip32!)
+                 (let [adj (rx32)]
+                   (do (gi! (g-ss-peerwin) (min-i 2000000000 (+ (gi (g-ss-peerwin)) (max-i adj 0))))
+                       1)))
+    (= t 99) (if (= (gi (g-ss-state)) (ss-chreq))
+                 (do (gi! (g-ss-pendreply) (- (gi (g-ss-pendreply)) 1))
+                     (when (= (gi (g-ss-pendreply)) 0) (gi! (g-ss-state) (ss-run)))
+                     1)
+                 1)
+    (= t 100) (ssh-fail! (ek-protocol) 20)
+    (= t 96) 1
+    (= t 97) (do (when (= (gi (g-ss-closesent)) 0)
+                   (do (tx-begin! 97) (w32! (gi (g-ss-chremote)) ) (ssh-send!) (gi! (g-ss-closesent) 1)))
+                 (gi! (g-ss-state) (ss-closed))
+                 1)
+    (= t 98) (do (skip32!)
+                 (rx-string!)
+                 (let [tp (gi (g-ss-rp)) tl (gi (g-ss-rl))
+                       want (rx8)]
+                   (do (when (= (namelist-has tp tl (str-addr "exit-status")) 1) (gi! (g-ss-exit) (rx32)))
+                       (when (= want 1) (do (tx-begin! 100) (w32! (gi (g-ss-chremote))) (ssh-send!)))
+                       1)))
+    :else (do (ssh-send-unimplemented!) 1)))
+
+;; DISCONNECT: before the shell is up it is a failure (with the server's own words kept); after, a clean end
+(defn ssh-on-disconnect! [] : I32
+  (do (gi! (g-ss-disc) (rx32))
+      (rx-string!)
+      (let [n (min-i (gi (g-ss-rl)) 255)]
+        (do (copy-mem! (reason-base) (gi (g-ss-rp)) n)
+            (store8! (+ (reason-base) n) 0)
+            (if (>= (gi (g-ss-state)) (ss-run))
+                (do (gi! (g-ss-state) (ss-closed)) 1)
+                (ssh-fail! (if (= (gi (g-ss-disc)) 14) (ek-auth-failed) (ek-protocol)) 21))))))
+
+(defn ssh-on-global! [] : I32
+  (do (rx-string!)
+      (let [want (rx8)]
+        (do (when (= want 1) (do (tx-begin! 82) (ssh-send!)))
+            1))))
+
+;; ---- dispatch ---------------------------------------------------------------------------------------------------------------------------------------
+(defn ssh-handle! [] : I32
+  (let [t (load8 (rx-base))
+        st (gi (g-ss-state))]
+    (do (gi! (g-ss-rpos) 1) (gi! (g-ss-bad) 0)
+        (cond
+          (= t 1) (ssh-on-disconnect!)
+          (or (= t 2) (or (= t 3) (or (= t 4) (= t 7)))) 1
+          (= t 80) (ssh-on-global!)
+          (= (gi (g-ss-discard)) 1) (do (gi! (g-ss-discard) 0) 1)
+          (= st (ss-kexinit)) (st-kexinit t)
+          (= st (ss-kexreply)) (st-kexreply t)
+          (= st (ss-newkeys)) (st-newkeys t)
+          (= st (ss-service)) (st-service t)
+          (= st (ss-auth)) (st-auth t)
+          (= st (ss-chopen)) (st-chopen t)
+          (>= st (ss-chreq)) (st-channel t)
+          :else (ssh-fail! (ek-protocol) 14)))))
+
+;; ---- reading one packet from IN ----------------------------------------------------------------------------------------------------------------------
+(defn ssh-next-packet [] : I32
+  (if (< (avail) 4) 0
+      (if (= (gi (g-ss-encin)) 0)
+          ;; plain packet
+          (let [l (pk32 0)]
+            (if (or (< l 6) (> l 35000)) (ssh-fail! (ek-protocol) 14)
+                (if (< (avail) (+ 4 l)) 0
+                    (let [padlen (pk8 4)
+                          plen (- (- l 1) padlen)]
+                      (if (or (< padlen 4) (< plen 1)) (ssh-fail! (ek-protocol) 14)
+                          (do (copy-mem! (rx-base) (+ (in-base) (+ (gi (g-in-rd)) 5)) plen)
+                              (gi! (g-ss-rlen) plen)
+                              (consume! (+ 4 l))
+                              (gi! (g-ss-seqin) (+ (gi (g-ss-seqin)) 1))
+                              (ssh-handle!)))))))
+          ;; chacha20-poly1305@openssh.com
+          (let [nonce (key-at (k-nonce))
+                len4 (key-at (k-len4))]
+            (do (nonce-from-seq! nonce (gi (g-ss-seqin)))
+                (nk-chacha20-xor (key-at (k-s2c-hdr)) nonce 0 (+ (in-base) (gi (g-in-rd))) len4 4)
+                (let [l (be32 len4)]
+                  (if (or (< l 8) (or (> l 35000) (!= (mod l 8) 0))) (ssh-fail! (ek-protocol) 13)
+                      (if (< (avail) (+ (+ 4 l) 16)) 0
+                          (do (nk-chacha20-polykey (key-at (k-s2c-main)) nonce (key-at (k-polykey)))
+                              (nk-poly1305 (key-at (k-tag)) (+ (in-base) (gi (g-in-rd))) (+ 4 l) (key-at (k-polykey)))
+                              (if (= (ct-eq (key-at (k-tag)) (+ (in-base) (+ (gi (g-in-rd)) (+ 4 l))) 16) 0)
+                                  (ssh-fail! (ek-protocol) 13)
+                                  (do (nk-chacha20-xor (key-at (k-s2c-main)) nonce 1
+                                                       (+ (in-base) (+ (gi (g-in-rd)) 4)) (rx-base) l)
+                                      (let [padlen (load8 (rx-base))
+                                            plen (- (- l 1) padlen)]
+                                        (if (or (< padlen 4) (< plen 1)) (ssh-fail! (ek-protocol) 14)
+                                            (do (copy-mem! (rx-base) (+ (rx-base) 1) plen)
+                                                (gi! (g-ss-rlen) plen)
+                                                (consume! (+ (+ 4 l) 16))
+                                                (gi! (g-ss-seqin) (+ (gi (g-ss-seqin)) 1))
+                                                (ssh-handle!)))))))))))))))
+
+;; the server's identification line (banner lines before it are skipped)
+(defn ssh-next-ident [] : I32
+  (let [n (avail)
+        lf (loop [i 0] (if (>= i n) -1 (if (= (pk8 i) 10) i (recur (+ i 1)))))]
+    (if (< lf 0)
+        (if (> n 2048) (ssh-fail! (ek-protocol) 12) 0)
+        (let [e0 (if (and (> lf 0) (= (pk8 (- lf 1)) 13)) (- lf 1) lf)
+              is-ssh (and (>= e0 4) (and (= (pk8 0) 83) (and (= (pk8 1) 83) (and (= (pk8 2) 72) (= (pk8 3) 45)))))]
+          (if (not is-ssh)
+              (do (consume! (+ lf 1)) 1)
+              (if (or (> e0 255) (and (!= (ident-prefix-len e0) 8) (!= (ident-prefix-len e0) 9)))
+                  (ssh-fail! (ek-protocol) 12)
+                  (do (dotimes [i e0] (store8! (+ (vs-base) i) (pk8 i)))
+                      (gi! (g-ss-vslen) e0)
+                      (consume! (+ lf 1))
+                      (ssh-send-kexinit!)
+                      (gi! (g-ss-state) (ss-kexinit))
+                      1)))))))
+
+;; "SSH-2.0-" (8) or "SSH-1.99-" (9) at the start of the pending line, else 0
+(defn ident-prefix-len [(e : I32)] : I32
+  (let [p20 (and (>= e 8) (and (= (pk8 4) 50) (and (= (pk8 5) 46) (and (= (pk8 6) 48) (= (pk8 7) 45)))))
+        p199 (and (>= e 9) (and (= (pk8 4) 49) (and (= (pk8 5) 46) (and (= (pk8 6) 57) (and (= (pk8 7) 57) (= (pk8 8) 45))))))]
+    (if p20 8 (if p199 9 0))))
+
+(defn ssh-step [] : I32
+  (let [s (gi (g-ss-state))]
+    (if (= s (ss-ident)) (ssh-next-ident)
+        (if (and (>= s (ss-kexinit)) (<= s (ss-run)))
+            (if (= s (ss-hostkey)) 0 (ssh-next-packet))
+            0))))
+
+;; ---- public API --------------------------------------------------------------------------------------------------------------------------------------
+(defn nk-ssh-entropy-addr [] : I32 (key-at (k-entropy)))
+(defn nk-ssh-expect-addr [] : I32 (key-at (k-expect)))
+(defn nk-ssh-user-addr [] : I32 (cred-base))
+(defn nk-ssh-pass-addr [] : I32 (+ (cred-base) 128))
+(defn nk-ssh-uin-addr [] : I32 (uin-base))
+(defn nk-ssh-data-addr [] : I32 (dout-base))
+(defn nk-ssh-fp-addr [] : I32 (key-at (k-fp)))
+(defn nk-ssh-hostkey-addr [] : I32 (hostkey-base))
+
+(defn nk-ssh-begin [(ulen : I32) (plen : I32) (cols : I32) (rows : I32) (haveexp : I32)] : Unit
+  (do (nk-reset-common!)
+      (loop [i 128] (when (< i 192) (gi! i 0) (recur (+ i 1))))
+      (gi! (g-ss-exit) -1)
+      (gi! (g-ss-ulen) (min-i ulen 127))
+      (gi! (g-ss-plen) (min-i plen 255))
+      (gi! (g-ss-cols) cols) (gi! (g-ss-rows) rows)
+      (gi! (g-ss-haveexp) (if (= haveexp 1) 1 0))
+      (store8! (reason-base) 0)
+      (let [id (str-addr (ssh-ident))]
+        (do (out-append! id (cstrlen id)) (put8! 13) (put8! 10)))
+      (gi! (g-ss-state) (ss-ident))))
+
+(defn nk-ssh-feed [(n : I32)] : Unit
+  (let [k (min-i n (nk-in-space))]
+    (do (gi! (g-in-used) (+ (gi (g-in-used)) k))
+        (gi! (g-bytes-in) (+ (gi (g-bytes-in)) k))
+        (loop [go 1]
+          (when (= go 1)
+            (recur (if (< (gi (g-ss-state)) 90) (ssh-step) 0))))
+        (when (>= (gi (g-ss-state)) 90) (gi! (g-in-rd) (gi (g-in-used))))
+        (ssh-pump-tx!))))
+
+;; the user confirmed the device's fingerprint (phase 2): carry on to authentication
+(defn nk-ssh-accept-hostkey [] : I32
+  (if (= (gi (g-ss-state)) (ss-hostkey)) (ssh-after-hostkey!) 0))
+;; the user refused it
+(defn nk-ssh-reject-hostkey [] : Unit
+  (when (= (gi (g-ss-state)) (ss-hostkey))
+    (do (ssh-fail! (ek-hostkey) 16) unit)))
+
+;; typed bytes: the page wrote n at nk-ssh-uin-addr. Returns how many were accepted (the queue is 64 KB).
+(defn nk-ssh-send [(n : I32)] : I32
+  (let [head (gi (g-ss-txqhead))
+        len (gi (g-ss-txqlen))
+        free (- 65536 (+ head len))
+        k (min-i n free)]
+    (if (not (= (gi (g-ss-state)) (ss-run))) 0
+        (do (copy-mem! (+ (txq-base) (+ head len)) (uin-base) k)
+            (gi! (g-ss-txqlen) (+ len k))
+            (ssh-pump-tx!)
+            k))))
+(defn nk-ssh-pump [] : Unit (ssh-pump-tx!))
+(defn nk-ssh-txq-pending [] : I32 (gi (g-ss-txqlen)))
+
+(defn nk-ssh-resize [(cols : I32) (rows : I32)] : Unit
+  (do (gi! (g-ss-cols) cols) (gi! (g-ss-rows) rows)
+      (when (= (gi (g-ss-state)) (ss-run))
+        (do (tx-begin! 98)
+            (w32! (gi (g-ss-chremote)))
+            (wlit! (str-addr "window-change"))
+            (w8! 0)
+            (w32! cols) (w32! rows) (w32! 0) (w32! 0)
+            (ssh-send!)
+            unit))))
+
+(defn nk-ssh-data-len [] : I32 (gi (g-ss-datalen)))
+;; the page has taken the decrypted bytes: hand the server its window back
+(defn nk-ssh-data-clear [] : Unit
+  (let [n (gi (g-ss-datalen))]
+    (do (gi! (g-ss-datalen) 0)
+        (when (and (> n 0) (>= (gi (g-ss-state)) (ss-chreq)) (< (gi (g-ss-state)) 90))
+          (do (gi! (g-ss-myrwin) (+ (gi (g-ss-myrwin)) n))
+              (ssh-send-window-adjust! n))))))
+
+(defn nk-ssh-close [] : Unit
+  (let [s (gi (g-ss-state))]
+    (do (when (and (>= s (ss-chreq)) (< s 90))
+          (do (when (= (gi (g-ss-closesent)) 0)
+                (do (tx-begin! 97) (w32! (gi (g-ss-chremote))) (ssh-send!) (gi! (g-ss-closesent) 1)))
+              (tx-begin! 1) (w32! 11) (wlit! (str-addr "closed by user")) (wlit! (str-addr ""))
+              (ssh-send!)))
+        (when (< s 90) (gi! (g-ss-state) (ss-closed))))))
+
+;; the transport dropped
+(defn nk-ssh-transport-closed [] : Unit
+  (let [s (gi (g-ss-state))]
+    (when (< s 90)
+      (if (>= s (ss-run)) (gi! (g-ss-state) (ss-closed))
+          (do (ssh-fail! (ek-protocol) 21) unit)))))
+
+(defn nk-ssh-state [] : I32 (gi (g-ss-state)))
+;; 0 idle, 1 key exchange, 2 verify this device (needs the user), 3 logging in, 4 opening the shell, 5 running, 8 closed, 9 failed
+(defn nk-ssh-phase [] : I32
+  (let [s (gi (g-ss-state))]
+    (cond
+      (= s 0) 0
+      (= s (ss-hostkey)) 2
+      (< s (ss-hostkey)) 1
+      (< s (ss-chopen)) 3
+      (< s (ss-run)) 4
+      (< s 90) 5
+      (= s 98) 8
+      :else 9)))
+(defn nk-ssh-trust [] : I32 (gi (g-ss-trust)))
+(defn nk-ssh-sigok [] : I32 (gi (g-ss-sigok)))
+(defn nk-ssh-exit-status [] : I32 (gi (g-ss-exit)))
+(defn nk-ssh-disc-code [] : I32 (gi (g-ss-disc)))
+(defn nk-ssh-hostkey-len [] : I32 (gi (g-ss-kslen)))
+(defn nk-ssh-seq-out [] : I32 (gi (g-ss-seqout)))
+(defn nk-ssh-seq-in [] : I32 (gi (g-ss-seqin)))

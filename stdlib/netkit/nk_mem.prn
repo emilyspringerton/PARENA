@@ -138,6 +138,7 @@
 (defn ek-auth-failed [] : I32 4)
 (defn ek-protocol [] : I32 5)
 (defn ek-unknown [] : I32 6)
+(defn ek-hostkey [] : I32 7)       ; the device's identity (SSH host key) is not the one we trusted
 
 (defn nk-err-name-addr [(k : I32)] : I32
   (case k
@@ -147,6 +148,7 @@
     4 (str-addr "AUTH_FAILED")
     5 (str-addr "PROTOCOL")
     6 (str-addr "UNKNOWN")
+    7 (str-addr "HOST_KEY")
     (str-addr "NONE")))
 
 ;; The sentence the user reads.
@@ -158,6 +160,7 @@
     4 (str-addr "Wrong username or password")
     5 (str-addr "That device doesn't speak this protocol")
     6 (str-addr "Something went wrong")
+    7 (str-addr "This device's identity changed since last time")
     (str-addr "OK")))
 
 ;; Specific message codes (g-err-msg): why, in more detail than the kind.
@@ -173,4 +176,17 @@
     8 (str-addr "The server sent a picture format this app doesn't support")
     9 (str-addr "A picture update pointed outside the screen")
     10 (str-addr "Too many failed attempts: the server is making you wait")
+    11 (str-addr "The server doesn't offer the encryption this app supports (needs curve25519, ed25519 and chacha20-poly1305)")
+    12 (str-addr "That isn't an SSH server (bad greeting)")
+    13 (str-addr "An encrypted packet failed its integrity check")
+    14 (str-addr "Bad packet from the server")
+    15 (str-addr "The server's key exchange reply was unusable")
+    16 (str-addr "This device's identity (SSH host key) is not the one you trusted before")
+    17 (str-addr "The password has expired: change it first")
+    18 (str-addr "The server doesn't allow password login")
+    19 (str-addr "The server refused to open a session")
+    20 (str-addr "The server refused to start a shell")
+    21 (str-addr "The server disconnected")
+    22 (str-addr "The server could not prove it owns its host key")
+    23 (str-addr "Output buffer overflow")
     (str-addr "")))
