@@ -1,0 +1,235 @@
+;; stdlib/netkit/host/nk_host_scan.prn -- the Devices screen: drives the scanner wasm (nk_scan.prn) through the native probe call,
+;; draws the device list from the wasm's device table, and runs the Ping / Port-check tools. Decisions (what to probe, what a
+;; reply means, what a device is, the ordering, every sentence the user reads) are in the wasm; this file only hands one probe at a
+;; time to the shell and one result at a time back.
+
+(def scan-inflight 0)
+(def scan-active false)
+(def render-queued false)
+(def named null)               ; ip -> true once a name lookup has been asked for
+(def pins null)                ; JSON array of device keys the user pinned ("mac:aa:..", or "ip:a.b.c.d" when no MAC is known)
+(def tool-labels null)         ; tool job -> text prefix
+(def scan-cidr-text "")
+
+(defn sx [] : Any scan-x)
+
+;; ---- identity of a device, for pinning ------------------------------------------------------------------------------------------------------
+(defn hex2 [(v : I32)] : String
+  (let [h (js/call v "toString" 16)] (if (= (js/get h "length") 1) (str "0" h) h)))
+
+(defn dev-key [(i : I32)] : String
+  (if (= (js/call scan-x "nk_dev_has_mac" i) 1)
+      (let [a (js/call scan-x "nk_dev_mac_addr" i)]
+        (str "mac:" (hex2 (js/aget scan-u8 a)) ":" (hex2 (js/aget scan-u8 (+ a 1))) ":" (hex2 (js/aget scan-u8 (+ a 2))) ":"
+             (hex2 (js/aget scan-u8 (+ a 3))) ":" (hex2 (js/aget scan-u8 (+ a 4))) ":" (hex2 (js/aget scan-u8 (+ a 5)))))
+      (str "ip:" (ip-str (js/call scan-x "nk_dev_ip" i)))))
+
+(defn pinned? [(key : String)] : Bool
+  (>= (js/call pins "indexOf" key) 0))
+
+(defn toggle-pin! [(key : String)] : Unit
+  (do (let [k (js/call pins "indexOf" key)]
+        (if (>= k 0) (js/call pins "splice" k 1) (js/call pins "push" key)))
+      (store-json! "pins" pins)))
+
+;; ---- drawing the list ---------------------------------------------------------------------------------------------------------------------------
+(defn port-chip [(i : I32) (port : I32)] : String
+  (if (= (js/call scan-x "nk_dev_has_port" i port) 1)
+      (str "<span class=\"chip\">" (esc (cstr scan-u8 (js/call scan-x "nk_service_name_addr" port))) " " port "</span>")
+      ""))
+
+(defn dev-html [(i : I32)] : String
+  (let [ip (ip-str (js/call scan-x "nk_dev_ip" i))
+        name (cstr scan-u8 (js/call scan-x "nk_dev_name_addr" i))
+        guess (cstr scan-u8 (js/call scan-x "nk_guess_label_addr" (js/call scan-x "nk_dev_guess" i)))
+        ssh? (= (js/call scan-x "nk_dev_has_port" i 22) 1)
+        vnc-port (if (= (js/call scan-x "nk_dev_has_port" i 5900) 1) 5900 (if (= (js/call scan-x "nk_dev_has_port" i 5901) 1) 5901 0))
+        pin? (= (js/call scan-x "nk_dev_pinned" i) 1)
+        mac (if (= (js/call scan-x "nk_dev_has_mac" i) 1) (str "  -  " (rep-all (dev-key i) "mac:" "")) "")]
+    (str "<li class=\"dev" (if pin? " pinned" "") "\" data-ip=\"" ip "\" data-key=\"" (esc (dev-key i)) "\">"
+         "<div class=\"dev-main\"><div class=\"dev-name\">" (esc (if (= name "") ip name)) "</div>"
+         "<div class=\"dev-sub\">" (if (= name "") "" (str ip "  -  ")) (esc guess) (esc mac) "</div>"
+         "<div class=\"chips\">"
+         (port-chip i 22) (port-chip i 5900) (port-chip i 5901) (port-chip i 3389) (port-chip i 445) (port-chip i 80) (port-chip i 443) (port-chip i 8080)
+         "</div></div><div class=\"dev-actions\">"
+         (if ssh? (str "<button data-act=\"ssh\" data-port=\"22\">SSH</button>") "")
+         (if (> vnc-port 0) (str "<button data-act=\"vnc\" data-port=\"" vnc-port "\">Screen</button>") "")
+         "<button class=\"icon\" data-act=\"pin\" title=\"Pin\">" (if pin? "&#9733;" "&#9734;") "</button>"
+         "</div></li>")))
+
+(defn apply-pins! [] : Unit
+  (dotimes [i (js/call scan-x "nk_dev_count")]
+    (js/call scan-x "nk_dev_set_pinned" i (if (pinned? (dev-key i)) 1 0))))
+
+(defn devices-html [(n : I32)] : String
+  (loop [k 0 acc ""]
+    (if (< k n) (recur (+ k 1) (str acc (dev-html (js/call scan-x "nk_dev_order" k)))) acc)))
+
+(defn render-devices! [] : Unit
+  (let [n (js/call scan-x "nk_dev_count")]
+    (do (apply-pins!)
+        (js/call scan-x "nk_dev_sort")
+        (set-html! "device-list" (devices-html n))
+        (set-hidden! "empty-hint" (> n 0))
+        (set! render-queued false))))
+
+(defn render-now [(t : F64)] : Unit (render-devices!))
+(defn schedule-render! [] : Unit
+  (when (not render-queued)
+    (do (set! render-queued true)
+        (js/call (win) "requestAnimationFrame" (callback render-now)))))
+
+;; ---- the sweep ------------------------------------------------------------------------------------------------------------------------------------
+(defn scan-status! [] : Unit
+  (let [total (js/call scan-x "nk_scan_total")
+        done (js/call scan-x "nk_scan_done")]
+    (do (set-text! "scan-status"
+                   (str (if scan-active "Scanning " "Scanned ") scan-cidr-text
+                        (if (= (js/call scan-x "nk_scan_truncated") 1) " (range limited to /22)" "")
+                        "  -  " (js/call scan-x "nk_dev_count") " device" (if (= (js/call scan-x "nk_dev_count") 1) "" "s")
+                        (if scan-active (str "  -  " done "/" total) "")))
+        (let [bar (el "scan-bar")]
+          (when (not (js/null? bar))
+            (do (js/set! bar "max" (math/max total 1)) (js/set! bar "value" done)
+                (js/set! bar "hidden" (not scan-active))))))))
+
+(defn refresh-arp! [] : Unit
+  (when (have-native?)
+    (let [t (js/call nat "arpText")]
+      (when (!= t "")
+        (let [n (put-text! scan-u8 (js/call scan-x "nk_txt_addr") (js/call t "slice" 0 60000))]
+          (js/call scan-x "nk_scan_arp" n))))))
+
+(defn scan-finish! [] : Unit
+  (do (set! scan-active false)
+      (refresh-arp!)
+      (render-devices!)
+      (scan-status!)
+      (set-text! "btn-scan" "Rescan")))
+
+(defn scan-check-done! [] : Unit
+  (when (and scan-active (and (= scan-inflight 0) (= (js/call scan-x "nk_scan_running") 0)))
+    (scan-finish!)))
+
+(defn pump-scan! [] : Unit
+  (do (loop [go 1]
+        (when (and (= go 1) (< scan-inflight 48))
+          (let [job (js/call scan-x "nk_scan_next")]
+            (if (< job 0)
+                (recur 0)
+                (do (set! scan-inflight (+ scan-inflight 1))
+                    (js/call nat "probe" job (ip-str (js/call scan-x "nk_scan_job_ip" job)) (js/call scan-x "nk_scan_job_port" job) 900)
+                    (recur 1))))))
+      (scan-check-done!)))
+
+(defn ip-num [(s : String)] : I32
+  (let [p (js/call s "split" ".")]
+    (bit-or (shl (js/call-fn (js/global "parseInt") (js/aget p 0) 10) 24)
+            (bit-or (shl (js/call-fn (js/global "parseInt") (js/aget p 1) 10) 16)
+                    (bit-or (shl (js/call-fn (js/global "parseInt") (js/aget p 2) 10) 8)
+                            (js/call-fn (js/global "parseInt") (js/aget p 3) 10))))))
+
+(defn local-info [] : Any
+  (if (have-native?)
+      (js/call (js/global "JSON") "parse" (js/call nat "localNets"))
+      (js/obj "cidrs" (js/array) "ips" (js/array))))
+
+;; the range to scan: what the user typed, else the first local network the shell reports
+(defn pick-cidr [(info : Any)] : String
+  (let [typed (js/call (str (val "scan-cidr")) "trim")]
+    (if (!= typed "") typed
+        (if (> (js/get (js/get info "cidrs") "length") 0) (js/aget (js/get info "cidrs") 0) ""))))
+
+(defn start-scan! [] : Unit
+  (let [info (local-info)
+        cidr (pick-cidr info)]
+    (if (= cidr "")
+        (banner! "This tablet isn't on a Wi-Fi or Ethernet network, so there is nothing to scan. Join the network and try again.")
+        (do (js/call scan-x "nk_scan_reset")
+            (set! named (js/obj))
+            (let [n (put-text! scan-u8 (js/call scan-x "nk_txt_addr") cidr)]
+              (if (= (js/call scan-x "nk_scan_begin" n) 0)
+                  (banner! (str "\"" cidr "\" isn't a network range. Try something like 192.168.4.0/24."))
+                  (do (js/call scan-x "nk_scan_clear_exclude")
+                      (let [ips (js/get info "ips")]
+                        (when (> (js/get ips "length") 0)
+                          (js/call scan-x "nk_scan_exclude" (ip-num (js/aget ips 0)))))
+                      (set! scan-cidr-text cidr)
+                      (set! scan-inflight 0)
+                      (set! scan-active true)
+                      (set-text! "btn-scan" "Stop")
+                      (refresh-arp!)
+                      (render-devices!)
+                      (scan-status!)
+                      (pump-scan!))))))))
+
+(defn stop-scan! [] : Unit
+  (do (js/call scan-x "nk_scan_stop")
+      (set! scan-active false)
+      (set-text! "btn-scan" "Rescan")
+      (scan-status!)))
+
+(defn on-scan-click [(e : Any)] : Unit
+  (if scan-active (stop-scan!) (start-scan!)))
+
+;; ---- results coming back from the shell ------------------------------------------------------------------------------------------------------------
+(defn find-dev [(ip : I32)] : I32
+  (loop [i 0 n (js/call scan-x "nk_dev_count")]
+    (if (>= i n) -1 (if (= (js/call scan-x "nk_dev_ip" i) ip) i (recur (+ i 1) n)))))
+
+(defn ask-name! [(i : I32)] : Unit
+  (let [ip (ip-str (js/call scan-x "nk_dev_ip" i))]
+    (when (and (have-native?) (= (js/typeof (js/aget named ip)) "undefined"))
+      (do (js/aset! named ip true)
+          (js/call nat "resolve" ip)))))
+
+(defn on-scan-result! [(job : I32) (code : I32) (ms : I32)] : Unit
+  (let [i (js/call scan-x "nk_scan_result" job code ms)]
+    (do (set! scan-inflight (math/max 0 (- scan-inflight 1)))
+        (when (>= i 0) (do (ask-name! i) (schedule-render!)))
+        (scan-status!)
+        (when scan-active (pump-scan!)))))
+
+(defn on-name! [(ev : Any)] : Unit
+  (let [i (find-dev (ip-num (js/get ev "ip")))
+        name (str (js/get ev "name"))]
+    (when (and (>= i 0) (!= name ""))
+      (let [n (put-text! scan-u8 (js/call scan-x "nk_txt_addr") name)]
+        (do (js/call scan-x "nk_dev_set_name" i n)
+            (schedule-render!))))))
+
+;; ---- Ping / Port check tools ---------------------------------------------------------------------------------------------------------------------------
+(defn tool-say! [(text : Any)] : Unit
+  (do (set-text! "tool-out" text) (set-hidden! "tool-out" false)))
+
+(defn on-tool-result! [(job : I32) (code : I32) (ms : I32)] : Unit
+  (let [label (js/aget tool-labels (str job))
+        kind (js/call scan-x "nk_conn_kind" code)]
+    (tool-say! (if (= code 0)
+                   (str label " answered in " ms " ms")
+                   (str label ": " (cstr scan-u8 (js/call scan-x "nk_err_text_addr" kind)))))))
+
+(defn tool-host [] : String (js/call (str (val "m-host")) "trim"))
+(defn tool-port [] : I32
+  (let [p (js/call-fn (js/global "parseInt") (val "m-port") 10)]
+    (if (and (> p 0) (< p 65536)) p (if (= (val "m-proto") "vnc") 5900 22))))
+
+(defn on-check-click [(e : Any)] : Unit
+  (let [host (tool-host)]
+    (if (= host "")
+        (tool-say! "Type a host or address first.")
+        (let [job (+ 1000000 (new-id!))
+              port (tool-port)
+              svc (cstr scan-u8 (js/call scan-x "nk_service_name_addr" port))]
+          (do (js/aset! tool-labels (str job) (str host ":" port (if (= svc "") "" (str " (" svc ")"))))
+              (tool-say! (str "Checking " host ":" port "..."))
+              (js/call nat "probe" job host port 3000))))))
+
+(defn on-ping-click [(e : Any)] : Unit
+  (let [host (tool-host)]
+    (if (= host "")
+        (tool-say! "Type a host or address first.")
+        (let [job (+ 1000000 (new-id!))]
+          (do (js/aset! tool-labels (str job) host)
+              (tool-say! (str "Pinging " host "..."))
+              (js/call nat "ping" job host 3000))))))

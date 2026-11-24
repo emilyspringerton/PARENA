@@ -14,6 +14,7 @@ on:
       - 'tests/netkit/**'
       - 'scripts/build_netkit_wasm.sh'
       - 'scripts/build_netkit_term_wasm.sh'
+      - 'scripts/build_netkit_web.sh'
       - 'scripts/test_netkit.sh'
       - '.github/workflows/netkit.yml'
   pull_request:
@@ -33,6 +34,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # the page's markup lives with the app (SHANKPIT/apps/netkit/index.html); the end-to-end test checks every id the generated JS uses
+      - uses: actions/checkout@v4
+        with:
+          repository: emilyspringerton/SHANKPIT
+          path: shankpit
+          sparse-checkout: apps/netkit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Install LLVM 18 + lld, libvncserver, python deps
         run: |
           set -euo pipefail
@@ -48,24 +60,21 @@ jobs:
         run: |
           set -euo pipefail
           make .parena-bootstrap
-          scripts/test_netkit.sh 2>&1 | tee netkit-test.log
+          NETKIT_INDEX_HTML=shankpit/apps/netkit/index.html scripts/test_netkit.sh 2>&1 | tee netkit-test.log
           ! grep -E '^FAIL|SKIP' netkit-test.log
 
-      - name: Publish netkit.wasm
+      - name: Build the page bundle (wasm modules + generated JS)
         env:
           LLVM_TOOLCHAIN_ROOT: /opt/llvm-toolchain
         run: |
-          mkdir -p build
-          scripts/build_netkit_wasm.sh build/netkit.wasm
-          scripts/build_netkit_term_wasm.sh build/nkterm.wasm
-          echo "### netkit.wasm" >> "$GITHUB_STEP_SUMMARY"
-          echo "- bytes: $(wc -c < build/netkit.wasm)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- sha256: $(sha256sum build/netkit.wasm | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
-          echo "### nkterm.wasm: $(wc -c < build/nkterm.wasm) bytes, sha256 $(sha256sum build/nkterm.wasm | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          scripts/build_netkit_web.sh build/web
+          {
+            echo "### Netkit page bundle"
+            for f in build/web/*; do echo "- $(basename "$f"): $(wc -c < "$f") bytes, sha256 $(sha256sum "$f" | cut -d' ' -f1)"; done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: netkit-wasm
-          path: |
-            build/netkit.wasm
-            build/nkterm.wasm
+          name: netkit-web
+          path: build/web

@@ -1,0 +1,128 @@
+;; stdlib/netkit/host/nk_host_core.prn -- SHANKPIT Netkit's page host: the core. PARENA, compiled to TypeScript, type-stripped to
+;; the one JavaScript file the page loads (scripts/build_netkit_web.sh). There is no hand-written JavaScript in the product.
+;;
+;; Founder's rule for web pages in this repo (REDGARDEN/BRAWLPIT/shankpit-460): the page host contains no logic that matters -- it
+;; moves bytes and paints. Here that means:
+;;   * all decisions live in the wasm modules (nk_scan/nk_rfb/nk_ssh/nk_term) -- what to scan, what a device is, the VNC and
+;;     SSH protocols, the terminal, the error wording;
+;;   * the Android shell (Java) owns ONLY what a browser sandbox cannot: raw TCP sockets, the ARP table, the local network,
+;;     encrypted storage and the clipboard. Its contract is `window.NetkitNative` (below) and `window.netkitEvent(json)`;
+;;   * this file wires the two together and draws the screens.
+;;
+;; The native contract (JS -> Java; every call returns at once, results come back as events):
+;;   tcpOpen(id, host, port, timeoutMs)  tcpWrite(id, base64)  tcpClose(id)
+;;       events {t:"tcp", id, e:"open"} | {e:"data", b:base64} | {e:"closed"} | {e:"error", code}   code 1 refused 2 timeout 3 unreachable 4 other
+;;   probe(job, ip, port, timeoutMs)  ping(job, host, timeoutMs)      event {t:"probe", job, code, ms}   code 0 open/up, else as above
+;;   resolve(ip)                                                      event {t:"name", ip, name}
+;;   arpText() -> string   localNets() -> JSON {"cidrs":["a.b.c.d/p"],"ips":["a.b.c.d"]}   (synchronous)
+;;   storeGet(key) -> string ("" if none)   storeSet(key, value)   storeDel(key)      (the shell keeps these encrypted at rest)
+;;   clipboardSet(text)   clipboardGet() -> string
+;; Everything in `base64` is raw bytes. Nothing here ever logs or shows a password.
+
+;; ---- state ----------------------------------------------------------------------------------------------------------------------
+(def nat null)                 ; window.NetkitNative
+(def mod-full null)            ; compiled netkit.wasm (64 MB memory: VNC) -- one instance per VNC session
+(def mod-lite null)            ; compiled netkit-lite.wasm (8 MB: scan + SSH) -- one instance per SSH session, one for scanning
+(def mod-term null)            ; compiled nkterm.wasm (the terminal) -- one instance per SSH session
+(def scan-x null)              ; exports of the scanning instance
+(def scan-u8 null)             ; Uint8Array over its memory
+(def ssh null)                 ; the current SSH session (a JS object) or null
+(def vnc null)                 ; the current VNC session or null
+(def next-id 1)                ; tcp / probe ids
+(def ready false)
+(def banner-timer null)
+
+;; ---- tiny DOM helpers --------------------------------------------------------------------------------------------------------------
+(defn doc [] : Any (js/global "document"))
+(defn win [] : Any (js/global "window"))
+(defn el [(id : String)] : Any (js/call (doc) "getElementById" id))
+(defn now [] : F64 (js/call (js/global "performance") "now"))
+(defn set-text! [(id : String) (t : Any)] : Unit
+  (let [e (el id)] (when (not (js/null? e)) (js/set! e "textContent" t))))
+(defn set-html! [(id : String) (h : Any)] : Unit
+  (let [e (el id)] (when (not (js/null? e)) (js/set! e "innerHTML" h))))
+(defn set-hidden! [(id : String) (h : Bool)] : Unit
+  (let [e (el id)] (when (not (js/null? e)) (js/set! e "hidden" h))))
+(defn val [(id : String)] : Any
+  (let [e (el id)] (if (js/null? e) "" (js/get e "value"))))
+(defn set-val! [(id : String) (v : Any)] : Unit
+  (let [e (el id)] (when (not (js/null? e)) (js/set! e "value" v))))
+(defn checked? [(id : String)] : Bool
+  (let [e (el id)] (if (js/null? e) false (js/get e "checked"))))
+(defn on! [(id : String) (ev : String) (f : Any)] : Unit
+  (let [e (el id)] (when (not (js/null? e)) (js/call e "addEventListener" ev f))))
+(defn ignore! [(e : Any)] : Unit unit)
+
+;; replace every `from` in s with `to`
+(defn rep-all [(s : Any) (from : String) (to : String)] : String
+  (js/call (js/call s "split" from) "join" to))
+;; HTML-escape a value for innerHTML text or a quoted attribute
+(defn esc [(s : Any)] : String
+  (rep-all (rep-all (rep-all (rep-all (rep-all (str s) "&" "&amp;") "<" "&lt;") ">" "&gt;") "\"" "&quot;") "'" "&#39;"))
+
+;; ---- strings and bytes between JS and wasm memory ------------------------------------------------------------------------------------------
+;; a NUL-terminated UTF-8 string out of wasm memory
+(defn cstr-len [(u8 : Any) (addr : I32)] : I32
+  (loop [i 0] (if (= (js/aget u8 (+ addr i)) 0) i (recur (+ i 1)))))
+(defn cstr [(u8 : Any) (addr : I32)] : String
+  (let [n (cstr-len u8 addr)]
+    (js/call (js/new "TextDecoder") "decode" (js/call u8 "subarray" addr (+ addr n)))))
+
+;; a JS string as UTF-8 into wasm memory; returns the byte length
+(defn put-text! [(u8 : Any) (addr : I32) (s : Any)] : I32
+  (let [b (js/call (js/new "TextEncoder") "encode" (str s))]
+    (do (js/call u8 "set" b addr) (js/get b "length"))))
+
+;; base64 string -> wasm memory at addr; returns the byte count
+(defn put-b64! [(u8 : Any) (addr : I32) (b64 : Any)] : I32
+  (let [bin (js/call-fn (js/global "atob") b64)
+        n (js/get bin "length")]
+    (do (dotimes [i n] (js/aset! u8 (+ addr i) (js/call bin "charCodeAt" i)))
+        n)))
+
+;; n bytes of wasm memory -> base64
+(defn get-b64 [(u8 : Any) (addr : I32) (n : I32)] : String
+  (js/call-fn (js/global "btoa")
+              (js/call (js/get (js/global "String") "fromCharCode") "apply" null (js/call u8 "subarray" addr (+ addr n)))))
+
+;; the 32-byte host key fingerprint as OpenSSH shows it: SHA256:<base64 without padding>
+(defn fp-text [(u8 : Any) (addr : I32)] : String
+  (str "SHA256:" (js/call (js/call (get-b64 u8 addr 32) "split" "=") "join" "")))
+
+(defn ip-str [(ip : I32)] : String
+  (str (bit-and (ushr ip 24) 255) "." (bit-and (ushr ip 16) 255) "." (bit-and (ushr ip 8) 255) "." (bit-and ip 255)))
+
+;; ---- wasm instances ------------------------------------------------------------------------------------------------------------------------
+(defn instantiate [(m : Any)] : Any (js/new "WebAssembly.Instance" m (js/obj)))
+(defn exports-of [(inst : Any)] : Any (js/get inst "exports"))
+(defn u8-of [(x : Any)] : Any (js/new "Uint8Array" (js/get (js/get x "memory") "buffer")))
+
+;; ---- banner (errors and notices) --------------------------------------------------------------------------------------------------------------
+(defn hide-banner! [(e : Any)] : Unit (set-hidden! "banner" true))
+(defn banner! [(text : Any)] : Unit
+  (do (set-text! "banner-text" text)
+      (set-hidden! "banner" false)))
+(defn status! [(text : Any)] : Unit (set-text! "net-pill" text))
+
+;; ---- native bridge -------------------------------------------------------------------------------------------------------------------------------
+(defn have-native? [] : Bool (not (js/null? nat)))
+(defn new-id! [] : I32 (do (set! next-id (+ next-id 1)) next-id))
+
+(defn store-get [(key : String)] : String
+  (if (have-native?) (js/call nat "storeGet" key) ""))
+(defn store-set! [(key : String) (v : String)] : Unit
+  (when (have-native?) (js/call nat "storeSet" key v)))
+;; a JSON value from the store, or `dflt` (an already-built JS value) when it is missing or unreadable
+(defn store-json [(key : String) (dflt : Any)] : Any
+  (let [s (store-get key)]
+    (if (= s "") dflt (js/call (js/global "JSON") "parse" s))))
+(defn store-json! [(key : String) (v : Any)] : Unit
+  (store-set! key (js/call (js/global "JSON") "stringify" v)))
+
+;; the sessions' tcp ids -> which session owns them
+(defn tcp-open! [(id : I32) (host : String) (port : I32)] : Unit
+  (js/call nat "tcpOpen" id host port 8000))
+(defn tcp-write! [(id : I32) (b64 : String)] : Unit
+  (js/call nat "tcpWrite" id b64))
+(defn tcp-close! [(id : I32)] : Unit
+  (js/call nat "tcpClose" id))

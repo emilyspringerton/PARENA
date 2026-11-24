@@ -1,0 +1,6 @@
+# the Netkit page host's source files, in build order (scripts/build_netkit_web.sh)
+stdlib/netkit/host/nk_host_core.prn
+stdlib/netkit/host/nk_host_scan.prn
+stdlib/netkit/host/nk_host_ssh.prn
+stdlib/netkit/host/nk_host_vnc.prn
+stdlib/netkit/host/nk_host_ui.prn

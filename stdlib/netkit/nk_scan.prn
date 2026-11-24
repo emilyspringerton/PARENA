@@ -151,7 +151,10 @@
         (do (gi! (g-sc-next) j) -1)
         (let [ip (+ (gi (g-sc-first)) (/ j (gi (g-sc-nports))))]
           (if (and (= (gi (g-sc-hasexcl)) 1) (= ip (gi (g-sc-exclude))))
-              (recur (+ j (- (gi (g-sc-nports)) (mod j (gi (g-sc-nports))))))
+              ;; the excluded host's probes are never handed out, so they count as done (else the sweep could never finish)
+              (let [skip (- (gi (g-sc-nports)) (mod j (gi (g-sc-nports))))]
+                (do (gi! (g-sc-done) (+ (gi (g-sc-done)) skip))
+                    (recur (+ j skip))))
               (do (gi! (g-sc-next) (+ j 1)) j))))))
 
 (defn nk-scan-job-ip [(job : I32)] : I32 (+ (gi (g-sc-first)) (/ job (gi (g-sc-nports)))))

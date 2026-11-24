@@ -1,0 +1,172 @@
+;; stdlib/netkit/host/nk_host_vnc.prn -- the Screen screen: one VNC session = one full netkit wasm instance (nk_rfb.prn: the protocol and
+;; the decoders, into an RGBA framebuffer in its own memory) and one native tcp socket. VIEW ONLY: this file has no code that sends a
+;; key, a pointer movement or a clipboard -- the wasm has none either, and its tests assert it. Panning and zooming are CSS
+;; transforms on the canvas; nothing about them reaches the server.
+
+(def vz 1.0)                   ; zoom
+(def vtx 0.0)                  ; pan, CSS pixels
+(def vty 0.0)
+(def ptrs null)                ; pointer id -> {x, y}, for drag and pinch
+
+(defn apply-vnc-transform! [] : Unit
+  (let [c (el "vnc-canvas")]
+    (when (not (js/null? c))
+      (js/set! (js/get c "style") "transform" (str "translate(" vtx "px," vty "px) scale(" vz ")")))))
+
+(defn vnc-fit! [] : Unit
+  (when (not (js/null? vnc))
+    (let [wrap (el "vnc-wrap")
+          w (js/get vnc "w") h (js/get vnc "h")
+          ww (js/get wrap "clientWidth") wh (js/get wrap "clientHeight")
+          z (math/min (/ ww (math/max w 1.0)) (/ wh (math/max h 1.0)))]
+      (do (set! vz z)
+          (set! vtx (/ (- ww (* w z)) 2.0))
+          (set! vty (/ (- wh (* h z)) 2.0))
+          (apply-vnc-transform!)))))
+
+(defn vnc-actual! [] : Unit
+  (when (not (js/null? vnc))
+    (do (set! vz 1.0) (set! vtx 0.0) (set! vty 0.0) (apply-vnc-transform!))))
+
+(defn on-fit-click [(e : Any)] : Unit (vnc-fit!))
+(defn on-actual-click [(e : Any)] : Unit (vnc-actual!))
+
+(defn zoom-about! [(f : F64) (cx : F64) (cy : F64)] : Unit
+  (let [nz (math/max 0.05 (math/min 8.0 (* vz f)))
+        k (/ nz vz)]
+    (do (set! vtx (- cx (* (- cx vtx) k)))
+        (set! vty (- cy (* (- cy vty) k)))
+        (set! vz nz)
+        (apply-vnc-transform!))))
+
+;; ---- touch / mouse: one pointer pans, two pinch ----------------------------------------------------------------------------------------------------
+(defn ptr-count [] : I32 (js/get (js/call (js/global "Object") "keys" ptrs) "length"))
+
+(defn on-vnc-down [(e : Any)] : Unit
+  (do (js/aset! ptrs (str (js/get e "pointerId")) (js/obj "x" (js/get e "clientX") "y" (js/get e "clientY")))
+      (js/call (el "vnc-wrap") "setPointerCapture" (js/get e "pointerId"))))
+
+(defn on-vnc-move [(e : Any)] : Unit
+  (let [key (str (js/get e "pointerId"))
+        p (js/aget ptrs key)]
+    (when (not (= (js/typeof p) "undefined"))
+      (let [x (js/get e "clientX") y (js/get e "clientY")
+            n (ptr-count)]
+        (if (= n 1)
+            (do (set! vtx (+ vtx (- x (js/get p "x"))))
+                (set! vty (+ vty (- y (js/get p "y"))))
+                (apply-vnc-transform!))
+            (when (= n 2)
+              (let [ks (js/call (js/global "Object") "keys" ptrs)
+                    ok (if (= (js/aget ks 0) key) (js/aget ks 1) (js/aget ks 0))
+                    o (js/aget ptrs ok)
+                    old-d (math/sqrt (+ (* (- (js/get p "x") (js/get o "x")) (- (js/get p "x") (js/get o "x")))
+                                        (* (- (js/get p "y") (js/get o "y")) (- (js/get p "y") (js/get o "y")))))
+                    new-d (math/sqrt (+ (* (- x (js/get o "x")) (- x (js/get o "x")))
+                                        (* (- y (js/get o "y")) (- y (js/get o "y")))))
+                    r (js/call (el "vnc-wrap") "getBoundingClientRect")]
+                (when (> old-d 4.0)
+                  (zoom-about! (/ new-d old-d) (- (/ (+ x (js/get o "x")) 2.0) (js/get r "left")) (- (/ (+ y (js/get o "y")) 2.0) (js/get r "top")))))))
+        (js/aset! ptrs key (js/obj "x" x "y" y))))))
+
+(defn on-vnc-up [(e : Any)] : Unit
+  (js/call (js/global "Reflect") "deleteProperty" ptrs (str (js/get e "pointerId"))))
+
+(defn on-vnc-wheel [(e : Any)] : Unit
+  (let [r (js/call (el "vnc-wrap") "getBoundingClientRect")]
+    (do (zoom-about! (if (> (js/get e "deltaY") 0.0) 0.9 1.1) (- (js/get e "clientX") (js/get r "left")) (- (js/get e "clientY") (js/get r "top")))
+        (js/call e "preventDefault"))))
+
+;; ---- painting: once per animation frame, only the box the wasm says changed ------------------------------------------------------------------------------
+(defn vnc-frame [(t : F64)] : Unit
+  (do (when (and (not (js/null? vnc)) (js/get vnc "up"))
+        (let [x (js/get vnc "x")]
+          (when (= (js/call x "nk_rfb_dirty") 1)
+            (let [x0 (js/call x "nk_rfb_dx0") y0 (js/call x "nk_rfb_dy0")
+                  x1 (js/call x "nk_rfb_dx1") y1 (js/call x "nk_rfb_dy1")]
+              (do (js/call (js/get vnc "ctx") "putImageData" (js/get vnc "img") 0 0 x0 y0 (- x1 x0) (- y1 y0))
+                  (js/call x "nk_rfb_dirty_clear"))))))
+      (js/call (win) "requestAnimationFrame" (callback vnc-frame))))
+
+;; ---- the session -----------------------------------------------------------------------------------------------------------------------------------------
+(defn vnc-drain! [] : Unit
+  (when (not (js/null? vnc))
+    (let [x (js/get vnc "x") u8 (js/get vnc "u8") a (js/call x "nk_out_addr") n (js/call x "nk_out_len")]
+      (when (> n 0)
+        (do (tcp-write! (js/get vnc "id") (get-b64 u8 a n))
+            (js/call x "nk_out_clear"))))))
+
+;; the framebuffer's size (and so the canvas and the ImageData view onto wasm memory) changes with the remote screen
+(defn vnc-geometry! [] : Unit
+  (let [x (js/get vnc "x")
+        g (js/call x "nk_rfb_gen")]
+    (when (!= g (js/get vnc "gen"))
+      (let [w (js/call x "nk_rfb_width") h (js/call x "nk_rfb_height")
+            canvas (el "vnc-canvas")]
+        (do (js/set! vnc "gen" g) (js/set! vnc "w" w) (js/set! vnc "h" h)
+            (js/set! canvas "width" w) (js/set! canvas "height" h)
+            (js/set! vnc "ctx" (js/call canvas "getContext" "2d"))
+            (js/set! vnc "img"
+                     (js/new "ImageData"
+                             (js/new "Uint8ClampedArray" (js/get (js/get x "memory") "buffer") (js/call x "nk_fb_addr") (* (* w h) 4))
+                             w h))
+            (when (not (js/get vnc "up"))
+              (do (js/set! vnc "up" true)
+                  (when (js/get vnc "save") (save-connection! "vnc" (js/get vnc "host") (js/get vnc "port") "" (js/get vnc "pw")))
+                  (js/set! vnc "pw" "")
+                  (set-text! "vnc-title" (str (cstr (js/get vnc "u8") (js/call x "nk_name_addr")) "  -  " (js/get vnc "host")))
+                  (show-view! "vnc")))
+            (vnc-fit!))))))
+
+(defn vnc-after! [] : Unit
+  (when (not (js/null? vnc))
+    (let [x (js/get vnc "x") u8 (js/get vnc "u8")]
+      (do (vnc-drain!)
+          (let [ph (js/call x "nk_rfb_phase")]
+            (cond
+              (= ph 9) (when (not (js/get vnc "ended"))
+                         (do (js/set! vnc "ended" true)
+                             (tcp-close! (js/get vnc "id"))
+                             (banner! (failure-text x u8))
+                             (when (not (js/get vnc "up")) (vnc-close!))))
+              (= ph 8) (when (not (js/get vnc "ended"))
+                         (do (js/set! vnc "ended" true)
+                             (banner! "The remote screen closed the connection.")))
+              (= ph 3) (vnc-geometry!)
+              :else unit))))))
+
+(defn vnc-on-tcp! [(ev : Any)] : Unit
+  (let [e (js/get ev "e") x (js/get vnc "x") u8 (js/get vnc "u8")]
+    (cond
+      (= e "data") (let [a (js/call x "nk_in_reserve")
+                         n (put-b64! u8 a (js/get ev "b"))]
+                     (do (js/call x "nk_rfb_feed" n) (vnc-after!)))
+      (= e "closed") (do (js/call x "nk_rfb_closed") (vnc-after!))
+      (= e "error") (do (js/set! vnc "ended" true)
+                        (banner! (str (cstr scan-u8 (js/call scan-x "nk_err_text_addr" (js/call scan-x "nk_conn_kind" (js/get ev "code"))))
+                                      " (" (js/get vnc "host") ":" (js/get vnc "port") ")"))
+                        (when (not (js/get vnc "up")) (vnc-close!)))
+      :else unit)))
+
+(defn vnc-close! [] : Unit
+  (when (not (js/null? vnc))
+    (do (tcp-close! (js/get vnc "id"))
+        (set! vnc null)
+        (set-hidden! "tab-vnc" true)
+        (show-view! "devices"))))
+
+(defn on-vnc-close-click [(e : Any)] : Unit (vnc-close!))
+
+(defn vnc-open! [(host : String) (port : I32) (pw : String) (save : Bool)] : Unit
+  (do
+    (when (not (js/null? vnc)) (vnc-close!))
+    (let [x (exports-of (instantiate mod-full))
+          u8 (u8-of x)
+          id (new-id!)
+          pl (put-text! u8 (js/call x "nk_pw_addr") pw)]
+      (do (js/call x "nk_rfb_begin" (math/min pl 255))
+          (set! vnc (js/obj "id" id "x" x "u8" u8 "host" host "port" port "pw" pw "save" save
+                            "up" false "ended" false "gen" 0 "w" 0 "h" 0 "ctx" null "img" null))
+          (set-hidden! "tab-vnc" false)
+          (set-text! "vnc-title" (str "Connecting to " host "..."))
+          (tcp-open! id host port)))))

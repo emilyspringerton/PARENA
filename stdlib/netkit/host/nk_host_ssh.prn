@@ -1,0 +1,361 @@
+;; stdlib/netkit/host/nk_host_ssh.prn -- the Terminal screen: one SSH session = one nk_ssh wasm instance (the protocol), one nkterm
+;; wasm instance (the screen), and one native tcp socket (the bytes). This file moves bytes between the three and turns browser key
+;; events into terminal key codes; every decision (what a key sends, how the screen changes, when the host key must be shown, what
+;; an error says) is made inside the wasm.
+
+(def sticky-ctrl false)
+(def sticky-alt false)
+(def cursor-on true)
+
+;; ---- sending to the server ------------------------------------------------------------------------------------------------------------------
+(defn ssh-drain! [] : Unit
+  (when (not (js/null? ssh))
+    (let [x (js/get ssh "x") u8 (js/get ssh "u8") a (js/call x "nk_out_addr") n (js/call x "nk_out_len")]
+      (when (> n 0)
+        (do (loop [off 0]
+              (when (< off n)
+                (let [k (math/min 8192 (- n off))]
+                  (do (tcp-write! (js/get ssh "id") (get-b64 u8 (+ a off) k))
+                      (recur (+ off k))))))
+            (js/call x "nk_out_clear"))))))
+
+;; typed / pasted bytes (a Uint8Array) -> the session
+(defn ssh-send-bytes! [(b : Any)] : Unit
+  (let [x (js/get ssh "x") u8 (js/get ssh "u8") total (js/get b "length")]
+    (loop [off 0]
+      (when (< off total)
+        (let [k (math/min 16000 (- total off))]
+          (do (js/call u8 "set" (js/call b "subarray" off (+ off k)) (js/call x "nk_ssh_uin_addr"))
+              (let [acc (js/call x "nk_ssh_send" k)]
+                (do (ssh-drain!)
+                    (when (> acc 0) (recur (+ off acc)))))))))))
+
+;; ---- one key: through the terminal wasm (which owns the xterm encodings), then to the server ----------------------------------------------------
+(defn set-sticky! [(c : Bool) (a : Bool)] : Unit
+  (do (set! sticky-ctrl c) (set! sticky-alt a)
+      (let [bc (el "key-ctrl") ba (el "key-alt")]
+        (do (when (not (js/null? bc)) (js/call (js/get bc "classList") "toggle" "on" c))
+            (when (not (js/null? ba)) (js/call (js/get ba "classList") "toggle" "on" a))))))
+
+(defn ssh-key! [(code : I32) (mods0 : I32)] : Unit
+  (let [t (js/get ssh "t") tu8 (js/get ssh "tu8")
+        mods (bit-or mods0 (bit-or (if sticky-ctrl 1 0) (if sticky-alt 2 0)))
+        n (js/call t "term_key" code mods)
+        a (js/call t "term_out_addr")]
+    (do (set-sticky! false false)
+        (when (> n 0) (ssh-send-bytes! (js/call tu8 "slice" a (+ a n)))))))
+
+;; a run of typed text (soft keyboard, paste): newlines become Enter
+(defn ssh-text! [(txt : Any)] : Unit
+  (let [cps (js/call (js/global "Array") "from" (rep-all (rep-all (str txt) "\r\n" "\n") "\r" "\n"))]
+    (dotimes [i (js/get cps "length")]
+      (let [ch (js/aget cps i)]
+        (if (= ch "\n") (ssh-key! 1114113 0) (ssh-key! (js/call ch "codePointAt" 0) 0))))))
+
+;; paste: raw when the program asked for bracketed paste (?2004), else as typed text
+(defn ssh-paste! [(txt : Any)] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up") (!= txt ""))
+    (let [t (js/get ssh "t")]
+      (if (= (js/call t "term_bracketed") 1)
+          (let [body (rep-all (rep-all (str txt) "\r\n" "\r") "\n" "\r")]
+            (ssh-send-bytes! (js/call (js/new "TextEncoder") "encode" (str "\u{1b}[200~" body "\u{1b}[201~"))))
+          (ssh-text! txt)))))
+
+;; DOM KeyboardEvent.key -> terminal key code (0 = not ours)
+(defn key-code-of [(e : Any)] : I32
+  (let [k (js/get e "key")
+        fnum (if (and (> (js/get k "length") 1) (= (js/call k "charAt" 0) "F")) (js/call-fn (js/global "parseInt") (js/call k "slice" 1) 10) 0)]
+    (cond
+      (= k "Enter") 1114113
+      (= k "Backspace") 1114114
+      (= k "ArrowUp") 1114115
+      (= k "ArrowDown") 1114116
+      (= k "PageUp") 1114117
+      (= k "PageDown") 1114118
+      (= k "Tab") 1114119
+      (= k "Escape") 1114120
+      (= k "ArrowLeft") 1114121
+      (= k "ArrowRight") 1114122
+      (= k "Home") 1114123
+      (= k "End") 1114124
+      (= k "Delete") 1114125
+      (= k "Insert") 1114126
+      (and (>= fnum 1) (<= fnum 12)) (+ 1114127 (- fnum 1))
+      (= (js/get (js/call (js/global "Array") "from" k) "length") 1) (js/call k "codePointAt" 0)
+      :else 0)))
+
+(defn terminal-keys? [] : Bool
+  (and (not (js/null? ssh))
+       (and (js/get ssh "up")
+            (and (not (js/get (el "view-ssh") "hidden"))
+                 (and (js/get (el "dlg-hostkey") "hidden")
+                      (js/get (el "dlg-connect") "hidden"))))))
+
+(defn on-keydown [(e : Any)] : Unit
+  (when (terminal-keys?)
+    (let [k (js/get e "key")]
+      (when (and (not (js/get e "isComposing"))
+                 (and (not (js/get e "metaKey")) (and (!= k "Unidentified") (!= k "Process"))))
+        (let [code (key-code-of e)
+              special (>= code 1114112)]
+          (when (> code 0)
+            (do (js/call e "preventDefault")
+                (ssh-key! code (bit-or (if (js/get e "ctrlKey") 1 0)
+                                       (bit-or (if (js/get e "altKey") 2 0)
+                                               (if (and special (js/get e "shiftKey")) 4 0)))))))))))
+
+;; the soft keyboard types into a hidden textarea; what lands there is sent and cleared
+(defn on-ime-input [(e : Any)] : Unit
+  (when (terminal-keys?)
+    (let [txt (str (val "term-ime"))]
+      (do (set-val! "term-ime" "")
+          (when (!= txt "") (ssh-text! txt))))))
+
+(defn on-paste-event [(e : Any)] : Unit
+  (when (terminal-keys?)
+    (do (js/call e "preventDefault")
+        (ssh-paste! (js/call (js/get e "clipboardData") "getData" "text")))))
+
+(defn on-keybar-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "button")]
+    (when (and (not (js/null? b)) (not (js/null? ssh)) (js/get ssh "up"))
+      (let [k (js/get (js/get b "dataset") "key")]
+        (cond
+          (= k "ctrl") (set-sticky! (not sticky-ctrl) sticky-alt)
+          (= k "alt") (set-sticky! sticky-ctrl (not sticky-alt))
+          (= k "esc") (ssh-key! 1114120 0)
+          (= k "tab") (ssh-key! 1114119 0)
+          (= k "up") (ssh-key! 1114115 0)
+          (= k "down") (ssh-key! 1114116 0)
+          (= k "left") (ssh-key! 1114121 0)
+          (= k "right") (ssh-key! 1114122 0)
+          (= k "home") (ssh-key! 1114123 0)
+          (= k "end") (ssh-key! 1114124 0)
+          (= k "pgup") (ssh-key! 1114117 0)
+          (= k "pgdn") (ssh-key! 1114118 0)
+          (= k "del") (ssh-key! 1114125 0)
+          (= k "histup") (ssh-key! 1114117 4)
+          (= k "histdn") (ssh-key! 1114118 4)
+          (= k "pipe") (ssh-key! 124 0)
+          (= k "tilde") (ssh-key! 126 0)
+          (= k "slash") (ssh-key! 47 0)
+          (= k "dash") (ssh-key! 45 0)
+          (= k "under") (ssh-key! 95 0)
+          :else unit)))))
+
+(defn on-copy-click [(e : Any)] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up"))
+    (let [t (js/get ssh "t") tu8 (js/get ssh "tu8")
+          n (js/call t "term_copy")
+          a (js/call t "term_copy_addr")]
+      (if (= n 0)
+          (banner! "Select some text first: drag across the screen.")
+          (js/call nat "clipboardSet" (js/call (js/new "TextDecoder") "decode" (js/call tu8 "subarray" a (+ a n))))))))
+
+(defn on-paste-click [(e : Any)] : Unit
+  (when (have-native?) (ssh-paste! (js/call nat "clipboardGet"))))
+
+;; ---- selection and scrolling on the terminal canvas -------------------------------------------------------------------------------------------------
+(defn term-col-of [(e : Any)] : I32
+  (let [r (js/call (el "term-canvas") "getBoundingClientRect")]
+    (math/floor (/ (* (- (js/get e "clientX") (js/get r "left")) 100.0) (js/get r "width")))))
+(defn term-row-of [(e : Any)] : I32
+  (let [r (js/call (el "term-canvas") "getBoundingClientRect")]
+    (math/floor (/ (* (- (js/get e "clientY") (js/get r "top")) 34.0) (js/get r "height")))))
+
+(def down-x 0.0)
+(def down-y 0.0)
+(def dragging false)
+(def moved false)
+
+(defn on-term-down [(e : Any)] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up"))
+    (do (set! down-x (js/get e "clientX")) (set! down-y (js/get e "clientY"))
+        (set! dragging true) (set! moved false)
+        (js/call (el "term-canvas") "setPointerCapture" (js/get e "pointerId"))
+        (js/call (js/get ssh "t") "term_mouse" 0 (term-col-of e) (term-row-of e)))))
+
+(defn on-term-move [(e : Any)] : Unit
+  (when (and dragging (not (js/null? ssh)))
+    (do (when (or (> (math/abs (- (js/get e "clientX") down-x)) 6.0) (> (math/abs (- (js/get e "clientY") down-y)) 6.0))
+          (set! moved true))
+        (when moved (js/call (js/get ssh "t") "term_mouse" 1 (term-col-of e) (term-row-of e))))))
+
+(defn on-term-up [(e : Any)] : Unit
+  (when (and dragging (not (js/null? ssh)))
+    (do (set! dragging false)
+        (js/call (js/get ssh "t") "term_mouse" 2 (term-col-of e) (term-row-of e))
+        ;; a tap (no drag) clears the selection and brings up the keyboard
+        (when (not moved)
+          (do (js/call (js/get ssh "t") "term_mouse" 4 0 0)
+              (js/call (el "term-ime") "focus"))))))
+
+(defn on-term-dbl [(e : Any)] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up"))
+    (js/call (js/get ssh "t") "term_mouse" 3 (term-col-of e) (term-row-of e))))
+
+(defn on-term-wheel [(e : Any)] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up"))
+    (do (js/call (js/get ssh "t") "term_scroll" (if (> (js/get e "deltaY") 0.0) -3 3))
+        (js/call e "preventDefault"))))
+
+;; ---- painting ------------------------------------------------------------------------------------------------------------------------------------
+(defn term-frame [(t : F64)] : Unit
+  (do (when (and (not (js/null? ssh)) (js/get ssh "up"))
+        (let [tt (js/get ssh "t")]
+          (when (= (js/call tt "term_render") 1)
+            (js/call (js/get ssh "ctx") "putImageData" (js/get ssh "img") 0 0))))
+      (js/call (win) "requestAnimationFrame" (callback term-frame))))
+
+(defn blink! [] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up"))
+    (do (set! cursor-on (not cursor-on))
+        (js/call (js/get ssh "t") "term_set_cursor" (if cursor-on 1 0)))))
+
+;; ---- the session lifecycle -----------------------------------------------------------------------------------------------------------------------------
+;; the wasm's own words for a failure: the kind, the specific message, and whatever the server said
+(defn failure-text [(x : Any) (u8 : Any)] : String
+  (let [kind (js/call x "nk_err_kind")
+        msg (js/call x "nk_err_msg")
+        detail (cstr u8 (js/call x "nk_msg_text_addr" msg))
+        reason (cstr u8 (js/call x "nk_reason_addr"))]
+    (str (cstr u8 (js/call x "nk_err_text_addr" kind))
+         (if (= detail "") "" (str ": " detail))
+         (if (= reason "") "" (str " (the server said: " reason ")")))))
+
+(defn show-hostkey-dialog! [] : Unit
+  (let [x (js/get ssh "x") u8 (js/get ssh "u8")]
+    (do (set-text! "hk-host" (str (js/get ssh "host") ":" (js/get ssh "port")))
+        (set-text! "hk-fp" (fp-text u8 (js/call x "nk_ssh_fp_addr")))
+        (set-text! "hk-note"
+                   (if (= (js/call x "nk_ssh_sigok") 1)
+                       "This is the first time this device is seen. It proved it owns this key. If you know this device, check the fingerprint matches what it shows (ssh-keygen -l), then trust it."
+                       "WARNING: this device did not prove it owns this key."))
+        (set-hidden! "dlg-hostkey" false))))
+
+(defn ssh-up! [] : Unit
+  (let [x (js/get ssh "x") u8 (js/get ssh "u8")
+        host (js/get ssh "host") port (js/get ssh "port")]
+    (do (js/set! ssh "up" true)
+        ;; remember this device's key: next time a mismatch fails before any password is sent
+        (let [hk (store-json "hostkeys" (js/obj))]
+          (do (js/aset! hk (str host ":" port) (get-b64 u8 (js/call x "nk_ssh_fp_addr") 32))
+              (store-json! "hostkeys" hk)))
+        (when (js/get ssh "save") (save-connection! "ssh" host port (js/get ssh "user") (js/get ssh "pw")))
+        (store-set! "last-user" (js/get ssh "user"))
+        (js/set! ssh "pw" "")
+        (set-text! "ssh-title" (str (js/get ssh "user") "@" host))
+        (show-view! "ssh")
+        (js/call (js/get ssh "t") "term_set_cursor" 1)
+        (js/call (el "term-ime") "focus"))))
+
+(defn ssh-ended! [(ph : I32)] : Unit
+  (let [x (js/get ssh "x") u8 (js/get ssh "u8")]
+    (do (js/set! ssh "ended" true)
+        (tcp-close! (js/get ssh "id"))
+        (if (= ph 9)
+            (do (banner! (failure-text x u8))
+                (when (not (js/get ssh "up")) (ssh-close!)))
+            (let [st (js/call x "nk_ssh_exit_status")]
+              (banner! (if (>= st 0) (str "Session ended (exit status " st ").") "Session ended.")))))))
+
+(defn ssh-check-phase! [] : Unit
+  (when (and (not (js/null? ssh)) (not (js/get ssh "ended")))
+    (let [ph (js/call (js/get ssh "x") "nk_ssh_phase")]
+      (cond
+        (and (= ph 2) (not (js/get ssh "asked"))) (do (js/set! ssh "asked" true) (show-hostkey-dialog!))
+        (and (= ph 5) (not (js/get ssh "up"))) (ssh-up!)
+        (>= ph 8) (ssh-ended! ph)
+        :else unit))))
+
+;; decrypted channel data -> the terminal screen; the terminal's replies (cursor reports) -> back to the server
+(defn ssh-pump-data! [] : Unit
+  (let [x (js/get ssh "x") u8 (js/get ssh "u8") t (js/get ssh "t") tu8 (js/get ssh "tu8")
+        n (js/call x "nk_ssh_data_len")
+        a (js/call x "nk_ssh_data_addr")]
+    (when (> n 0)
+      (do (loop [off 0]
+            (when (< off n)
+              (let [k (math/min 60000 (- n off))]
+                (do (js/call tu8 "set" (js/call u8 "subarray" (+ a off) (+ a (+ off k))) (js/call t "term_in_addr"))
+                    (let [r (js/call t "term_feed" k)]
+                      (when (> r 0)
+                        (let [ra (js/call t "term_out_addr")]
+                          (ssh-send-bytes! (js/call tu8 "slice" ra (+ ra r))))))
+                    (recur (+ off k))))))
+          (js/call x "nk_ssh_data_clear")))))
+
+(defn ssh-after! [] : Unit
+  (do (ssh-drain!) (ssh-pump-data!) (ssh-drain!) (ssh-check-phase!)))
+
+(defn ssh-on-tcp! [(ev : Any)] : Unit
+  (let [e (js/get ev "e") x (js/get ssh "x") u8 (js/get ssh "u8")]
+    (cond
+      (= e "open") (ssh-after!)
+      (= e "data")
+        (let [a (js/call x "nk_in_reserve")
+              n (put-b64! u8 a (js/get ev "b"))]
+          (do (js/call x "nk_ssh_feed" n) (ssh-after!)))
+      (= e "closed") (do (js/call x "nk_ssh_transport_closed") (ssh-after!))
+      (= e "error")
+        (do (js/set! ssh "ended" true)
+            (banner! (str (cstr u8 (js/call scan-x "nk_err_text_addr" (js/call scan-x "nk_conn_kind" (js/get ev "code"))))
+                          " (" (js/get ssh "host") ":" (js/get ssh "port") ")"))
+            (when (not (js/get ssh "up")) (ssh-close!)))
+      :else unit)))
+
+(defn ssh-close! [] : Unit
+  (when (not (js/null? ssh))
+    (let [x (js/get ssh "x")]
+      (do (when (not (js/get ssh "ended"))
+            (do (js/call x "nk_ssh_close") (ssh-drain!)))
+          (tcp-close! (js/get ssh "id"))
+          (set! ssh null)
+          (set-sticky! false false)
+          (set-hidden! "dlg-hostkey" true)
+          (set-hidden! "tab-ssh" true)
+          (show-view! "devices")))))
+
+(defn on-ssh-close-click [(e : Any)] : Unit (ssh-close!))
+
+(defn on-hk-trust [(e : Any)] : Unit
+  (when (not (js/null? ssh))
+    (do (set-hidden! "dlg-hostkey" true)
+        (js/call (js/get ssh "x") "nk_ssh_accept_hostkey")
+        (ssh-after!))))
+
+(defn on-hk-cancel [(e : Any)] : Unit
+  (when (not (js/null? ssh))
+    (do (set-hidden! "dlg-hostkey" true)
+        (js/call (js/get ssh "x") "nk_ssh_reject_hostkey")
+        (ssh-close!))))
+
+(defn ssh-open! [(host : String) (port : I32) (user : String) (pw : String) (save : Bool)] : Unit
+  (do
+    (when (not (js/null? ssh)) (ssh-close!))
+    (let [x (exports-of (instantiate mod-lite))
+          u8 (u8-of x)
+          t (exports-of (instantiate mod-term))
+          tu8 (u8-of t)
+          id (new-id!)
+          hk (js/aget (store-json "hostkeys" (js/obj)) (str host ":" port))
+          have (if (= (js/typeof hk) "string") 1 0)]
+      (do
+        (js/call (js/global "crypto") "getRandomValues"
+                 (js/call u8 "subarray" (js/call x "nk_ssh_entropy_addr") (+ (js/call x "nk_ssh_entropy_addr") 64)))
+        (let [ul (put-text! u8 (js/call x "nk_ssh_user_addr") user)
+              pl (put-text! u8 (js/call x "nk_ssh_pass_addr") pw)]
+          (do (when (= have 1) (put-b64! u8 (js/call x "nk_ssh_expect_addr") hk))
+              (js/call x "nk_ssh_begin" ul pl 100 34 have)))
+        (js/call t "term_init")
+        (let [canvas (el "term-canvas")
+              s (js/obj "id" id "x" x "u8" u8 "t" t "tu8" tu8 "host" host "port" port "user" user "pw" pw "save" save
+                        "up" false "asked" false "ended" false
+                        "ctx" (js/call canvas "getContext" "2d")
+                        "img" (js/new "ImageData"
+                                      (js/new "Uint8ClampedArray" (js/get (js/get t "memory") "buffer") (js/call t "term_fb_addr") (* (* 800 544) 4))
+                                      800 544))]
+          (do (set! ssh s)
+              (set-hidden! "tab-ssh" false)
+              (set-text! "ssh-title" (str "Connecting to " host "..."))
+              (tcp-open! id host port)))))))

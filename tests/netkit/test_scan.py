@@ -38,6 +38,9 @@ for bad in ["", "abc", "300.1.1.1/24", "1.2.3/24", "1.2.3.4/33", "1.2.3.4/", "1.
 # ---- exclusion + stop ----------------------------------------------------------------------------------------------------------------
 begin("192.168.4.0/29"); nk.nk_scan_exclude(s32(ipn("192.168.4.3")))
 got = jobs(); check(all(a != ipn("192.168.4.3") for a, _, _ in got) and len(got) == (6 - 1) * 8, "the excluded host (this tablet) is skipped whole")
+check(nk.nk_scan_done() == 8 and nk.nk_scan_total() == 48, "...its probes count as done, so the sweep's progress can reach its total")
+for a, b, j in got: nk.nk_scan_result(j, 2, 5)
+check(nk.nk_scan_done() == 48 and nk.nk_scan_running() == 0, "after every handed-out probe is answered the sweep reads as finished (it used to hang at 40/48)")
 nk.nk_scan_clear_exclude()
 begin("192.168.4.0/24"); nk.nk_scan_next(); nk.nk_scan_next(); nk.nk_scan_stop()
 check(nk.nk_scan_next() == -1 and nk.nk_scan_running() == 0, "stop(): nothing more is handed out and the sweep reads as finished")

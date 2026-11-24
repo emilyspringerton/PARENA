@@ -2,7 +2,8 @@
 # Builds SHANKPIT Netkit's logic (stdlib/netkit/*.prn: scanner, VNC/RFB, DES, SSH) to one wasm32 module -- no
 # Emscripten, same toolchain as shankpit-460 web / the GFD terminal: parena build -> opt -> llc -> wasm-ld.
 #
-#   scripts/build_netkit_wasm.sh <out.wasm>
+#   scripts/build_netkit_wasm.sh <out.wasm>            # the full module: 64 MB memory (the VNC framebuffer lives at 16 MB)
+#   NETKIT_MEM=8388608 scripts/build_netkit_wasm.sh <out-lite.wasm>   # same code, 8 MB: scanning + SSH only (RFB would trap)
 #
 # "No malloc, no imports": the module cannot touch a socket, a clock or the DOM. Every record lives at a fixed
 # address in linear memory (stdlib/netkit/nk_mem.prn has the map). After linking this script asserts the module
@@ -30,9 +31,10 @@ fi
 if "$BIN/llvm-objdump" -d "$W/netkit.o" | grep -Eq 'memory\.grow'; then
   echo "FAIL: the module contains a memory.grow instruction" >&2; exit 1
 fi
-# 64 MB linear memory, fixed (no growth, ever): 36 MB framebuffer at 16 MB. Stack stays below 0x20000.
+# 64 MB linear memory by default, fixed (no growth, ever): 36 MB framebuffer at 16 MB. Stack stays below 0x20000.
+MEM="${NETKIT_MEM:-67108864}"
 "$BIN/wasm-ld" --no-entry --export-all --allow-undefined --export-memory \
-  --initial-memory=67108864 --max-memory=67108864 -z stack-size=65536 -o "$OUT" "$W/netkit.o"
+  --initial-memory="$MEM" --max-memory="$MEM" -z stack-size=65536 -o "$OUT" "$W/netkit.o"
 
 python3 - "$OUT" <<'PY'
 import sys
@@ -45,4 +47,4 @@ imps = [(i.module, i.name) for i in m.imports]
 if imps:
     print("FAIL: module has imports (a libcall leaked in):", imps); sys.exit(1)
 PY
-echo "built $OUT ($(wc -c < "$OUT") bytes, 0 imports, fixed 64 MB memory, no allocator)"
+echo "built $OUT ($(wc -c < "$OUT") bytes, 0 imports, fixed $((MEM / 1048576)) MB memory, no allocator)"

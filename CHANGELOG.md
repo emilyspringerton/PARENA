@@ -23,8 +23,19 @@
     and never sends credentials to a host that has not been accepted (a saved fingerprint that differs fails with HOST_KEY and
     sends nothing). 61 interop checks against asyncssh: whole/byte/random delivery, 300 KB down and a paste up through the
     windows, wrong passwords, forged signatures, tampered packets, servers without chacha20 refused plainly.
-  - Not done yet (named, not hidden): the page host (PARENA -> TypeScript) and the Android shell; SSH public-key auth, other
-    ciphers and kex algorithms; Tight/ZRLE VNC encodings.
+  - **The SSH terminal** (`stdlib/netkit/term/nk_term.prn`): a fork of the GFD web terminal (a MUD console with local line editing)
+    with exact xterm key encodings, ICH/DCH/ECH, IL/DL, SU/SD, scroll regions, the alternate screen, DEC line drawing and replies
+    to the server. 82 checks (pyte differential where pyte is right, hand-derived where it is not, 300 garbage streams).
+  - **The page host, in PARENA** (`stdlib/netkit/host/*.prn` -> TypeScript -> the one generated `nk-host.js`, 60 KB): the Devices
+    screen, the connect dialog and saved connections, the "Trust this device?" dialog, the Terminal (keys, soft keyboard, copy /
+    paste / selection), the view-only Screen with pan and zoom, Android's back button. The only platform it needs is the shell's
+    `NetkitNative` contract (raw TCP, ARP, local network, encrypted store, clipboard). `scripts/build_netkit_web.sh` builds the three
+    wasm modules plus the JS; `tests/netkit/host_e2e.mjs` runs the GENERATED page headlessly in Node against a real asyncssh server
+    and a real VNC server through a socket-backed native stub (65 checks, including: the page's image equals the VNC server's own
+    final framebuffer byte for byte; a changed SSH host key sends the password nowhere, confirmed by the server's own counters).
+    The end-to-end run also found and fixed a real scanner bug (with the tablet's own address excluded the sweep could never finish).
+  - Not done yet (named, not hidden): SSH public-key auth, other ciphers and kex algorithms; Tight/ZRLE VNC encodings; nothing here
+    has run on a real Android device (the Android shell lives in SHANKPIT/android-netkit).
 
 ## 2026-11-14
 

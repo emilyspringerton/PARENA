@@ -1,0 +1,255 @@
+;; stdlib/netkit/host/nk_host_ui.prn -- the rest of the page: views and tabs, the connect dialog, saved connections, the native event
+;; entry point, Android's back button, and the boot sequence (fetch the three wasm modules, wire the buttons, start).
+
+(def conn-proto "ssh")
+
+;; ---- views -----------------------------------------------------------------------------------------------------------------------------------------
+(defn show-view! [(name : String)] : Unit
+  (do (set-hidden! "view-devices" (!= name "devices"))
+      (set-hidden! "view-ssh" (!= name "ssh"))
+      (set-hidden! "view-vnc" (!= name "vnc"))
+      (dotimes [i 3]
+        (let [n (js/aget (js/array "devices" "ssh" "vnc") i)
+              b (el (str "tab-" n))]
+          (when (not (js/null? b))
+            (js/call (js/get b "classList") "toggle" "on" (= n name)))))
+      (when (= name "ssh") (js/call (el "term-ime") "focus"))
+      (when (= name "vnc") (vnc-fit!))))
+
+(defn on-tab-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "button")]
+    (when (not (js/null? b))
+      (show-view! (js/get (js/get b "dataset") "tab")))))
+
+;; ---- saved connections (the shell keeps them encrypted at rest; a password is stored only if the user ticks "Remember") -------------------
+(defn conns [] : Any (store-json "conns" (js/array)))
+
+(defn save-connection! [(proto : String) (host : String) (port : I32) (user : String) (pw : String)] : Unit
+  (let [all (conns)
+        keep (js/call all "filter" (callback not-same))]
+    (do (js/call keep "push" (js/obj "proto" proto "host" host "port" port "user" user "pw" pw))
+        (store-json! "conns" keep)
+        (render-saved!))))
+
+;; (filter callback: JS passes the element; the identity being replaced is stashed in two globals)
+(def same-proto "")
+(def same-host "")
+(def same-port 0)
+(def same-user "")
+(defn not-same [(c : Any)] : Bool
+  (not (and (= (js/get c "proto") same-proto)
+            (and (= (js/get c "host") same-host)
+                 (and (= (js/get c "port") same-port) (= (js/get c "user") same-user))))))
+
+(defn forget-connection! [(i : I32)] : Unit
+  (let [all (conns)]
+    (do (js/call all "splice" i 1) (store-json! "conns" all) (render-saved!))))
+
+(defn saved-html [(all : Any) (n : I32)] : String
+  (loop [i 0 acc ""]
+    (if (< i n)
+        (let [c (js/aget all i)]
+          (recur (+ i 1)
+                 (str acc "<li class=\"saved\" data-i=\"" i "\"><div class=\"dev-main\"><div class=\"dev-name\">"
+                      (esc (if (= (js/get c "proto") "ssh") (str (js/get c "user") "@" (js/get c "host")) (js/get c "host")))
+                      "</div><div class=\"dev-sub\">" (if (= (js/get c "proto") "ssh") "SSH" "Screen") " - port " (js/get c "port")
+                      (if (= (js/get c "pw") "") "" " - password saved") "</div></div><div class=\"dev-actions\">"
+                      "<button data-act=\"go\">Connect</button><button class=\"icon\" data-act=\"del\" title=\"Forget\">&#10005;</button></div></li>")))
+        acc)))
+
+(defn render-saved! [] : Unit
+  (let [all (conns) n (js/get all "length")]
+    (do (set-hidden! "saved-box" (= n 0))
+        (set-html! "saved-list" (saved-html all n)))))
+
+(defn on-saved-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-act]")]
+    (when (not (js/null? b))
+      (let [li (js/call b "closest" "li")
+            i (js/call-fn (js/global "parseInt") (js/get (js/get li "dataset") "i") 10)
+            act (js/get (js/get b "dataset") "act")
+            c (js/aget (conns) i)]
+        (cond
+          (= act "del") (forget-connection! i)
+          (= act "go") (if (= (js/get c "proto") "ssh")
+                           (ssh-open! (js/get c "host") (js/get c "port") (js/get c "user") (js/get c "pw") false)
+                           (vnc-open! (js/get c "host") (js/get c "port") (js/get c "pw") false))
+          :else unit)))))
+
+;; ---- the connect dialog ---------------------------------------------------------------------------------------------------------------------------
+;; a saved entry for this device, if any, pre-fills user and password
+(defn find-saved [(proto : String) (host : String) (port : I32)] : Any
+  (let [all (conns) n (js/get all "length")]
+    (loop [i 0]
+      (if (>= i n) null
+          (let [c (js/aget all i)]
+            (if (and (= (js/get c "proto") proto) (and (= (js/get c "host") host) (= (js/get c "port") port))) c (recur (+ i 1))))))))
+
+(defn open-connect! [(proto : String) (host : String) (port : I32)] : Unit
+  (let [saved (find-saved proto host port)]
+    (do (set! conn-proto proto)
+        (set-text! "c-title" (if (= proto "ssh") (str "SSH to " host) (str "Screen of " host)))
+        (set-val! "c-host" host)
+        (set-val! "c-port" port)
+        (set-hidden! "c-user-row" (= proto "vnc"))
+        (set-val! "c-user" (if (js/null? saved) (store-get "last-user") (js/get saved "user")))
+        (set-val! "c-pass" (if (js/null? saved) "" (js/get saved "pw")))
+        (js/set! (el "c-save") "checked" (js/null? saved))
+        (set-text! "c-error" "")
+        (set-hidden! "dlg-connect" false)
+        (js/call (el (if (and (= proto "ssh") (= (val "c-user") "")) "c-user" "c-pass")) "focus"))))
+
+(defn on-connect-go [(e : Any)] : Unit
+  (let [host (js/call (str (val "c-host")) "trim")
+        port (js/call-fn (js/global "parseInt") (val "c-port") 10)
+        user (js/call (str (val "c-user")) "trim")
+        pw (str (val "c-pass"))
+        save (checked? "c-save")]
+    (cond
+      (= host "") (set-text! "c-error" "Which device? Enter a name or address.")
+      (not (and (> port 0) (< port 65536))) (set-text! "c-error" "The port must be a number from 1 to 65535.")
+      (and (= conn-proto "ssh") (= user "")) (set-text! "c-error" "Enter the user name to log in as.")
+      :else (do (set-hidden! "dlg-connect" true)
+                (set! same-proto conn-proto) (set! same-host host) (set! same-port port) (set! same-user (if (= conn-proto "ssh") user ""))
+                (if (= conn-proto "ssh")
+                    (ssh-open! host port user pw save)
+                    (vnc-open! host port pw save))))))
+
+(defn on-connect-cancel [(e : Any)] : Unit (set-hidden! "dlg-connect" true))
+
+;; tapping SSH / Screen / pin on a device card
+(defn on-device-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-act]")]
+    (when (not (js/null? b))
+      (let [li (js/call b "closest" "li")
+            ip (js/get (js/get li "dataset") "ip")
+            act (js/get (js/get b "dataset") "act")]
+        (cond
+          (= act "ssh") (open-connect! "ssh" ip 22)
+          (= act "vnc") (open-connect! "vnc" ip (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "port") 10))
+          (= act "pin") (do (toggle-pin! (js/get (js/get li "dataset") "key")) (render-devices!))
+          :else unit)))))
+
+(defn on-manual-connect [(e : Any)] : Unit
+  (let [host (tool-host)]
+    (if (= host "")
+        (tool-say! "Type a host or address first.")
+        (open-connect! (val "m-proto") host (tool-port)))))
+
+(defn on-proto-change [(e : Any)] : Unit
+  (let [dflt (if (= (val "m-proto") "vnc") 5900 22)]
+    (set-val! "m-port" dflt)))
+
+;; ---- events from the native shell -------------------------------------------------------------------------------------------------------------------
+(defn on-native [(json : String)] : Unit
+  (let [ev (js/call (js/global "JSON") "parse" json)
+        t (js/get ev "t")]
+    (cond
+      (= t "tcp") (let [id (js/get ev "id")]
+                    (cond
+                      (and (not (js/null? ssh)) (= id (js/get ssh "id"))) (ssh-on-tcp! ev)
+                      (and (not (js/null? vnc)) (= id (js/get vnc "id"))) (vnc-on-tcp! ev)
+                      :else unit))
+      (= t "probe") (let [job (js/get ev "job")]
+                      (if (>= job 1000000)
+                          (on-tool-result! job (js/get ev "code") (js/get ev "ms"))
+                          (on-scan-result! job (js/get ev "code") (js/get ev "ms"))))
+      (= t "name") (on-name! ev)
+      :else unit)))
+
+;; Android's back button: close what is on top, else let the app finish
+(defn nk-back [] : Bool
+  (cond
+    (not (js/get (el "dlg-hostkey") "hidden")) (do (on-hk-cancel null) true)
+    (not (js/get (el "dlg-connect") "hidden")) (do (set-hidden! "dlg-connect" true) true)
+    (and (not (js/null? ssh)) (not (js/get (el "view-ssh") "hidden"))) (do (ssh-close!) true)
+    (and (not (js/null? vnc)) (not (js/get (el "view-vnc") "hidden"))) (do (vnc-close!) true)
+    :else false))
+
+;; the network pill: the range we would scan, or the plain fact that there is none
+(defn net-label [(c : String)] : String (if (= c "") "No network" c))
+
+;; ---- boot -------------------------------------------------------------------------------------------------------------------------------------------------
+(defn fetch-bytes [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status") " for " (js/get r "url")))))
+(defn compile-wasm [(bytes : Any)] : Any (js/call (js/global "WebAssembly") "compile" bytes))
+(defn fetch-module [(url : String)] : Any
+  (js/call (js/call (js/call-fn (js/global "fetch") url) "then" (callback fetch-bytes)) "then" (callback compile-wasm)))
+
+(defn fail-boot! [(err : Any)] : Unit
+  (do (banner! (str "Netkit could not start: " err))
+      (js/call (js/get (js/global "console") "error") "call" (js/global "console") err)))
+
+(defn wire-ui! [] : Unit
+  (do
+    (on! "tabs" "click" (callback on-tab-click))
+    (on! "btn-scan" "click" (callback on-scan-click))
+    (on! "device-list" "click" (callback on-device-click))
+    (on! "saved-list" "click" (callback on-saved-click))
+    (on! "btn-m-connect" "click" (callback on-manual-connect))
+    (on! "btn-m-check" "click" (callback on-check-click))
+    (on! "btn-m-ping" "click" (callback on-ping-click))
+    (on! "m-proto" "change" (callback on-proto-change))
+    (on! "c-go" "click" (callback on-connect-go))
+    (on! "c-cancel" "click" (callback on-connect-cancel))
+    (on! "hk-trust" "click" (callback on-hk-trust))
+    (on! "hk-cancel" "click" (callback on-hk-cancel))
+    (on! "banner-close" "click" (callback hide-banner!))
+    (on! "btn-ssh-close" "click" (callback on-ssh-close-click))
+    (on! "btn-vnc-close" "click" (callback on-vnc-close-click))
+    (on! "btn-fit" "click" (callback on-fit-click))
+    (on! "btn-1to1" "click" (callback on-actual-click))
+    (on! "btn-copy" "click" (callback on-copy-click))
+    (on! "btn-paste" "click" (callback on-paste-click))
+    (on! "keybar" "click" (callback on-keybar-click))
+    (on! "term-ime" "input" (callback on-ime-input))
+    (on! "term-canvas" "pointerdown" (callback on-term-down))
+    (on! "term-canvas" "pointermove" (callback on-term-move))
+    (on! "term-canvas" "pointerup" (callback on-term-up))
+    (on! "term-canvas" "dblclick" (callback on-term-dbl))
+    (on! "term-canvas" "wheel" (callback on-term-wheel))
+    (on! "vnc-wrap" "pointerdown" (callback on-vnc-down))
+    (on! "vnc-wrap" "pointermove" (callback on-vnc-move))
+    (on! "vnc-wrap" "pointerup" (callback on-vnc-up))
+    (on! "vnc-wrap" "pointercancel" (callback on-vnc-up))
+    (on! "vnc-wrap" "wheel" (callback on-vnc-wheel))
+    (js/call (win) "addEventListener" "keydown" (callback on-keydown))
+    (js/call (doc) "addEventListener" "paste" (callback on-paste-event))))
+
+(defn on-modules [(mods : Any)] : Unit
+  (do
+    (set! mod-full (js/aget mods 0))
+    (set! mod-lite (js/aget mods 1))
+    (set! mod-term (js/aget mods 2))
+    (set! scan-x (exports-of (instantiate mod-lite)))
+    (set! scan-u8 (u8-of scan-x))
+    (js/call scan-x "nk_scan_reset")
+    (set! named (js/obj))
+    (set! tool-labels (js/obj))
+    (set! ptrs (js/obj))
+    (set! pins (store-json "pins" (js/array)))
+    (wire-ui!)
+    (render-saved!)
+    (render-devices!)
+    (show-view! "devices")
+    (set! ready true)
+    (status! (net-label (pick-cidr (local-info))))
+    (js/call (win) "requestAnimationFrame" (callback term-frame))
+    (js/call (win) "requestAnimationFrame" (callback vnc-frame))
+    (js/call-fn (js/global "setInterval") (callback blink!) 530)
+    (when (have-native?) (start-scan!))))
+
+(defn boot [] : Unit
+  (do
+    (set! nat (if (js/defined? "NetkitNative") (js/global "NetkitNative") null))
+    (js/set! (win) "netkitEvent" (callback on-native))
+    (js/set! (win) "netkitBack" (callback nk-back))
+    (js/call
+      (js/call (js/call (js/global "Promise") "all"
+                        (js/array (fetch-module "netkit.wasm") (fetch-module "netkit-lite.wasm") (fetch-module "nkterm.wasm")))
+               "then" (callback on-modules))
+      "catch" (callback fail-boot!))))
+
+(start (boot))

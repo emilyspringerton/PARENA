@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
     rfbInitServer(S);
     fprintf(stderr, "vncd listening on %d\n", port); fflush(stderr);
     double t0 = 0, start = now(); int step = 0; int seen = 0;
-    while (rfbIsActive(S) && now() - start < 20) {
+    while (rfbIsActive(S) && now() - start < 120) {
         rfbProcessEvents(S, 20000);
         if (S->clientHead) { if (!seen) { seen = 1; t0 = now(); } } else if (seen) break;
         if (!seen) continue;

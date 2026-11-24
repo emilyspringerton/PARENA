@@ -15,7 +15,7 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 scripts/build_netkit_wasm.sh "$W/netkit.wasm"
 scripts/build_netkit_term_wasm.sh "$W/nkterm.wasm"
 for t in tests/netkit/test_*.py; do
-  case "$t" in */test_rfb_interop.py) continue;; esac
+  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py) continue;; esac
   echo "== $(basename "$t")"
   case "$t" in */test_term.py) python3 "$t" "$W/nkterm.wasm" | tail -3;; *) python3 "$t" "$W/netkit.wasm" | tail -3;; esac
 done
@@ -26,4 +26,15 @@ if gcc -O1 -o "$W/vncd" tests/netkit/vncd.c "${INC[@]}" "${LIB[@]}" -lvncserver 
   python3 tests/netkit/test_rfb_interop.py "$W/netkit.wasm" "$W/vncd" ${LD:+"$LD"} | tail -3
 else
   echo "SKIP: libvncserver headers not found (apt install libvncserver-dev, or set VNC_ROOT)"
+fi
+
+# ---- the generated page, end to end (needs node 24+, the real index.html from the SHANKPIT repo, and the VNC test server) ----
+echo "== test_host_e2e.py (the generated page in Node vs a real SSH server and a real VNC server)"
+HTML="${NETKIT_INDEX_HTML:-../SHANKPIT/apps/netkit/index.html}"
+if ! command -v node >/dev/null 2>&1; then echo "SKIP: node not found (24+ needed)";
+elif [ ! -f "$HTML" ]; then echo "SKIP: index.html not found at $HTML (check out SHANKPIT beside PARENA, or set NETKIT_INDEX_HTML)";
+elif [ ! -x "$W/vncd" ]; then echo "SKIP: the VNC test server could not be built (libvncserver headers missing)";
+else
+  scripts/build_netkit_web.sh "$W/web" | tail -1
+  python3 tests/netkit/test_host_e2e.py "$W/web" "$HTML" "$W/vncd" ${LD:+"$LD"} | tail -4
 fi
