@@ -41,6 +41,11 @@ jobs:
           path: shankpit
           sparse-checkout: apps/netkit
 
+      # the three failed runs before 2026-11-24 ran seconds before SHANKPIT's apps/netkit landed: say so instead of a bare exit 1
+      - name: The page markup must exist on SHANKPIT master
+        run: |
+          test -f shankpit/apps/netkit/index.html || { echo "::error title=SHANKPIT apps/netkit is missing::push SHANKPIT apps/netkit first (the host tests read its index.html), then re-run this workflow"; exit 1; }
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -63,6 +68,13 @@ jobs:
           make .parena-bootstrap
           NETKIT_SHOTS=build/screenshots NETKIT_INDEX_HTML=shankpit/apps/netkit/index.html scripts/test_netkit.sh 2>&1 | tee netkit-test.log
           ! grep -E '^FAIL|SKIP' netkit-test.log
+
+      # annotations are readable without a login (the raw log is not), so a red run says what failed
+      - name: Surface failures as annotations
+        if: failure()
+        run: |
+          [ -f netkit-test.log ] || exit 0
+          grep -E '^FAIL|Traceback|Error:' netkit-test.log | head -20 | while IFS= read -r l; do echo "::error::${l:0:300}"; done
 
       - name: Build the page bundle (wasm modules + generated JS)
         env:

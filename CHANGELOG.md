@@ -1,4 +1,5 @@
 ## 2026-11-24
+- ci(netkit): the workflow fails with a clear message when SHANKPIT's page is missing, and turns test failures into annotations.
 
 - **SHANKPIT Netkit: a view-only VNC client in PARENA, running as WebAssembly** (founder: "ensure its all parena based mods first dev").
   `stdlib/netkit/` is the logic of the SHANKPIT network-toolkit app (scan the LAN, SSH, view-only VNC), written as PARENA and
