@@ -34,6 +34,14 @@
     and a real VNC server through a socket-backed native stub (65 checks, including: the page's image equals the VNC server's own
     final framebuffer byte for byte; a changed SSH host key sends the password nowhere, confirmed by the server's own counters).
     The end-to-end run also found and fixed a real scanner bug (with the tablet's own address excluded the sweep could never finish).
+  - **The same page in a real browser** (`tests/netkit/test_browser_e2e.py` + `browser_bridge.py`): headless Chromium 159 loads the actual
+    `index.html` + generated `nk-host.js` + wasm served WITH the Content-Security-Policy the Android shell sets, driven by real clicks and
+    key presses against a real asyncssh and a real libvncserver (NetkitNative is an in-page shim over a WebSocket-to-TCP bridge).
+    21 checks, including: the terminal canvas is PIXEL-IDENTICAL to an independent re-render of the same bytes by a separately
+    instantiated terminal module, the VNC canvas equals the server's own final framebuffer, no console error / CSP violation / inline
+    script. Found (and fixed) a UI problem the Node run could not: symbol glyphs (star, arrows, diamond) need a font the platform may
+    not have, so the markup now uses words and CSS shapes. Screenshots are written for a human (CI uploads them).
+  - Full suite: `make test-netkit` = 488 checks (402 module-level, 65 Node end-to-end, 21 real-browser).
   - Not done yet (named, not hidden): SSH public-key auth, other ciphers and kex algorithms; Tight/ZRLE VNC encodings; nothing here
     has run on a real Android device (the Android shell lives in SHANKPIT/android-netkit).
 

@@ -54,7 +54,7 @@
                       (esc (if (= (js/get c "proto") "ssh") (str (js/get c "user") "@" (js/get c "host")) (js/get c "host")))
                       "</div><div class=\"dev-sub\">" (if (= (js/get c "proto") "ssh") "SSH" "Screen") " - port " (js/get c "port")
                       (if (= (js/get c "pw") "") "" " - password saved") "</div></div><div class=\"dev-actions\">"
-                      "<button data-act=\"go\">Connect</button><button class=\"icon\" data-act=\"del\" title=\"Forget\">&#10005;</button></div></li>")))
+                      "<button data-act=\"go\">Connect</button><button data-act=\"del\" title=\"Remove this saved connection\">Forget</button></div></li>")))
         acc)))
 
 (defn render-saved! [] : Unit

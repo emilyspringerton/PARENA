@@ -15,7 +15,7 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 scripts/build_netkit_wasm.sh "$W/netkit.wasm"
 scripts/build_netkit_term_wasm.sh "$W/nkterm.wasm"
 for t in tests/netkit/test_*.py; do
-  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py) continue;; esac
+  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py) continue;; esac
   echo "== $(basename "$t")"
   case "$t" in */test_term.py) python3 "$t" "$W/nkterm.wasm" | tail -3;; *) python3 "$t" "$W/netkit.wasm" | tail -3;; esac
 done
@@ -38,3 +38,9 @@ else
   scripts/build_netkit_web.sh "$W/web" | tail -1
   python3 tests/netkit/test_host_e2e.py "$W/web" "$HTML" "$W/vncd" ${LD:+"$LD"} | tail -4
 fi
+
+# ---- the page in a REAL browser engine, served with the Android shell's Content-Security-Policy (needs playwright + aiohttp) ----
+echo "== test_browser_e2e.py (headless Chromium, real clicks and keys, pixel-exact canvas checks)"
+if [ ! -f "$HTML" ] || [ ! -x "$W/vncd" ] || [ ! -d "$W/web" ]; then echo "SKIP: needs index.html, the VNC test server and the web build (see above)";
+elif ! python3 -c "import playwright, aiohttp" 2>/dev/null; then echo "SKIP: needs python playwright + aiohttp (pip install playwright aiohttp; python3 -m playwright install --with-deps chromium)";
+else python3 tests/netkit/test_browser_e2e.py "$W/web" "$(dirname "$HTML")" "$W/vncd" ${LD:+"$LD"} "${NETKIT_SHOTS:-$W/shots}" | tail -5; fi

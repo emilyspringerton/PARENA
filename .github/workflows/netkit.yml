@@ -52,7 +52,8 @@ jobs:
           sudo apt-get install -y -qq llvm-18 lld-18 libvncserver-dev openssh-server libnss-wrapper
           sudo mkdir -p /opt/llvm-toolchain/usr/lib/llvm-18
           sudo ln -sfn /usr/lib/llvm-18/bin /opt/llvm-toolchain/usr/lib/llvm-18/bin
-          python3 -m pip install --user wasmtime pycryptodome cryptography asyncssh pyte
+          python3 -m pip install --user wasmtime pycryptodome cryptography asyncssh pyte playwright aiohttp
+          python3 -m playwright install --with-deps chromium
 
       - name: Build and test (DES, RFB scripted, RFB vs a real VNC server)
         env:
@@ -60,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           make .parena-bootstrap
-          NETKIT_INDEX_HTML=shankpit/apps/netkit/index.html scripts/test_netkit.sh 2>&1 | tee netkit-test.log
+          NETKIT_SHOTS=build/screenshots NETKIT_INDEX_HTML=shankpit/apps/netkit/index.html scripts/test_netkit.sh 2>&1 | tee netkit-test.log
           ! grep -E '^FAIL|SKIP' netkit-test.log
 
       - name: Build the page bundle (wasm modules + generated JS)
@@ -78,3 +79,10 @@ jobs:
         with:
           name: netkit-web
           path: build/web
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: netkit-screenshots
+          path: build/screenshots
+          if-no-files-found: ignore

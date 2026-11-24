@@ -54,7 +54,7 @@
          "</div></div><div class=\"dev-actions\">"
          (if ssh? (str "<button data-act=\"ssh\" data-port=\"22\">SSH</button>") "")
          (if (> vnc-port 0) (str "<button data-act=\"vnc\" data-port=\"" vnc-port "\">Screen</button>") "")
-         "<button class=\"icon\" data-act=\"pin\" title=\"Pin\">" (if pin? "&#9733;" "&#9734;") "</button>"
+         "<button data-act=\"pin\" title=\"Keep this device at the top\">" (if pin? "Unpin" "Pin") "</button>"
          "</div></li>")))
 
 (defn apply-pins! [] : Unit
