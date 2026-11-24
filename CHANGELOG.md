@@ -1,3 +1,20 @@
+## 2026-11-24
+
+- **SHANKPIT Netkit: a view-only VNC client in PARENA, running as WebAssembly** (founder: "ensure its all parena based mods first dev").
+  `stdlib/netkit/` is the logic of the SHANKPIT network-toolkit app (scan the LAN, SSH, view-only VNC), written as PARENA and
+  compiled to one wasm32 module with the repo's web-game conventions: no malloc, zero imports, fixed memory
+  (`scripts/build_netkit_wasm.sh`). The module cannot touch a socket; a page host moves bytes in and out.
+  - `nk_rfb.prn`: RFB 3.3 / 3.7 / 3.8 with None and VNC Authentication, Raw + CopyRect + Hextile + DesktopSize, a state machine that
+    does not care how TCP slices the stream. **View-only by construction** -- no code emits key, pointer or clipboard messages.
+  - `nk_des.prn`: DES (for VNC auth only; single DES is broken, the protocol is the weakness), checked against the NIST vector and
+    500 random pairs vs pycryptodome.
+  - Tests: `make test-netkit` -- 97 scripted checks (every scenario fed whole, byte-by-byte and in random chunks; Hextile checked
+    against an independent encoder written from the RFC) plus 13 against a REAL VNC server (`tests/netkit/vncd.c`, libvncserver,
+    TightVNC's lineage): real auth, the server's own encoders, a live resize, final screen compared byte for byte.
+    A 1080p raw frame decodes in ~40 ms under wasmtime.
+  - Not done yet (named, not hidden): the scanner module, SSH (PARENA has no I64; plan is 8-bit-limb field math in I32), the
+    page host (PARENA -> TypeScript) and the Android shell. Tight/ZRLE encodings are not implemented.
+
 ## 2026-11-14
 
 - **Huginn: quest arrows for orienteering** (founder: "a basic quest tracker that takes the quest from our quest logs

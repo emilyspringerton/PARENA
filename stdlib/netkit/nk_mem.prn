@@ -1,0 +1,174 @@
+;; stdlib/netkit/nk_mem.prn -- SHANKPIT Netkit: linear-memory map, state words, byte queues, error vocabulary.
+;;
+;; Founder real-time 2026-11-24 (NETKIT-0): "ensure its all parena based mods first dev". Netkit is the SHANKPIT
+;; network toolkit app (scan the LAN, SSH, view-only VNC). Everything that decides anything -- the scanner's plan
+;; and device table, the VNC (RFB) protocol and its decoders, DES for VNC authentication, and later the SSH
+;; transport -- is PARENA compiled to wasm32 (scripts/build_netkit_wasm.sh: parena build -> opt -> llc -> wasm-ld).
+;;
+;; Same shape as shankpit-460 web and the GFD terminal (the repo's PARENA-first convention):
+;;   * NO MALLOC, NO IMPORTS, memory never grows. Every record lives at a fixed address below.
+;;   * The module cannot touch a socket. The page host (PARENA -> TypeScript, nk_host.prn) and the thin Android
+;;     shell move bytes: socket -> INBUF -> nk-*-feed(n) ... OUTBUF -> socket. This file is the contract.
+;;
+;; Memory map (byte addresses; linked with 64 MB fixed; the wasm stack sits below 0x20000):
+;;   0x030000 G      state words (1024 x 4 bytes)  indices below
+;;   0x031000 SCR    4 KB scratch (DES bit arrays, key schedule, small temporaries)
+;;   0x032000 PW     16 bytes   the VNC password, page-written, NUL-padded (never logged, never echoed)
+;;   0x032100 NAME   64 bytes   desktop name from ServerInit, NUL-terminated
+;;   0x032200 REASON 256 bytes  the server's own failure reason text, NUL-terminated
+;;   0x040000 TXT    64 KB      text exchange: page writes a CIDR / ARP table / a name here, then calls a nk-* fn
+;;   0x050000 DEV    512 x 64 B device table (sorted by IP)           (nk_scan.prn)
+;;   0x058000 PORTS  32 x 4 B   the port list being scanned           (nk_scan.prn)
+;;   0x080000 OUT    64 KB      bytes the module wants sent to the peer
+;;   0x100000 IN     1 MB       bytes received from the peer (page appends at the tail)
+;;   0x200000 SSH    2 MB       SSH transport state and buffers      (nk_ssh*.prn, later phases)
+;;   0x1000000 FB    36 MB      RGBA framebuffer, tight rows (pitch = width*4), up to 3840x2160
+;;
+;; G word indices (a module owns a block; no two modules share an index):
+;;    0..15  common  (version, last error kind, last error message, in-used, in-read, out-len, counters)
+;;   16..63  RFB     (nk_rfb.prn)
+;;   64..127 SCAN    (nk_scan.prn)
+;;  128..255 SSH     (later)
+
+(module netkit/main)
+
+(defn nk-version [] : I32 1)
+
+;; ---- region bases -----------------------------------------------------------------------------------
+(defn g-base [] : I32 196608)
+(defn scr-base [] : I32 200704)
+(defn pw-base [] : I32 204800)
+(defn name-base [] : I32 205056)
+(defn reason-base [] : I32 205312)
+(defn txt-base [] : I32 262144)
+(defn dev-base [] : I32 327680)
+(defn ports-base [] : I32 360448)
+(defn out-base [] : I32 524288)
+(defn in-base [] : I32 1048576)
+(defn ssh-base [] : I32 2097152)
+(defn fb-base [] : I32 16777216)
+
+(defn txt-cap [] : I32 65536)
+(defn out-cap [] : I32 65536)
+(defn in-cap [] : I32 1048576)
+(defn fb-cap [] : I32 37748736)    ; 36 MB
+
+;; public: where the page finds things
+(defn nk-g-addr [] : I32 (g-base))
+(defn nk-txt-addr [] : I32 (txt-base))
+(defn nk-txt-cap [] : I32 (txt-cap))
+(defn nk-pw-addr [] : I32 (pw-base))
+(defn nk-name-addr [] : I32 (name-base))
+(defn nk-reason-addr [] : I32 (reason-base))
+(defn nk-out-addr [] : I32 (out-base))
+(defn nk-fb-addr [] : I32 (fb-base))
+(defn nk-fb-cap [] : I32 (fb-cap))
+
+;; ---- small helpers ----------------------------------------------------------------------------------
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+(defn max-i [(a : I32) (b : I32)] : I32 (if (> a b) a b))
+(defn b2i [(b : Bool)] : I32 (if b 1 0))
+
+(defn gi [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn gi! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+
+;; common G words
+(defn g-err-kind [] : I32 1)      ; ErrorKind of the last failure (0 = none)
+(defn g-err-msg [] : I32 2)       ; message code, see nk-msg-text
+(defn g-in-used [] : I32 3)       ; bytes currently held in IN (from IN[0])
+(defn g-in-rd [] : I32 4)         ; read cursor inside IN (consumed bytes are compacted away after each feed)
+(defn g-out-len [] : I32 5)       ; bytes waiting in OUT
+(defn g-bytes-in [] : I32 6)      ; lifetime counters, for the packet-capture / status views
+(defn g-bytes-out [] : I32 7)
+
+(defn nk-reset-common! [] : Unit
+  (do (gi! (g-err-kind) 0) (gi! (g-err-msg) 0)
+      (gi! (g-in-used) 0) (gi! (g-in-rd) 0) (gi! (g-out-len) 0)
+      (gi! (g-bytes-in) 0) (gi! (g-bytes-out) 0)))
+
+(defn zero-mem! [(a : I32) (n : I32)] : Unit
+  (loop [i 0] (when (< i n) (store8! (+ a i) 0) (recur (+ i 1)))))
+
+;; ---- byte queues ---------------------------------------------------------------------------------------
+;; OUT: modules append with put8!/put16be!/put32be!; the page drains it (nk-out-len / nk-out-clear).
+(defn put8! [(v : I32)] : Unit
+  (let [n (gi (g-out-len))]
+    (when (< n (out-cap))
+      (store8! (+ (out-base) n) (bit-and v 255))
+      (gi! (g-out-len) (+ n 1))
+      (gi! (g-bytes-out) (+ (gi (g-bytes-out)) 1)))))
+(defn put16be! [(v : I32)] : Unit (do (put8! (shr v 8)) (put8! v)))
+(defn put32be! [(v : I32)] : Unit (do (put8! (ushr v 24)) (put8! (ushr v 16)) (put8! (ushr v 8)) (put8! v)))
+
+(defn nk-out-len [] : I32 (gi (g-out-len)))
+(defn nk-out-clear [] : Unit (gi! (g-out-len) 0))
+
+;; IN: the page asks where to write (nk-in-reserve), writes n bytes there, then calls the protocol's feed fn.
+;; Reserving compacts first, so the free space is always contiguous at the tail.
+(defn nk-in-reserve [] : I32
+  (let [used (gi (g-in-used))
+        rd (gi (g-in-rd))]
+    (do
+      (when (> rd 0)
+        (loop [i 0]
+          (when (< i (- used rd))
+            (store8! (+ (in-base) i) (load8 (+ (in-base) (+ rd i))))
+            (recur (+ i 1))))
+        (gi! (g-in-used) (- used rd))
+        (gi! (g-in-rd) 0))
+      (+ (in-base) (gi (g-in-used))))))
+(defn nk-in-space [] : I32 (- (in-cap) (gi (g-in-used))))
+
+;; peek helpers over IN, relative to the read cursor
+(defn avail [] : I32 (- (gi (g-in-used)) (gi (g-in-rd))))
+(defn pk8 [(off : I32)] : I32 (load8 (+ (in-base) (+ (gi (g-in-rd)) off))))
+(defn pk16 [(off : I32)] : I32 (bit-or (shl (pk8 off) 8) (pk8 (+ off 1))))
+(defn pk32 [(off : I32)] : I32 (bit-or (shl (pk16 off) 16) (pk16 (+ off 2))))
+(defn consume! [(n : I32)] : Unit (gi! (g-in-rd) (+ (gi (g-in-rd)) n)))
+
+;; ---- error vocabulary ------------------------------------------------------------------------------------
+;; ErrorKind: the same names the Android shell's bridge uses (android-netkit/BRIDGE.md). The words are here, in
+;; PARENA, so every front end (tablet, AR, Quest) says the same thing.
+(defn ek-none [] : I32 0)
+(defn ek-unreachable [] : I32 1)
+(defn ek-port-closed [] : I32 2)
+(defn ek-timeout [] : I32 3)
+(defn ek-auth-failed [] : I32 4)
+(defn ek-protocol [] : I32 5)
+(defn ek-unknown [] : I32 6)
+
+(defn nk-err-name-addr [(k : I32)] : I32
+  (case k
+    1 (str-addr "UNREACHABLE")
+    2 (str-addr "PORT_CLOSED")
+    3 (str-addr "TIMEOUT")
+    4 (str-addr "AUTH_FAILED")
+    5 (str-addr "PROTOCOL")
+    6 (str-addr "UNKNOWN")
+    (str-addr "NONE")))
+
+;; The sentence the user reads.
+(defn nk-err-text-addr [(k : I32)] : I32
+  (case k
+    1 (str-addr "Can't reach that device")
+    2 (str-addr "Nothing is listening on that port")
+    3 (str-addr "No answer (asleep, or blocked?)")
+    4 (str-addr "Wrong username or password")
+    5 (str-addr "That device doesn't speak this protocol")
+    6 (str-addr "Something went wrong")
+    (str-addr "OK")))
+
+;; Specific message codes (g-err-msg): why, in more detail than the kind.
+(defn nk-msg-text-addr [(m : I32)] : I32
+  (case m
+    1 (str-addr "Not a VNC server (bad greeting)")
+    2 (str-addr "The server refused the connection")
+    3 (str-addr "The server only offers login methods this app doesn't support")
+    4 (str-addr "This server needs a password")
+    5 (str-addr "Wrong password")
+    6 (str-addr "Remote screen is larger than this app can show")
+    7 (str-addr "Unexpected message from the server")
+    8 (str-addr "The server sent a picture format this app doesn't support")
+    9 (str-addr "A picture update pointed outside the screen")
+    10 (str-addr "Too many failed attempts: the server is making you wait")
+    (str-addr "")))

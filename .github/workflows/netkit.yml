@@ -1,0 +1,66 @@
+name: netkit
+
+# SHANKPIT Netkit's logic (stdlib/netkit/*.prn: scanner, VNC/RFB, DES, SSH) compiled to wasm32 and tested on every
+# change. Same promises as the other web games: zero imports, no allocator, no memory.grow, fixed memory -- the build
+# script refuses otherwise. The RFB client is also tested against a REAL VNC server (libvncserver, TightVNC's lineage).
+#
+# Toolchain wiring is the one the scripts expect (apt llvm-18 + lld-18 under LLVM_TOOLCHAIN_ROOT), as trapx-wasm.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'stdlib/netkit/**'
+      - 'tests/netkit/**'
+      - 'scripts/build_netkit_wasm.sh'
+      - 'scripts/test_netkit.sh'
+      - '.github/workflows/netkit.yml'
+  pull_request:
+    paths:
+      - 'stdlib/netkit/**'
+      - 'tests/netkit/**'
+      - 'scripts/build_netkit_wasm.sh'
+      - 'scripts/test_netkit.sh'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  netkit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 18 + lld, libvncserver, python deps
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-18 lld-18 libvncserver-dev
+          sudo mkdir -p /opt/llvm-toolchain/usr/lib/llvm-18
+          sudo ln -sfn /usr/lib/llvm-18/bin /opt/llvm-toolchain/usr/lib/llvm-18/bin
+          python3 -m pip install --user wasmtime pycryptodome
+
+      - name: Build and test (DES, RFB scripted, RFB vs a real VNC server)
+        env:
+          LLVM_TOOLCHAIN_ROOT: /opt/llvm-toolchain
+        run: |
+          set -euo pipefail
+          make .parena-bootstrap
+          scripts/test_netkit.sh 2>&1 | tee netkit-test.log
+          ! grep -E '^FAIL|SKIP' netkit-test.log
+
+      - name: Publish netkit.wasm
+        env:
+          LLVM_TOOLCHAIN_ROOT: /opt/llvm-toolchain
+        run: |
+          mkdir -p build
+          scripts/build_netkit_wasm.sh build/netkit.wasm
+          echo "### netkit.wasm" >> "$GITHUB_STEP_SUMMARY"
+          echo "- bytes: $(wc -c < build/netkit.wasm)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- sha256: $(sha256sum build/netkit.wasm | cut -d' ' -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netkit-wasm
+          path: build/netkit.wasm

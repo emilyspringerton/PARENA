@@ -1,0 +1,537 @@
+;; stdlib/netkit/nk_rfb.prn -- a VIEW-ONLY VNC (RFB, RFC 6143) client, as a sans-IO state machine in PARENA.
+;;
+;; Founder's VS0: "VNC: view the remote screen only, with a saved password for the iMac. No mouse or keyboard
+;; control in VS0." The target is TightVNC on a Windows 10 iMac. This module cannot touch a socket (no imports); the
+;; page host moves bytes:
+;;     socket bytes -> p = nk-in-reserve(); write n bytes at p; nk-rfb-feed(n)
+;;     nk-out-len() > 0 -> send OUT[0..len) to the socket; nk-out-clear()
+;;     after feed: if nk-rfb-dirty() the page blits FB[x0,y0,x1,y1) (RGBA, tight rows) to its canvas, nk-rfb-dirty-clear().
+;;
+;; View-only is structural, not a flag: there is no code in this file that emits KeyEvent (4), PointerEvent (5) or
+;; ClientCutText (6). The only client messages ever sent are SetPixelFormat (0), SetEncodings (2) and
+;; FramebufferUpdateRequest (3); tests/netkit/test_rfb.py parses every byte sent and asserts exactly that.
+;;
+;; Protocol coverage: versions 3.3 / 3.7 / 3.8 (a server saying 3.889, as Apple's does, is treated as 3.8).
+;; Security: None (1) and VNC Authentication (2, DES -- see nk_des.prn). Anything else (MS-Logon, ARD, TLS/VeNCrypt)
+;; is refused with a plain message, never guessed at. The client asks for ONE pixel format -- 32 bpp, little-endian,
+;; true colour, red shift 0 / green 8 / blue 16 -- so a pixel's four wire bytes are already R,G,B,x in memory order;
+;; every pixel is stored into the framebuffer with alpha forced to 255 (the canvas would otherwise draw the server's
+;; undefined 4th byte as transparency).
+;; Encodings requested (server picks the first it supports): CopyRect(1), Hextile(5), Raw(0), DesktopSize(-223).
+;; No Tight/ZRLE (they need zlib/JPEG; a later module), no cursor shape pseudo-encoding.
+;;
+;; Safety: every rectangle is bounds-checked against the framebuffer before a single pixel is written; sizes are
+;; capped (8192 x 8192 and the 36 MB FB region); a hostile or confused server can fail the session but cannot write
+;; outside the framebuffer or make the parser spin (every step that returns "progress" consumes input or advances
+;; the state machine toward a terminal state).
+;;
+;; G words 16..63 belong to this file.
+
+(defn g-rfb-state [] : I32 16)
+(defn g-rfb-ver [] : I32 17)        ; minor version we speak: 3, 7 or 8
+(defn g-rfb-sec [] : I32 18)        ; security type in use (1 none, 2 vnc auth)
+(defn g-rfb-w [] : I32 19)
+(defn g-rfb-h [] : I32 20)
+(defn g-rfb-pwset [] : I32 21)
+(defn g-rfb-rects [] : I32 22)      ; rectangles left in the current FramebufferUpdate
+(defn g-rfb-rx [] : I32 23)
+(defn g-rfb-ry [] : I32 24)
+(defn g-rfb-rw [] : I32 25)
+(defn g-rfb-rh [] : I32 26)
+(defn g-rfb-prog [] : I32 28)       ; progress inside the current rect / name / reason
+(defn g-rfb-bg [] : I32 29)         ; Hextile background, persists across tiles of one rect
+(defn g-rfb-fg [] : I32 30)
+(defn g-rfb-dx0 [] : I32 31)
+(defn g-rfb-dy0 [] : I32 32)
+(defn g-rfb-dx1 [] : I32 33)
+(defn g-rfb-dy1 [] : I32 34)
+(defn g-rfb-frames [] : I32 35)     ; completed FramebufferUpdates
+(defn g-rfb-gen [] : I32 36)        ; bumps whenever the framebuffer size changes (page re-makes its canvas)
+(defn g-rfb-skip [] : I32 37)       ; bytes still to discard
+(defn g-rfb-pkind [] : I32 38)      ; error to report once a server-supplied reason has been read
+(defn g-rfb-pmsg [] : I32 39)
+(defn g-rfb-namelen [] : I32 40)    ; desktop-name bytes still to read
+(defn g-rfb-reqs [] : I32 41)       ; FramebufferUpdateRequests sent
+(defn g-rfb-dirty [] : I32 42)      ; 1 when a dirty box is pending
+(defn g-rfb-fullreq [] : I32 43)    ; 1 = send a NON-incremental request when the update ends (after a resize)
+(defn g-rfb-reasonlen [] : I32 44)
+
+;; states
+(defn rs-idle [] : I32 0)
+(defn rs-version [] : I32 1)
+(defn rs-sec33 [] : I32 2)
+(defn rs-sectypes [] : I32 3)
+(defn rs-challenge [] : I32 4)
+(defn rs-secresult [] : I32 5)
+(defn rs-serverinit [] : I32 6)
+(defn rs-servername [] : I32 7)
+(defn rs-msg [] : I32 8)
+(defn rs-recthdr [] : I32 9)
+(defn rs-raw [] : I32 10)
+(defn rs-copy [] : I32 11)
+(defn rs-hextile [] : I32 12)
+(defn rs-skip [] : I32 13)
+(defn rs-reasonhdr [] : I32 14)
+(defn rs-reasonbody [] : I32 15)
+(defn rs-closed [] : I32 98)
+(defn rs-failed [] : I32 99)
+
+(defn alpha [] : I32 -16777216)     ; 0xFF000000
+
+;; ---- failure ------------------------------------------------------------------------------------------------
+(defn rfb-fail! [(kind : I32) (msg : I32)] : I32
+  (do (gi! (g-err-kind) kind) (gi! (g-err-msg) msg)
+      (gi! (g-rfb-state) (rs-failed))
+      0))
+
+;; ---- framebuffer ---------------------------------------------------------------------------------------------
+(defn fb-put! [(x : I32) (y : I32) (px : I32)] : Unit
+  (store32! (+ (fb-base) (shl (+ (* y (gi (g-rfb-w))) x) 2)) px))
+
+(defn fb-get [(x : I32) (y : I32)] : I32
+  (load32 (+ (fb-base) (shl (+ (* y (gi (g-rfb-w))) x) 2))))
+
+;; Fill an in-bounds rectangle (callers have already clipped).
+(defn fill-rect! [(x : I32) (y : I32) (w : I32) (h : I32) (px : I32)] : Unit
+  (dotimes [j h]
+    (dotimes [i w] (fb-put! (+ x i) (+ y j) px))))
+
+(defn fb-clear! [] : Unit
+  (let [n (* (gi (g-rfb-w)) (gi (g-rfb-h)))]
+    (loop [i 0]
+      (when (< i n)
+        (store32! (+ (fb-base) (shl i 2)) (alpha))
+        (recur (+ i 1))))))
+
+(defn rfb-dirty! [(x : I32) (y : I32) (w : I32) (h : I32)] : Unit
+  (if (= (gi (g-rfb-dirty)) 0)
+      (do (gi! (g-rfb-dx0) x) (gi! (g-rfb-dy0) y)
+          (gi! (g-rfb-dx1) (+ x w)) (gi! (g-rfb-dy1) (+ y h))
+          (gi! (g-rfb-dirty) 1))
+      (do (gi! (g-rfb-dx0) (min-i (gi (g-rfb-dx0)) x))
+          (gi! (g-rfb-dy0) (min-i (gi (g-rfb-dy0)) y))
+          (gi! (g-rfb-dx1) (max-i (gi (g-rfb-dx1)) (+ x w)))
+          (gi! (g-rfb-dy1) (max-i (gi (g-rfb-dy1)) (+ y h))))))
+
+;; ---- messages we send (exactly three kinds; see the header) -----------------------------------------------------
+(defn rfb-send-pixel-format! [] : Unit
+  (do (put8! 0) (put8! 0) (put8! 0) (put8! 0)         ; SetPixelFormat + 3 padding
+      (put8! 32) (put8! 24) (put8! 0) (put8! 1)       ; bpp, depth, little-endian, true colour
+      (put16be! 255) (put16be! 255) (put16be! 255)   ; red/green/blue max
+      (put8! 0) (put8! 8) (put8! 16)                  ; red/green/blue shift -> bytes R,G,B,x
+      (put8! 0) (put8! 0) (put8! 0)))
+
+(defn rfb-send-encodings! [] : Unit
+  (do (put8! 2) (put8! 0) (put16be! 4)
+      (put32be! 1)        ; CopyRect
+      (put32be! 5)        ; Hextile
+      (put32be! 0)        ; Raw
+      (put32be! -223)))   ; DesktopSize
+
+(defn rfb-send-request! [(incremental : I32)] : Unit
+  (do (put8! 3) (put8! incremental)
+      (put16be! 0) (put16be! 0) (put16be! (gi (g-rfb-w))) (put16be! (gi (g-rfb-h)))
+      (gi! (g-rfb-reqs) (+ (gi (g-rfb-reqs)) 1))))
+
+;; ---- VNC authentication ---------------------------------------------------------------------------------------
+;; key = first 8 password bytes (NUL padded), EACH BYTE BIT-REVERSED; response = DES-ECB(challenge) in two blocks.
+(defn rev8 [(b : I32)] : I32
+  (loop [i 0 r 0]
+    (if (= i 8) r (recur (+ i 1) (bit-or (shl r 1) (bit-and (shr b i) 1))))))
+
+(defn rfb-auth-response! [(chal : I32)] : Unit
+  (let [key (+ (scr-base) 2048)
+        inb (+ (scr-base) 2112)
+        outb (+ (scr-base) 2176)]
+    (do
+      (dotimes [i 8] (store8! (+ key i) (rev8 (load8 (+ (pw-base) i)))))
+      (des-set-key key)
+      (dotimes [i 16] (store8! (+ inb i) (load8 (+ chal i))))
+      (des-block inb outb 1)
+      (des-block (+ inb 8) (+ outb 8) 1)
+      (dotimes [i 16] (put8! (load8 (+ outb i)))))))
+
+;; ---- handshake states ----------------------------------------------------------------------------------------
+(defn rfb-digit [(c : I32)] : I32 (if (and (>= c 48) (<= c 57)) (- c 48) 0))
+
+(defn st-version [] : I32
+  (if (< (avail) 12) 0
+      (if (not (and (= (pk8 0) 82) (and (= (pk8 1) 70) (and (= (pk8 2) 66) (= (pk8 3) 32)))))
+          (rfb-fail! (ek-protocol) 1)
+          (let [major (+ (* (rfb-digit (pk8 4)) 100) (+ (* (rfb-digit (pk8 5)) 10) (rfb-digit (pk8 6))))
+                minor (+ (* (rfb-digit (pk8 8)) 100) (+ (* (rfb-digit (pk8 9)) 10) (rfb-digit (pk8 10))))
+                ver (if (> major 3) 8 (if (>= minor 8) 8 (if (= minor 7) 7 3)))]
+            (do (put8! 82) (put8! 70) (put8! 66) (put8! 32)
+                (put8! 48) (put8! 48) (put8! 51) (put8! 46)
+                (put8! 48) (put8! 48) (put8! (+ 48 ver)) (put8! 10)
+                (consume! 12)
+                (gi! (g-rfb-ver) ver)
+                (gi! (g-rfb-state) (if (>= ver 7) (rs-sectypes) (rs-sec33)))
+                1)))))
+
+;; ClientInit: shared-desktop flag = 1 so we never kick whoever is already looking at the screen.
+(defn rfb-clientinit! [] : I32
+  (do (put8! 1) (gi! (g-rfb-state) (rs-serverinit)) 1))
+
+(defn st-sec33 [] : I32
+  (if (< (avail) 4) 0
+      (let [t (pk32 0)]
+        (do (consume! 4)
+            (if (= t 1) (rfb-clientinit!)
+                (if (= t 2) (do (gi! (g-rfb-sec) 2) (gi! (g-rfb-state) (rs-challenge)) 1)
+                    (if (= t 0)
+                        (do (gi! (g-rfb-pkind) (ek-protocol)) (gi! (g-rfb-pmsg) 2)
+                            (gi! (g-rfb-state) (rs-reasonhdr)) 1)
+                        (rfb-fail! (ek-protocol) 3))))))))
+
+;; Does the list of n security types at offset 1 contain t?
+(defn sec-has [(n : I32) (t : I32)] : I32
+  (loop [i 0 f 0]
+    (if (= i n) f (recur (+ i 1) (if (= (pk8 (+ 1 i)) t) 1 f)))))
+
+(defn st-sectypes [] : I32
+  (if (< (avail) 1) 0
+      (let [n (pk8 0)]
+        (if (= n 0)
+            (do (consume! 1) (gi! (g-rfb-pkind) (ek-protocol)) (gi! (g-rfb-pmsg) 2)
+                (gi! (g-rfb-state) (rs-reasonhdr)) 1)
+            (if (< (avail) (+ 1 n)) 0
+                (let [has1 (sec-has n 1)
+                      has2 (sec-has n 2)
+                      pick (if (and (= has2 1) (= (gi (g-rfb-pwset)) 1)) 2
+                               (if (= has1 1) 1 (if (= has2 1) 2 0)))]
+                  (do (consume! (+ 1 n))
+                      (if (= pick 0)
+                          (rfb-fail! (ek-protocol) 3)
+                          (if (and (= pick 2) (= (gi (g-rfb-pwset)) 0))
+                              (rfb-fail! (ek-auth-failed) 4)
+                              (do (put8! pick)
+                                  (gi! (g-rfb-sec) pick)
+                                  (if (= pick 2)
+                                      (do (gi! (g-rfb-state) (rs-challenge)) 1)
+                                      (if (>= (gi (g-rfb-ver)) 8)
+                                          (do (gi! (g-rfb-state) (rs-secresult)) 1)
+                                          (rfb-clientinit!)))))))))))))
+
+(defn st-challenge [] : I32
+  (if (< (avail) 16) 0
+      (do (rfb-auth-response! (+ (in-base) (gi (g-in-rd))))
+          (consume! 16)
+          (gi! (g-rfb-state) (rs-secresult))
+          1)))
+
+(defn st-secresult [] : I32
+  (if (< (avail) 4) 0
+      (let [r (pk32 0)]
+        (do (consume! 4)
+            (if (= r 0) (rfb-clientinit!)
+                (let [msg (if (= r 2) 10 5)]
+                  (if (>= (gi (g-rfb-ver)) 8)
+                      (do (gi! (g-rfb-pkind) (ek-auth-failed)) (gi! (g-rfb-pmsg) msg)
+                          (gi! (g-rfb-state) (rs-reasonhdr)) 1)
+                      (rfb-fail! (ek-auth-failed) msg))))))))
+
+(defn st-serverinit [] : I32
+  (if (< (avail) 24) 0
+      (let [w (pk16 0)
+            h (pk16 2)
+            nl (pk32 20)]
+        (do (consume! 24)
+            (if (or (= w 0) (or (= h 0) (or (> w 8192) (or (> h 8192) (> (* w h) (/ (fb-cap) 4))))))
+                (rfb-fail! (ek-protocol) 6)
+                (if (or (< nl 0) (> nl 1000000))
+                    (rfb-fail! (ek-protocol) 7)
+                    (do (gi! (g-rfb-w) w) (gi! (g-rfb-h) h)
+                        (gi! (g-rfb-gen) (+ (gi (g-rfb-gen)) 1))
+                        (fb-clear!)
+                        (rfb-dirty! 0 0 w h)
+                        (gi! (g-rfb-namelen) nl)
+                        (gi! (g-rfb-prog) 0)
+                        (gi! (g-rfb-state) (rs-servername))
+                        1)))))))
+
+;; Read the desktop name (keep up to 63 bytes), then open the stream: pixel format, encodings, first full request.
+(defn st-servername [] : I32
+  (let [left (gi (g-rfb-namelen))
+        k (min-i (avail) left)]
+    (if (and (> left 0) (= k 0)) 0
+        (do (dotimes [i k]
+              (let [p (+ (gi (g-rfb-prog)) i)]
+                (when (< p 63) (store8! (+ (name-base) p) (pk8 i)))))
+            (consume! k)
+            (gi! (g-rfb-prog) (+ (gi (g-rfb-prog)) k))
+            (gi! (g-rfb-namelen) (- left k))
+            (if (= (- left k) 0)
+                (do (store8! (+ (name-base) (min-i (gi (g-rfb-prog)) 63)) 0)
+                    (rfb-send-pixel-format!)
+                    (rfb-send-encodings!)
+                    (rfb-send-request! 0)
+                    (gi! (g-rfb-state) (rs-msg))
+                    1)
+                1)))))
+
+;; ---- running states ---------------------------------------------------------------------------------------------
+(defn st-msg [] : I32
+  (if (< (avail) 1) 0
+      (let [t (pk8 0)]
+        (case t
+          0 (if (< (avail) 4) 0
+                (do (gi! (g-rfb-rects) (pk16 2)) (consume! 4)
+                    (gi! (g-rfb-state) (rs-recthdr)) 1))
+          1 (if (< (avail) 6) 0
+                (do (gi! (g-rfb-skip) (* 6 (pk16 4))) (consume! 6)
+                    (gi! (g-rfb-state) (rs-skip)) 1))
+          2 (do (consume! 1) 1)
+          3 (if (< (avail) 8) 0
+                (let [len (pk32 4)]
+                  (if (< len 0) (rfb-fail! (ek-protocol) 7)
+                      (do (consume! 8) (gi! (g-rfb-skip) len)
+                          (gi! (g-rfb-state) (rs-skip)) 1))))
+          (rfb-fail! (ek-protocol) 7)))))
+
+(defn st-skip [] : I32
+  (let [left (gi (g-rfb-skip))
+        k (min-i (avail) left)]
+    (if (= left 0)
+        (do (gi! (g-rfb-state) (rs-msg)) 1)
+        (if (= k 0) 0
+            (do (consume! k) (gi! (g-rfb-skip) (- left k)) 1)))))
+
+;; A rect must lie wholly inside the framebuffer.
+(defn rect-ok [(x : I32) (y : I32) (w : I32) (h : I32)] : Bool
+  (and (>= x 0) (and (>= y 0) (and (<= (+ x w) (gi (g-rfb-w))) (<= (+ y h) (gi (g-rfb-h)))))))
+
+(defn st-recthdr [] : I32
+  (if (= (gi (g-rfb-rects)) 0)
+      ;; the update is complete: ask for the next one (full after a resize, else incremental)
+      (do (gi! (g-rfb-frames) (+ (gi (g-rfb-frames)) 1))
+          (rfb-send-request! (if (= (gi (g-rfb-fullreq)) 1) 0 1))
+          (gi! (g-rfb-fullreq) 0)
+          (gi! (g-rfb-state) (rs-msg))
+          1)
+      (if (< (avail) 12) 0
+          (let [x (pk16 0) y (pk16 2) w (pk16 4) h (pk16 6) enc (pk32 8)]
+            (do (consume! 12)
+                (gi! (g-rfb-rects) (- (gi (g-rfb-rects)) 1))
+                (gi! (g-rfb-rx) x) (gi! (g-rfb-ry) y) (gi! (g-rfb-rw) w) (gi! (g-rfb-rh) h)
+                (gi! (g-rfb-prog) 0)
+                (if (= enc -223)
+                    ;; DesktopSize: the rect's w x h is the new screen size
+                    (if (or (= w 0) (or (= h 0) (or (> w 8192) (or (> h 8192) (> (* w h) (/ (fb-cap) 4))))))
+                        (rfb-fail! (ek-protocol) 6)
+                        (do (gi! (g-rfb-w) w) (gi! (g-rfb-h) h)
+                            (gi! (g-rfb-gen) (+ (gi (g-rfb-gen)) 1))
+                            (fb-clear!)
+                            (gi! (g-rfb-dirty) 0)
+                            (rfb-dirty! 0 0 w h)
+                            (gi! (g-rfb-fullreq) 1)
+                            1))
+                    (if (not (rect-ok x y w h))
+                        (rfb-fail! (ek-protocol) 9)
+                        (if (= enc 0) (do (gi! (g-rfb-state) (if (or (= w 0) (= h 0)) (rs-recthdr) (rs-raw))) 1)
+                            (if (= enc 1) (do (gi! (g-rfb-state) (rs-copy)) 1)
+                                (if (= enc 5)
+                                    (do (gi! (g-rfb-bg) (alpha)) (gi! (g-rfb-fg) -1)
+                                        (gi! (g-rfb-state) (if (or (= w 0) (= h 0)) (rs-recthdr) (rs-hextile))) 1)
+                                    (rfb-fail! (ek-protocol) 8)))))))))))
+
+;; Raw: w*h pixels, streamed -- a 1080p frame is 8 MB and never needs to be buffered whole.
+(defn st-raw [] : I32
+  (let [w (gi (g-rfb-rw)) h (gi (g-rfb-rh))
+        done (gi (g-rfb-prog))
+        n (min-i (/ (avail) 4) (- (* w h) done))]
+    (if (= n 0) 0
+        (let [rx (gi (g-rfb-rx)) ry (gi (g-rfb-ry))]
+          (do (dotimes [i n]
+                (let [p (+ done i)]
+                  (fb-put! (+ rx (mod p w)) (+ ry (/ p w))
+                           (bit-or (load32 (+ (in-base) (+ (gi (g-in-rd)) (shl i 2)))) (alpha)))))
+              (let [r0 (/ done w)
+                    r1 (/ (+ done (- n 1)) w)]
+                (rfb-dirty! rx (+ ry r0) w (+ (- r1 r0) 1)))
+              (consume! (shl n 2))
+              (gi! (g-rfb-prog) (+ done n))
+              (when (= (+ done n) (* w h)) (gi! (g-rfb-state) (rs-recthdr)))
+              1)))))
+
+;; CopyRect: overlap-safe (rows and columns walk in the direction that never reads a pixel already overwritten).
+(defn st-copy [] : I32
+  (if (< (avail) 4) 0
+      (let [sx (pk16 0) sy (pk16 2)
+            dx (gi (g-rfb-rx)) dy (gi (g-rfb-ry)) w (gi (g-rfb-rw)) h (gi (g-rfb-rh))]
+        (do (consume! 4)
+            (if (not (rect-ok sx sy w h))
+                (rfb-fail! (ek-protocol) 9)
+                (let [up (< sy dy)
+                      left (and (= sy dy) (< sx dx))]
+                  (do (dotimes [jj h]
+                        (let [j (if up (- (- h 1) jj) jj)]
+                          (dotimes [ii w]
+                            (let [i (if left (- (- w 1) ii) ii)]
+                              (fb-put! (+ dx i) (+ dy j) (fb-get (+ sx i) (+ sy j)))))))
+                      (rfb-dirty! dx dy w h)
+                      (gi! (g-rfb-state) (rs-recthdr))
+                      1)))))))
+
+;; Hextile: 16x16 tiles, row-major. A tile is decoded only once ALL of its bytes have arrived, so no tile ever
+;; straddles two feeds.
+(defn rpx [(off : I32)] : I32 (load32 (+ (in-base) (+ (gi (g-in-rd)) off))))
+
+;; Bytes this tile occupies, or -1 if the length can't be known yet (the subrect count byte hasn't arrived).
+(defn hextile-len [(sub : I32) (tw : I32) (th : I32)] : I32
+  (if (= (bit-and sub 1) 1)
+      (+ 1 (* (* tw th) 4))
+      (let [l1 (if (= (bit-and sub 2) 2) 5 1)
+            l2 (if (= (bit-and sub 4) 4) (+ l1 4) l1)]
+        (if (= (bit-and sub 8) 8)
+            (if (< (avail) (+ l2 1)) -1
+                (+ l2 (+ 1 (* (pk8 l2) (if (= (bit-and sub 16) 16) 6 2)))))
+            l2))))
+
+(defn hextile-draw! [(x0 : I32) (y0 : I32) (tw : I32) (th : I32) (sub : I32)] : Unit
+  (if (= (bit-and sub 1) 1)
+      (dotimes [i (* tw th)]
+        (fb-put! (+ x0 (mod i tw)) (+ y0 (/ i tw)) (bit-or (rpx (+ 1 (shl i 2))) (alpha))))
+      (let [o1 (if (= (bit-and sub 2) 2)
+                   (do (gi! (g-rfb-bg) (bit-or (rpx 1) (alpha))) 5)
+                   1)
+            o2 (if (= (bit-and sub 4) 4)
+                   (do (gi! (g-rfb-fg) (bit-or (rpx o1) (alpha))) (+ o1 4))
+                   o1)]
+        (do (fill-rect! x0 y0 tw th (gi (g-rfb-bg)))
+            (when (= (bit-and sub 8) 8)
+              (let [ns (pk8 o2)
+                    colored (bit-and sub 16)]
+                (loop [i 0 o (+ o2 1)]
+                  (when (< i ns)
+                    (let [c (if (= colored 16) (bit-or (rpx o) (alpha)) (gi (g-rfb-fg)))
+                          oo (if (= colored 16) (+ o 4) o)
+                          xy (pk8 oo)
+                          wh (pk8 (+ oo 1))
+                          sx (shr xy 4)
+                          sy (bit-and xy 15)
+                          sw (min-i (+ (shr wh 4) 1) (- tw sx))
+                          sh (min-i (+ (bit-and wh 15) 1) (- th sy))]
+                      (do (when (and (> sw 0) (> sh 0))
+                            (fill-rect! (+ x0 sx) (+ y0 sy) sw sh c))
+                          (recur (+ i 1) (+ oo 2))))))))))))
+
+(defn st-hextile [] : I32
+  (let [w (gi (g-rfb-rw)) h (gi (g-rfb-rh))
+        tx (/ (+ w 15) 16)
+        ty (/ (+ h 15) 16)
+        t (gi (g-rfb-prog))]
+    (if (>= t (* tx ty))
+        (do (gi! (g-rfb-state) (rs-recthdr)) 1)
+        (if (< (avail) 1) 0
+            (let [col (mod t tx)
+                  row (/ t tx)
+                  x0 (+ (gi (g-rfb-rx)) (* col 16))
+                  y0 (+ (gi (g-rfb-ry)) (* row 16))
+                  tw (min-i 16 (- w (* col 16)))
+                  th (min-i 16 (- h (* row 16)))
+                  sub (pk8 0)
+                  len (hextile-len sub tw th)]
+              (if (or (< len 0) (< (avail) len)) 0
+                  (do (hextile-draw! x0 y0 tw th sub)
+                      (rfb-dirty! x0 y0 tw th)
+                      (consume! len)
+                      (gi! (g-rfb-prog) (+ t 1))
+                      1)))))))
+
+;; ---- server-supplied failure reason (3.8) ------------------------------------------------------------------------
+(defn st-reasonhdr [] : I32
+  (if (< (avail) 4) 0
+      (let [len (pk32 0)]
+        (do (consume! 4)
+            (store8! (reason-base) 0)
+            (if (or (< len 0) (> len 1000000))
+                (rfb-fail! (gi (g-rfb-pkind)) (gi (g-rfb-pmsg)))
+                (if (= len 0)
+                    (rfb-fail! (gi (g-rfb-pkind)) (gi (g-rfb-pmsg)))
+                    (do (gi! (g-rfb-reasonlen) len) (gi! (g-rfb-prog) 0)
+                        (gi! (g-rfb-state) (rs-reasonbody)) 1)))))))
+
+(defn st-reasonbody [] : I32
+  (let [left (- (gi (g-rfb-reasonlen)) (gi (g-rfb-prog)))
+        k (min-i (avail) left)]
+    (if (= k 0) 0
+        (do (dotimes [i k]
+              (let [p (+ (gi (g-rfb-prog)) i)]
+                (when (< p 255) (do (store8! (+ (reason-base) p) (pk8 i)) (store8! (+ (reason-base) (+ p 1)) 0)))))
+            (consume! k)
+            (gi! (g-rfb-prog) (+ (gi (g-rfb-prog)) k))
+            (if (= (+ (gi (g-rfb-prog)) 0) (gi (g-rfb-reasonlen)))
+                (rfb-fail! (gi (g-rfb-pkind)) (gi (g-rfb-pmsg)))
+                1)))))
+
+;; ---- the pump -----------------------------------------------------------------------------------------------------
+(defn rfb-step [] : I32
+  (case (gi (g-rfb-state))
+    1 (st-version)
+    2 (st-sec33)
+    3 (st-sectypes)
+    4 (st-challenge)
+    5 (st-secresult)
+    6 (st-serverinit)
+    7 (st-servername)
+    8 (st-msg)
+    9 (st-recthdr)
+    10 (st-raw)
+    11 (st-copy)
+    12 (st-hextile)
+    13 (st-skip)
+    14 (st-reasonhdr)
+    15 (st-reasonbody)
+    0))
+
+;; ---- public API (what the page host calls) ---------------------------------------------------------------------------
+;; The page has written pwlen password bytes at nk-pw-addr first (0 = none; only the first 8 matter to VNC).
+(defn nk-rfb-begin [(pwlen : I32)] : Unit
+  (do (nk-reset-common!)
+      (loop [i 16] (when (< i 64) (gi! i 0) (recur (+ i 1))))
+      (loop [i (min-i pwlen 16)] (when (< i 16) (store8! (+ (pw-base) i) 0) (recur (+ i 1))))
+      (store8! (name-base) 0)
+      (store8! (reason-base) 0)
+      (gi! (g-rfb-pwset) (if (> pwlen 0) 1 0))
+      (gi! (g-rfb-state) (rs-version))))
+
+;; n bytes were just written at the address nk-in-reserve returned.
+(defn nk-rfb-feed [(n : I32)] : Unit
+  (let [k (min-i n (nk-in-space))]
+    (do (gi! (g-in-used) (+ (gi (g-in-used)) k))
+        (gi! (g-bytes-in) (+ (gi (g-bytes-in)) k))
+        (loop [go 1]
+          (when (= go 1)
+            (recur (if (< (gi (g-rfb-state)) 90) (rfb-step) 0))))
+        ;; once finished or failed, input is discarded
+        (when (>= (gi (g-rfb-state)) 90) (gi! (g-in-rd) (gi (g-in-used)))))))
+
+;; The transport closed. A clean close while running is not an error; a close mid-handshake is.
+(defn nk-rfb-closed [] : Unit
+  (when (< (gi (g-rfb-state)) 90)
+    (if (>= (gi (g-rfb-state)) 8)
+        (gi! (g-rfb-state) (rs-closed))
+        (do (rfb-fail! (ek-protocol) 1) unit))))
+
+(defn nk-rfb-state [] : I32 (gi (g-rfb-state)))
+;; 0 idle, 1 handshaking, 2 authenticating, 3 running, 8 closed, 9 failed
+(defn nk-rfb-phase [] : I32
+  (let [s (gi (g-rfb-state))]
+    (if (= s 0) 0
+        (if (or (= s 4) (= s 5)) 2
+            (if (< s 8) 1
+                (if (< s 90) 3
+                    (if (= s 98) 8 9)))))))
+(defn nk-rfb-width [] : I32 (gi (g-rfb-w)))
+(defn nk-rfb-height [] : I32 (gi (g-rfb-h)))
+(defn nk-rfb-gen [] : I32 (gi (g-rfb-gen)))
+(defn nk-rfb-frames [] : I32 (gi (g-rfb-frames)))
+(defn nk-rfb-dirty [] : I32 (gi (g-rfb-dirty)))
+(defn nk-rfb-dx0 [] : I32 (gi (g-rfb-dx0)))
+(defn nk-rfb-dy0 [] : I32 (gi (g-rfb-dy0)))
+(defn nk-rfb-dx1 [] : I32 (gi (g-rfb-dx1)))
+(defn nk-rfb-dy1 [] : I32 (gi (g-rfb-dy1)))
+(defn nk-rfb-dirty-clear [] : Unit (gi! (g-rfb-dirty) 0))
+(defn nk-err-kind [] : I32 (gi (g-err-kind)))
+(defn nk-err-msg [] : I32 (gi (g-err-msg)))

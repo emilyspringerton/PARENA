@@ -1,0 +1,4 @@
+# the netkit wasm module's source files, in build order (scripts/build_netkit_wasm.sh)
+stdlib/netkit/nk_mem.prn
+stdlib/netkit/nk_des.prn
+stdlib/netkit/nk_rfb.prn

@@ -1,0 +1,115 @@
+;; stdlib/netkit/nk_des.prn -- DES (FIPS 46-3) for VNC authentication, in pure PARENA, wasm-safe (no malloc, no imports).
+;;
+;; Why it exists: RFB's "VNC Authentication" encrypts a 16-byte server challenge with single DES, key = the password's
+;; first 8 bytes (NUL-padded) with the bits of every key byte REVERSED (a historical quirk; see rfb-auth-response).
+;; Single DES is cryptographically broken -- the protocol, not this file, is the weakness; it is here because the
+;; VNC server on the founder's iMac (TightVNC) speaks nothing else. Never use it for anything new.
+;;
+;; Method: deliberately the plain textbook form -- one byte per bit, permutations by table lookup -- because it is
+;; run twice per login and clarity beats speed. All tables are the published FIPS 46-3 ones (IP, FP, E, P, PC1, PC2,
+;; the key-rotation schedule, S1..S8) packed as one hex string, decoded on the fly. Verified in
+;; tests/netkit/test_netkit.py against the NIST vector (key 133457799BBCDFF1, 0123456789ABCDEF -> 85E813540F0AB405)
+;; and 500 random key/block pairs, both directions, against an independent implementation (pycryptodome).
+;;
+;; Scratch layout inside SCR (one byte per bit):
+;;   +0    KS   16 subkeys x 48     +768  CD  56 (C = 0..27, D = 28..55)
+;;   +832  B    64 input bits       +896  L   32      +928 R 32      +960 T 64 (also pre-output)
+;;   +1024 X    48 expanded R^K     +1072 F   32 (P-permuted f output)    +1104 S  32 (S-box output)
+
+;; ---- tables, offsets: IP 0, FP 64, E 128, P 176, PC1 208, PC2 264, SHIFT 312, SBOX 328 ----------------------------
+(defn des-hex-a [] : String "3a322a221a120a023c342c241c140c043e362e261e160e06403830282018100839312921191109013b332b231b130b033d352d251d150d053f372f271f170f07280830103818402027072f0f37173f1f26062e0e36163e1e25052d0d35153d1d24042c0c34143c1c23032b0b33133b1b22022a0a32123a1a210129093111391920010203040504050607080908090a0b0c0d0c0d0e0f101110111213141514151617181918191a1b1c1d1c1d1e1f2001100714151d0c1c11010f171a05121f0a0208180e201b0309130d1e06160b04193931")
+(defn des-hex-b [] : String "2921191109013a322a221a120a023b332b231b130b033c342c243f372f271f170f073e362e261e160e063d352d251d150d051c140c040e110b180105031c0f06150a17130c041a0810071b140d0229341f252f371e28332d21302c31273822352e2a32241d20010102020202020201020202020202010e040d01020f0b08030a060c05090007000f07040e020d010a060c0b0905030804010e080d06020b0f0c0907030a05000f0c080204090107050b030e0a00060d0f01080e060b03040907020d0c00050a030d04070f02080e0c00010a")
+(defn des-hex-c [] : String "06090b05000e070b0a040d0105080c060903020f0d080a01030f04020b06070c00050e090a00090e06030f05010d0c070b0402080d0700090304060a0208050e0c0b0f010d060409080f03000b01020c050a0e07010a0d0006090807040f0e030b05020c070d0e030006090a010208050b0c040f0d080b05060f00030407020c010a0e090a0609000c0b070d0f01030e05020804030f00060a010d080904050b0c07020e020c0401070a0b060805030f0d000e090e0b020c04070d0105000f0a030908060402010b0a0d07080f090c050603")
+(defn des-hex-d [] : String "000e0b080c07010e020d060f00090a0405030c010a0f09020608000d03040e07050b0a0f0402070c090506010d0e000b0308090e0f0502080c030700040a010d0b060403020c09050f0a0b0e01070600080d040b020e0f00080d030c0907050a06010d000b070409010a0e03050c020f080601040b0d0c03070e0a0f060800050902060b0d0801040a070905000f0e02030c0d020804060f0b010a09030e05000c07010f0d080a0307040c05060b000e0902070b0401090c0e0200060a0d0f03050802010e07040a080d0f0c09000305060b")
+
+(defn des-nib [(c : I32)] : I32 (if (>= c 97) (- c 87) (- c 48)))
+;; table byte i (0..839): the file is split in four so no one literal is huge
+(defn des-tb [(i : I32)] : I32
+  (let [seg (/ i 210)
+        j (- i (* seg 210))
+        a (if (= seg 0) (str-addr (des-hex-a))
+              (if (= seg 1) (str-addr (des-hex-b))
+                  (if (= seg 2) (str-addr (des-hex-c)) (str-addr (des-hex-d)))))]
+    (bit-or (shl (des-nib (load8 (+ a (shl j 1)))) 4) (des-nib (load8 (+ a (+ (shl j 1) 1)))))))
+
+(defn des-ip [(j : I32)] : I32 (des-tb j))
+(defn des-fp [(j : I32)] : I32 (des-tb (+ 64 j)))
+(defn des-e [(j : I32)] : I32 (des-tb (+ 128 j)))
+(defn des-p [(j : I32)] : I32 (des-tb (+ 176 j)))
+(defn des-pc1 [(j : I32)] : I32 (des-tb (+ 208 j)))
+(defn des-pc2 [(j : I32)] : I32 (des-tb (+ 264 j)))
+(defn des-shift [(r : I32)] : I32 (des-tb (+ 312 r)))
+(defn des-sbox [(s : I32) (rc : I32)] : I32 (des-tb (+ 328 (+ (* s 64) rc))))
+
+;; ---- scratch accessors (one byte per bit) --------------------------------------------------------------------------
+(defn d-ks [] : I32 (scr-base))
+(defn d-cd [] : I32 (+ (scr-base) 768))
+(defn d-b [] : I32 (+ (scr-base) 832))
+(defn d-l [] : I32 (+ (scr-base) 896))
+(defn d-r [] : I32 (+ (scr-base) 928))
+(defn d-t [] : I32 (+ (scr-base) 960))
+(defn d-x [] : I32 (+ (scr-base) 1024))
+(defn d-f [] : I32 (+ (scr-base) 1072))
+(defn d-s [] : I32 (+ (scr-base) 1104))
+
+;; bit i (0 = most significant) of the 8 bytes at addr
+(defn des-getbit [(addr : I32) (i : I32)] : I32
+  (bit-and (shr (load8 (+ addr (shr i 3))) (- 7 (bit-and i 7))) 1))
+
+;; rotate the 28 bits at a left by one
+(defn des-rot28! [(a : I32)] : Unit
+  (let [first (load8 a)]
+    (do (loop [i 0] (when (< i 27) (store8! (+ a i) (load8 (+ a (+ i 1)))) (recur (+ i 1))))
+        (store8! (+ a 27) first))))
+
+;; Load an 8-byte key (parity bits ignored) and expand the 16 round subkeys into KS.
+(defn des-set-key [(key : I32)] : Unit
+  (do
+    (dotimes [j 56] (store8! (+ (d-cd) j) (des-getbit key (- (des-pc1 j) 1))))
+    (dotimes [r 16]
+      (do (dotimes [n (des-shift r)] (do (des-rot28! (d-cd)) (des-rot28! (+ (d-cd) 28))))
+          (dotimes [j 48]
+            (store8! (+ (d-ks) (+ (* r 48) j)) (load8 (+ (d-cd) (- (des-pc2 j) 1)))))))))
+
+;; f(R, K): E-expand, xor subkey, S-boxes, P-permute -> F
+(defn des-f! [(k : I32)] : Unit
+  (do
+    (dotimes [j 48]
+      (store8! (+ (d-x) j) (bit-xor (load8 (+ (d-r) (- (des-e j) 1))) (load8 (+ (d-ks) (+ (* k 48) j))))))
+    (dotimes [s 8]
+      (let [o (+ (d-x) (* s 6))
+            row (+ (shl (load8 o) 1) (load8 (+ o 5)))
+            col (+ (+ (shl (load8 (+ o 1)) 3) (shl (load8 (+ o 2)) 2)) (+ (shl (load8 (+ o 3)) 1) (load8 (+ o 4))))
+            v (des-sbox s (+ (shl row 4) col))]
+        (do (store8! (+ (d-s) (* s 4)) (bit-and (shr v 3) 1))
+            (store8! (+ (d-s) (+ (* s 4) 1)) (bit-and (shr v 2) 1))
+            (store8! (+ (d-s) (+ (* s 4) 2)) (bit-and (shr v 1) 1))
+            (store8! (+ (d-s) (+ (* s 4) 3)) (bit-and v 1)))))
+    (dotimes [j 32] (store8! (+ (d-f) j) (load8 (+ (d-s) (- (des-p j) 1)))))))
+
+;; Encrypt (enc = 1) or decrypt (enc = 0) one 8-byte block at in -> out (may be the same address).
+;; des-set-key must have been called.
+(defn des-block [(in : I32) (out : I32) (enc : I32)] : Unit
+  (do
+    (dotimes [j 64] (store8! (+ (d-b) j) (des-getbit in j)))
+    (dotimes [j 64] (store8! (+ (d-t) j) (load8 (+ (d-b) (- (des-ip j) 1)))))
+    (dotimes [j 32] (do (store8! (+ (d-l) j) (load8 (+ (d-t) j)))
+                        (store8! (+ (d-r) j) (load8 (+ (d-t) (+ j 32))))))
+    (dotimes [r 16]
+      (do (des-f! (if (= enc 1) r (- 15 r)))
+          (dotimes [j 32]
+            (let [nr (bit-xor (load8 (+ (d-l) j)) (load8 (+ (d-f) j)))]
+              (do (store8! (+ (d-l) j) (load8 (+ (d-r) j)))
+                  (store8! (+ (d-r) j) nr))))))
+    ;; pre-output is R16 || L16
+    (dotimes [j 32] (do (store8! (+ (d-t) j) (load8 (+ (d-r) j)))
+                        (store8! (+ (d-t) (+ j 32)) (load8 (+ (d-l) j)))))
+    (dotimes [i 8] (store8! (+ out i) 0))
+    (dotimes [j 64]
+      (let [bit (load8 (+ (d-t) (- (des-fp j) 1)))
+            a (+ out (shr j 3))]
+        (store8! a (bit-or (load8 a) (shl bit (- 7 (bit-and j 7)))))))))
+
+;; The same test hook for the page-less tests: key, in and out are addresses.
+(defn nk-des-test [(key : I32) (in : I32) (out : I32) (enc : I32)] : Unit
+  (do (des-set-key key) (des-block in out enc)))
