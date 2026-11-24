@@ -1,0 +1,144 @@
+;; stdlib/netkit/nk_x25519.prn -- X25519 (RFC 7748) in pure PARENA, wasm-safe: I32 words only, no malloc, no imports.
+;;
+;; PARENA has no I64 (STDLIB.md names it), which is why X25519 "should" be an FFI to libsodium here. This file is the
+;; honest alternative the founder asked for ("always implement core deps in PARENA"): the field GF(2^255 - 19) is held in
+;; 32 limbs of 8 bits, one per I32 word, so every product (<= ~600^2) and every column sum of 32 of them, even after the
+;; 38x fold of the high half, stays far below 2^31 (bounds worked out next to fe-mul!). It is slow by design (one field
+;; multiply = 1024 small multiplies; a full scalar multiplication is ~3000 of them, a few ms in wasm) -- it runs twice per
+;; SSH login. The Montgomery ladder swaps with masks, never with a branch on a secret bit.
+;;
+;; Checked in tests/netkit/test_x25519.py against RFC 7748 (s5.2 vectors, s6.1 Diffie-Hellman, the 1- and 1000-iteration
+;; chain) and against pyca/cryptography on random scalars and points.
+;;
+;; Scratch (CRY + 4096): 17 field elements of 128 bytes (limbs are I32), then 64 accumulator words, then the clamped scalar.
+;;   fe  0 x1  1 x2  2 z2  3 x3  4 z3  5 A  6 B  7 C  8 D  9 E  10 AA  11 BB  12 DA  13 CB  14 T1  15 T2  16 U
+
+(defn xb [] : I32 (+ (cry-base) 4096))
+(defn fe [(k : I32)] : I32 (+ (xb) (* k 128)))
+(defn xacc [] : I32 (+ (xb) 2176))
+(defn xk [] : I32 (+ (xb) 2432))
+
+(defn fl [(a : I32) (i : I32)] : I32 (load32 (+ a (shl i 2))))
+(defn fl! [(a : I32) (i : I32) (v : I32)] : Unit (store32! (+ a (shl i 2)) v))
+
+(defn fe-copy! [(d : I32) (s : I32)] : Unit (dotimes [i 32] (fl! d i (fl s i))))
+(defn fe-zero! [(d : I32)] : Unit (dotimes [i 32] (fl! d i 0)))
+(defn fe-one! [(d : I32)] : Unit (do (fe-zero! d) (fl! d 0 1)))
+
+;; one carry pass: limbs back into [0,255] (arithmetic shift = floor), the carry out of limb 31 (weight 2^256 = 38) wraps
+(defn fe-pass! [(a : I32)] : Unit
+  (let [c (loop [i 0 c 0]
+            (if (= i 32) c
+                (let [t (+ (fl a i) c)]
+                  (do (fl! a i (bit-and t 255)) (recur (+ i 1) (shr t 8))))))]
+    (fl! a 0 (+ (fl a 0) (* 38 c)))))
+;; three passes leave every limb in [0,255] except limb 0, which is at most 255 + 38 (tests assert the bound)
+(defn fe-carry! [(a : I32)] : Unit (do (fe-pass! a) (fe-pass! a) (fe-pass! a)))
+
+(defn fe-add! [(o : I32) (a : I32) (b : I32)] : Unit
+  (do (dotimes [i 32] (fl! o i (+ (fl a i) (fl b i)))) (fe-carry! o)))
+
+;; a - b + 4p, so every limb stays non-negative (4p = 2^257 - 76 as the limb vector [436, 510 x 31])
+(defn fe-sub! [(o : I32) (a : I32) (b : I32)] : Unit
+  (do (dotimes [i 32] (fl! o i (+ (- (fl a i) (fl b i)) (if (= i 0) 436 510)))) (fe-carry! o)))
+
+;; Multiply. Input limbs are <= ~300 after fe-carry!, so each of the 63 column sums is <= 32 * 300^2 = 2.9M; folding the
+;; high half in with weight 38 gives <= 39 * 2.9M = 112M, comfortably inside a signed 32-bit word.
+(defn fe-mul! [(o : I32) (a : I32) (b : I32)] : Unit
+  (let [t (xacc)]
+    (do (dotimes [k 64] (fl! t k 0))
+        (dotimes [i 32]
+          (let [ai (fl a i)]
+            (dotimes [j 32] (fl! t (+ i j) (+ (fl t (+ i j)) (* ai (fl b j)))))))
+        (dotimes [k 31] (fl! t k (+ (fl t k) (* 38 (fl t (+ k 32))))))
+        (dotimes [k 32] (fl! o k (fl t k)))
+        (fe-carry! o))))
+
+(defn fe-sqr! [(o : I32) (a : I32)] : Unit (fe-mul! o a a))
+
+(defn fe-mul-small! [(o : I32) (a : I32) (k : I32)] : Unit
+  (do (dotimes [i 32] (fl! o i (* (fl a i) k))) (fe-carry! o)))
+
+;; z^(p-2) by the plain square-and-multiply chain (TweetNaCl's): 254 squarings, 252 multiplies
+(defn fe-inv! [(o : I32) (z : I32)] : Unit
+  (let [c (fe 14)]
+    (do (fe-copy! c z)
+        (loop [a 253]
+          (when (>= a 0)
+            (do (fe-sqr! c c)
+                (when (and (!= a 2) (!= a 4)) (fe-mul! c c z))
+                (recur (- a 1)))))
+        (fe-copy! o c))))
+
+;; swap a and b when swap = 1, in constant time
+(defn fe-cswap! [(a : I32) (b : I32) (swap : I32)] : Unit
+  (let [mask (- 0 swap)]
+    (dotimes [i 32]
+      (let [t (bit-and mask (bit-xor (fl a i) (fl b i)))]
+        (do (fl! a i (bit-xor (fl a i) t)) (fl! b i (bit-xor (fl b i) t)))))))
+
+;; propagate carries without wrapping; returns whatever falls off the top (value >> 256)
+(defn fe-prop! [(a : I32)] : I32
+  (loop [i 0 c 0]
+    (if (= i 32) c
+        (let [t (+ (fl a i) c)]
+          (do (fl! a i (bit-and t 255)) (recur (+ i 1) (shr t 8)))))))
+
+;; Fully reduce a (loosely reduced, non-negative) to the canonical value in [0, p), limbs in [0,255].
+(defn fe-freeze! [(a : I32)] : Unit
+  (let [u (fe 16)]
+    (do
+      ;; settle: propagate, wrap the top carry back into limb 0, until nothing falls off
+      (loop [k 0]
+        (when (< k 8)
+          (let [c (fe-prop! a)]
+            (when (!= c 0) (do (fl! a 0 (+ (fl a 0) (* 38 c))) (recur (+ k 1)))))))
+      ;; fold bit 255 (2^255 = 19) twice: value < 2^256 -> < 2^255 + 19 -> < 38
+      (dotimes [r 2]
+        (let [hi (shr (fl a 31) 7)]
+          (do (fl! a 31 (bit-and (fl a 31) 127))
+              (fl! a 0 (+ (fl a 0) (* 19 hi)))
+              (fe-prop! a))))
+      ;; value < 2^255 now; if value + 19 >= 2^255 then value >= p: the result is (value + 19) - 2^255
+      (fe-copy! u a)
+      (fl! u 0 (+ (fl u 0) 19))
+      (fe-prop! u)
+      (when (= (shr (fl u 31) 7) 1)
+        (do (fl! u 31 (bit-and (fl u 31) 127)) (fe-copy! a u))))))
+
+(defn fe-bit [(i : I32)] : I32 (bit-and (shr (load8 (+ (xk) (shr i 3))) (bit-and i 7)) 1))
+
+;; out (32 bytes) = X25519(scalar (32 bytes), point u-coordinate (32 bytes, little-endian)). out may equal either input.
+(defn nk-x25519 [(out : I32) (scalar : I32) (point : I32)] : Unit
+  (let [x1 (fe 0) x2 (fe 1) z2 (fe 2) x3 (fe 3) z3 (fe 4)
+        a (fe 5) b (fe 6) c (fe 7) d (fe 8) e (fe 9) aa (fe 10) bb (fe 11) da (fe 12) cb (fe 13)
+        t1 (fe 14) t2 (fe 15)]
+    (do
+      ;; clamp a private copy of the scalar (RFC 7748 s5)
+      (dotimes [i 32] (store8! (+ (xk) i) (load8 (+ scalar i))))
+      (store8! (xk) (bit-and (load8 (xk)) 248))
+      (store8! (+ (xk) 31) (bit-or (bit-and (load8 (+ (xk) 31)) 127) 64))
+      ;; decode u, masking the top bit
+      (dotimes [i 32] (fl! x1 i (load8 (+ point i))))
+      (fl! x1 31 (bit-and (fl x1 31) 127))
+      (fe-one! x2) (fe-zero! z2) (fe-copy! x3 x1) (fe-one! z3)
+      (loop [t 254 swap 0]
+        (if (< t 0)
+            (do (fe-cswap! x2 x3 swap) (fe-cswap! z2 z3 swap))
+            (let [kt (fe-bit t)
+                  sw (bit-xor swap kt)]
+              (do (fe-cswap! x2 x3 sw) (fe-cswap! z2 z3 sw)
+                  (fe-add! a x2 z2) (fe-sqr! aa a)
+                  (fe-sub! b x2 z2) (fe-sqr! bb b)
+                  (fe-sub! e aa bb)
+                  (fe-add! c x3 z3) (fe-sub! d x3 z3)
+                  (fe-mul! da d a) (fe-mul! cb c b)
+                  (fe-add! t1 da cb) (fe-sqr! x3 t1)
+                  (fe-sub! t2 da cb) (fe-sqr! t2 t2) (fe-mul! z3 x1 t2)
+                  (fe-mul! x2 aa bb)
+                  (fe-mul-small! t1 e 121665) (fe-add! t1 aa t1) (fe-mul! z2 e t1)
+                  (recur (- t 1) kt)))))
+      (fe-inv! t1 z2)
+      (fe-mul! t2 x2 t1)
+      (fe-freeze! t2)
+      (dotimes [i 32] (store8! (+ out i) (fl t2 i))))))
