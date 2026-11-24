@@ -53,3 +53,7 @@ tests/reflux_wow/out/
 
 # Windows (MSYS2) builds of the test binaries
 tests/*.exe
+
+# python bytecode from the netkit test harness
+__pycache__/
+*.pyc
