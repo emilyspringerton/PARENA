@@ -1,0 +1,397 @@
+;; stdlib/netkit/nk_scan.prn -- the LAN scanner's brain: sweep planner, device table, ARP-table parser, "what is this
+;; device?" guesser, and the plain-words vocabulary. PARENA, wasm32, no imports.
+;;
+;; Founder's VS0: "Scan the network and show a device list with name and address, built into the app. Tap a device and
+;; the app offers SSH or VNC depending on which one answers." The wasm module cannot open a socket, so the work is split
+;; exactly once, at the only place a platform is needed -- one TCP connect attempt:
+;;
+;;     page host                                          this module
+;;     ---------                                          -----------
+;;     write "192.168.4.0/24" at nk-txt-addr, call  --->  nk-scan-begin(len)         parse + plan the sweep
+;;     loop: job = nk-scan-next()                   --->  next (host,port) pair, or -1 when all are handed out
+;;           ip = nk-scan-job-ip(job)                      what to connect to
+;;           port = nk-scan-job-port(job)
+;;           (the Android shell tries the connect,   --->  nk-scan-result(job, code, ms)   merge the outcome
+;;            with a timeout, and reports a code)
+;;     write /proc/net/arp text at nk-txt-addr      --->  nk-scan-arp(len)           MACs + hosts that never answered a port
+;;     read the table: nk-dev-count / nk-dev-* / nk-dev-order
+;;
+;; Connect result codes (what the shell reports): 0 connected (port OPEN), 1 refused (host is UP, port closed -- an RST is
+;; proof of life), 2 timed out, 3 unreachable (no route / host down), 4 any other error. Only 0 and 1 reveal a device.
+;;
+;; Why host-major probing with all ports of a host adjacent: a host that is up answers (open or RST) on its first
+;; probes; the table fills in the order the user's eyes expect (low addresses first) while the sweep is still running.
+;;
+;; Caps (named, not silent): at most /22 (1022 hosts) per sweep -- a wider range is clamped and `nk-scan-truncated`
+;; says so; at most 32 ports; at most 512 devices.
+;;
+;; G words 64..127 belong to this file. Device record (64 bytes at DEV):
+;;   +0 ip (I32 bits, a<<24|b<<16|c<<8|d)  +4 flags  +8 open-port bitmask (bit i = PORTS[i])  +12 best rtt ms (-1 none)
+;;   +16 mac[6]   +24 guess code   +32 name[32] NUL-terminated
+;;   flags: 1 seen, 2 seen-in-ARP, 4 host-answered (open or refused), 8 pinned, 16 has-mac, 32 has-name
+
+(defn g-sc-first [] : I32 64)       ; ip of host 0
+(defn g-sc-nhosts [] : I32 65)
+(defn g-sc-nports [] : I32 66)
+(defn g-sc-total [] : I32 67)       ; nhosts * nports
+(defn g-sc-next [] : I32 68)        ; next job to hand out
+(defn g-sc-done [] : I32 69)        ; results received
+(defn g-sc-ndev [] : I32 70)
+(defn g-sc-trunc [] : I32 71)       ; 1 if the range was clamped to /22
+(defn g-sc-active [] : I32 72)
+(defn g-sc-nopen [] : I32 73)
+(defn g-sc-nrefused [] : I32 74)
+(defn g-sc-ntimeout [] : I32 75)
+(defn g-sc-cur [] : I32 76)         ; text cursor while parsing
+(defn g-sc-exclude [] : I32 77)     ; an ip never to probe (the tablet itself), 0 = none
+(defn g-sc-hasexcl [] : I32 78)
+(defn g-sc-prefix [] : I32 79)
+(defn g-sc-bad [] : I32 80)         ; last parse failed
+
+(defn ord-base [] : I32 368640)     ; 0x5A000: display order, 512 x I32 device indices
+(defn dev-max [] : I32 512)
+(defn dev-addr [(i : I32)] : I32 (+ (dev-base) (shl i 6)))
+
+;; ---- the port list -------------------------------------------------------------------------------------------------------
+(defn nk-ports-default! [] : Unit
+  (do (store32! (ports-base) 22)
+      (store32! (+ (ports-base) 4) 80)
+      (store32! (+ (ports-base) 8) 443)
+      (store32! (+ (ports-base) 12) 445)
+      (store32! (+ (ports-base) 16) 3389)
+      (store32! (+ (ports-base) 20) 5900)
+      (store32! (+ (ports-base) 24) 5901)
+      (store32! (+ (ports-base) 28) 8080)
+      (gi! (g-sc-nports) 8)))
+(defn nk-port-at [(i : I32)] : I32 (load32 (+ (ports-base) (shl i 2))))
+(defn nk-nports [] : I32 (gi (g-sc-nports)))
+;; replace the list: the page writes n port numbers as I32s at nk-ports-addr, then calls this
+(defn nk-ports-addr [] : I32 (ports-base))
+(defn nk-ports-set [(n : I32)] : Unit (gi! (g-sc-nports) (min-i n 32)))
+
+(defn port-index [(port : I32)] : I32
+  (loop [i 0]
+    (if (>= i (gi (g-sc-nports))) -1
+        (if (= (nk-port-at i) port) i (recur (+ i 1))))))
+
+;; ---- text parsing (CIDR / ARP lines) ------------------------------------------------------------------------------------------
+(defn tx [(i : I32)] : I32 (load8 (+ (txt-base) i)))
+(defn is-digit [(c : I32)] : Bool (and (>= c 48) (<= c 57)))
+
+;; unsigned decimal at the cursor; advances it; sets g-sc-bad when there is no digit or the value exceeds 999999
+(defn parse-uint [(len : I32)] : I32
+  (let [start (gi (g-sc-cur))]
+    (loop [i start v 0]
+      (if (and (< i len) (is-digit (tx i)))
+          (recur (+ i 1) (min-i 999999 (+ (* v 10) (- (tx i) 48))))
+          (do (gi! (g-sc-cur) i)
+              (when (= i start) (gi! (g-sc-bad) 1))
+              v)))))
+
+(defn expect-char [(c : I32) (len : I32)] : Unit
+  (if (and (< (gi (g-sc-cur)) len) (= (tx (gi (g-sc-cur))) c))
+      (gi! (g-sc-cur) (+ (gi (g-sc-cur)) 1))
+      (gi! (g-sc-bad) 1)))
+
+;; one octet and the dot after it
+(defn octet-dot [(len : I32)] : I32
+  (let [v (parse-uint len)] (do (expect-char 46 len) v)))
+
+;; a.b.c.d at the cursor -> ip bits; sets g-sc-bad on any malformed or >255 octet
+(defn parse-ip [(len : I32)] : I32
+  (let [a (octet-dot len)
+        b (octet-dot len)
+        c (octet-dot len)
+        d (parse-uint len)]
+    (do (when (or (> a 255) (or (> b 255) (or (> c 255) (> d 255)))) (gi! (g-sc-bad) 1))
+        (bit-or (shl a 24) (bit-or (shl b 16) (bit-or (shl c 8) d))))))
+
+;; true when only spaces / CR / LF remain after the cursor
+(defn only-space-after [(len : I32)] : Bool
+  (loop [i (gi (g-sc-cur))]
+    (if (>= i len) true
+        (if (or (= (tx i) 32) (or (= (tx i) 10) (= (tx i) 13))) (recur (+ i 1)) false))))
+
+;; ---- the plan -------------------------------------------------------------------------------------------------------------------
+;; "a.b.c.d/p" (or "a.b.c.d" = one host). Returns 1 if a plan was made, 0 if the text was not a valid range.
+(defn nk-scan-begin [(len : I32)] : I32
+  (do
+    (gi! (g-sc-bad) 0) (gi! (g-sc-cur) 0)
+    (let [ip (parse-ip len)
+          has-slash (and (< (gi (g-sc-cur)) len) (= (tx (gi (g-sc-cur))) 47))
+          p0 (if has-slash (do (gi! (g-sc-cur) (+ (gi (g-sc-cur)) 1)) (parse-uint len)) 32)]
+      (if (or (= (gi (g-sc-bad)) 1) (or (> p0 32) (not (only-space-after len))))
+          (do (gi! (g-sc-active) 0) (gi! (g-sc-total) 0) 0)
+          (let [p (if (< p0 22) 22 p0)
+                trunc (if (< p0 22) 1 0)
+                hostbits (- 32 p)
+                size (shl 1 hostbits)                         ; hosts in the block (1 for /32, 2 for /31, ...)
+                mask (if (= p 0) 0 (shl -1 hostbits))
+                net (bit-and ip mask)
+                first (if (>= p 31) net (+ net 1))            ; /31 and /32 have no network/broadcast addresses
+                nh (if (>= p 31) size (- size 2))
+                nh2 (if (< p 31) nh (if (= p 32) 1 2))]
+            (do (gi! (g-sc-first) (if (= p 32) ip first))
+                (gi! (g-sc-nhosts) nh2)
+                (when (= (gi (g-sc-nports)) 0) (nk-ports-default!))
+                (gi! (g-sc-total) (* nh2 (gi (g-sc-nports))))
+                (gi! (g-sc-next) 0) (gi! (g-sc-done) 0)
+                (gi! (g-sc-nopen) 0) (gi! (g-sc-nrefused) 0) (gi! (g-sc-ntimeout) 0)
+                (gi! (g-sc-trunc) trunc) (gi! (g-sc-prefix) p)
+                (gi! (g-sc-active) 1)
+                1))))))
+
+(defn nk-scan-exclude [(ip : I32)] : Unit (do (gi! (g-sc-exclude) ip) (gi! (g-sc-hasexcl) 1)))
+(defn nk-scan-clear-exclude [] : Unit (gi! (g-sc-hasexcl) 0))
+
+;; Next (host, port) job number, or -1 when every probe has been handed out. The excluded host is skipped whole.
+(defn nk-scan-next [] : I32
+  (loop [j (gi (g-sc-next))]
+    (if (>= j (gi (g-sc-total)))
+        (do (gi! (g-sc-next) j) -1)
+        (let [ip (+ (gi (g-sc-first)) (/ j (gi (g-sc-nports))))]
+          (if (and (= (gi (g-sc-hasexcl)) 1) (= ip (gi (g-sc-exclude))))
+              (recur (+ j (- (gi (g-sc-nports)) (mod j (gi (g-sc-nports))))))
+              (do (gi! (g-sc-next) (+ j 1)) j))))))
+
+(defn nk-scan-job-ip [(job : I32)] : I32 (+ (gi (g-sc-first)) (/ job (gi (g-sc-nports)))))
+(defn nk-scan-job-port [(job : I32)] : I32 (nk-port-at (mod job (gi (g-sc-nports)))))
+(defn nk-scan-total [] : I32 (gi (g-sc-total)))
+(defn nk-scan-done [] : I32 (gi (g-sc-done)))
+(defn nk-scan-hosts [] : I32 (gi (g-sc-nhosts)))
+(defn nk-scan-truncated [] : I32 (gi (g-sc-trunc)))
+(defn nk-scan-prefix [] : I32 (gi (g-sc-prefix)))
+(defn nk-scan-opens [] : I32 (gi (g-sc-nopen)))
+(defn nk-scan-timeouts [] : I32 (gi (g-sc-ntimeout)))
+;; 1 while probes remain unhanded or unanswered
+(defn nk-scan-running [] : I32
+  (if (and (= (gi (g-sc-active)) 1) (< (gi (g-sc-done)) (gi (g-sc-total)))) 1 0))
+(defn nk-scan-stop [] : Unit (do (gi! (g-sc-active) 0) (gi! (g-sc-next) (gi (g-sc-total))) (gi! (g-sc-total) (gi (g-sc-done)))))
+
+;; ---- the device table -------------------------------------------------------------------------------------------------------------
+(defn nk-dev-count [] : I32 (gi (g-sc-ndev)))
+(defn dev-find [(ip : I32)] : I32
+  (loop [i 0]
+    (if (>= i (gi (g-sc-ndev))) -1
+        (if (= (load32 (dev-addr i)) ip) i (recur (+ i 1))))))
+
+;; index of the device with this ip, creating it when new (-1 if the table is full)
+(defn dev-upsert [(ip : I32)] : I32
+  (let [f (dev-find ip)]
+    (if (>= f 0) f
+        (let [n (gi (g-sc-ndev))]
+          (if (>= n (dev-max)) -1
+              (let [a (dev-addr n)]
+                (do (zero-mem! a 64)
+                    (store32! a ip)
+                    (store32! (+ a 12) -1)
+                    (gi! (g-sc-ndev) (+ n 1))
+                    n)))))))
+
+(defn nk-dev-ip [(i : I32)] : I32 (load32 (dev-addr i)))
+(defn nk-dev-flags [(i : I32)] : I32 (load32 (+ (dev-addr i) 4)))
+(defn nk-dev-ports [(i : I32)] : I32 (load32 (+ (dev-addr i) 8)))
+(defn nk-dev-rtt [(i : I32)] : I32 (load32 (+ (dev-addr i) 12)))
+(defn nk-dev-guess [(i : I32)] : I32 (load32 (+ (dev-addr i) 24)))
+(defn nk-dev-mac-addr [(i : I32)] : I32 (+ (dev-addr i) 16))
+(defn nk-dev-name-addr [(i : I32)] : I32 (+ (dev-addr i) 32))
+(defn nk-dev-has-mac [(i : I32)] : I32 (if (= (bit-and (nk-dev-flags i) 16) 16) 1 0))
+(defn nk-dev-pinned [(i : I32)] : I32 (if (= (bit-and (nk-dev-flags i) 8) 8) 1 0))
+(defn nk-dev-has-port [(i : I32) (port : I32)] : I32
+  (let [k (port-index port)]
+    (if (< k 0) 0 (bit-and (shr (nk-dev-ports i) k) 1))))
+(defn nk-dev-set-pinned [(i : I32) (v : I32)] : Unit
+  (let [a (+ (dev-addr i) 4)]
+    (do (store32! a (if (= v 1) (bit-or (load32 a) 8) (bit-and (load32 a) -9)))
+        (nk-dev-reguess! i))))
+
+;; the page wrote a (reverse-DNS / NetBIOS / user-chosen) name at nk-txt-addr
+(defn nk-dev-set-name [(i : I32) (len : I32)] : Unit
+  (let [a (dev-addr i)]
+    (do (dotimes [k 31] (store8! (+ a (+ 32 k)) (if (< k len) (tx k) 0)))
+        (store8! (+ a 63) 0)
+        (store32! (+ a 4) (bit-or (load32 (+ a 4)) (if (> len 0) 32 0))))))
+
+;; ---- guessing what a device is ---------------------------------------------------------------------------------------------------
+(defn mac-byte [(i : I32) (k : I32)] : I32 (load8 (+ (dev-addr i) (+ 16 k))))
+
+;; Raspberry Pi Foundation / Trading OUIs
+(defn is-pi-oui [(i : I32)] : Bool
+  (let [a (mac-byte i 0) b (mac-byte i 1) c (mac-byte i 2)]
+    (and (= (nk-dev-has-mac i) 1)
+         (or (and (= a 184) (and (= b 39) (= c 235)))        ; b8:27:eb
+             (or (and (= a 220) (and (= b 166) (= c 50)))    ; dc:a6:32
+                 (or (and (= a 228) (and (= b 95) (= c 1)))  ; e4:5f:01
+                     (or (and (= a 216) (and (= b 58) (= c 221)))   ; d8:3a:dd
+                         (or (and (= a 40) (and (= b 205) (= c 193)))   ; 28:cd:c1
+                             (and (= a 44) (and (= b 207) (= c 103))))))))))) ; 2c:cf:67
+
+;; guess codes: 0 unknown, 1 Raspberry Pi, 2 Windows PC (VNC ready), 3 VNC host, 4 SSH device, 5 web device / router,
+;; 6 Linux server, 7 device with no open services, 8 Windows PC
+(defn compute-guess [(i : I32)] : I32
+  (let [rdp (nk-dev-has-port i 3389)
+        smb (nk-dev-has-port i 445)
+        vnc (bit-or (nk-dev-has-port i 5900) (nk-dev-has-port i 5901))
+        ssh (nk-dev-has-port i 22)
+        web (bit-or (nk-dev-has-port i 80) (bit-or (nk-dev-has-port i 443) (nk-dev-has-port i 8080)))]
+    (cond
+      (is-pi-oui i) 1
+      (and (= (bit-or rdp smb) 1) (= vnc 1)) 2
+      (= (bit-or rdp smb) 1) 8
+      (= vnc 1) 3
+      (and (= ssh 1) (= web 1)) 6
+      (= ssh 1) 4
+      (= web 1) 5
+      (= (bit-and (nk-dev-flags i) 6) 0) 0
+      :else 7)))
+
+(defn nk-dev-reguess! [(i : I32)] : Unit (store32! (+ (dev-addr i) 24) (compute-guess i)))
+
+(defn nk-guess-label-addr [(g : I32)] : I32
+  (case g
+    1 (str-addr "Raspberry Pi")
+    2 (str-addr "Windows PC (VNC ready)")
+    3 (str-addr "VNC host")
+    4 (str-addr "SSH device")
+    5 (str-addr "Web device / router")
+    6 (str-addr "Linux server")
+    7 (str-addr "Device (no open services)")
+    8 (str-addr "Windows PC")
+    (str-addr "Unknown device")))
+
+;; ---- merging a probe result --------------------------------------------------------------------------------------------------------
+;; code: 0 open, 1 refused, 2 timeout, 3 unreachable, 4 other. Returns the device index touched, or -1.
+(defn nk-scan-result [(job : I32) (code : I32) (ms : I32)] : I32
+  (do
+    (gi! (g-sc-done) (+ (gi (g-sc-done)) 1))
+    (if (or (< job 0) (>= job (gi (g-sc-total))))
+        -1
+        (if (= code 2) (do (gi! (g-sc-ntimeout) (+ (gi (g-sc-ntimeout)) 1)) -1)
+            (if (or (= code 0) (= code 1))
+                (let [ip (nk-scan-job-ip job)
+                      i (dev-upsert ip)]
+                  (if (< i 0) -1
+                      (let [a (dev-addr i)]
+                        (do (store32! (+ a 4) (bit-or (load32 (+ a 4)) 5))      ; seen + host-answered
+                            (when (= code 0)
+                              (gi! (g-sc-nopen) (+ (gi (g-sc-nopen)) 1))
+                              (store32! (+ a 8) (bit-or (load32 (+ a 8)) (shl 1 (mod job (gi (g-sc-nports)))))))
+                            (when (= code 1) (gi! (g-sc-nrefused) (+ (gi (g-sc-nrefused)) 1)))
+                            (let [old (load32 (+ a 12))]
+                              (when (or (< old 0) (< ms old)) (store32! (+ a 12) ms)))
+                            (nk-dev-reguess! i)
+                            i))))
+                -1)))))
+
+;; ---- ARP table ------------------------------------------------------------------------------------------------------------------------
+(defn hexv [(c : I32)] : I32
+  (if (and (>= c 48) (<= c 57)) (- c 48)
+      (if (and (>= c 97) (<= c 102)) (- c 87)
+          (if (and (>= c 65) (<= c 70)) (- c 55) -1))))
+
+(defn skip-spaces [(len : I32)] : Unit
+  (loop [i (gi (g-sc-cur))]
+    (if (and (< i len) (or (= (tx i) 32) (= (tx i) 9)))
+        (recur (+ i 1))
+        (gi! (g-sc-cur) i))))
+
+(defn skip-token [(len : I32)] : Unit
+  (loop [i (gi (g-sc-cur))]
+    (if (and (< i len) (and (!= (tx i) 32) (and (!= (tx i) 9) (and (!= (tx i) 10) (!= (tx i) 13)))))
+        (recur (+ i 1))
+        (gi! (g-sc-cur) i))))
+
+;; aa:bb:cc:dd:ee:ff at the cursor into 6 bytes at dst; 1 if well-formed and not all zero
+(defn parse-mac [(len : I32) (dst : I32)] : I32
+  (let [s (gi (g-sc-cur))]
+    (if (< (+ s 17) (+ len 1))
+        (let [ok (loop [k 0 good 1]
+                   (if (= k 6) good
+                       (let [h (hexv (tx (+ s (* k 3))))
+                             l (hexv (tx (+ s (+ (* k 3) 1))))
+                             sep (if (< k 5) (= (tx (+ s (+ (* k 3) 2))) 58) true)]
+                         (do (store8! (+ dst k) (bit-or (shl (max-i h 0) 4) (max-i l 0)))
+                             (recur (+ k 1) (if (and (>= h 0) (and (>= l 0) sep)) good 0))))))
+              nz (loop [k 0 acc 0] (if (= k 6) acc (recur (+ k 1) (bit-or acc (load8 (+ dst k))))))]
+          (do (gi! (g-sc-cur) (+ s 17))
+              (if (and (= ok 1) (> nz 0)) 1 0)))
+        0)))
+
+;; Linux /proc/net/arp:  IP address  HW type  Flags  HW address  Mask  Device
+;; Lines whose first token is not an IP (the header) and incomplete entries (flags 0x0 / zero MAC) are skipped.
+;; Returns the number of devices touched.
+(defn nk-scan-arp [(len : I32)] : I32
+  (let [scr (+ (scr-base) 3072)]
+    (loop [pos 0 touched 0]
+      (if (>= pos len) touched
+          (do
+            (gi! (g-sc-cur) pos) (gi! (g-sc-bad) 0)
+            (skip-spaces len)
+            (let [isnum (is-digit (tx (gi (g-sc-cur))))
+                  ip (if isnum (parse-ip len) 0)
+                  ipbad (if isnum (gi (g-sc-bad)) 1)
+                  i (if (= ipbad 0)
+                        (do (skip-spaces len)
+                            (skip-token len) (skip-spaces len)        ; HW type
+                            (skip-token len) (skip-spaces len)        ; flags
+                            (if (= (parse-mac len scr) 1) (dev-upsert ip) -1))
+                        -1)]
+              (do
+                (when (>= i 0)
+                  (let [a (dev-addr i)]
+                    (do (store32! (+ a 4) (bit-or (load32 (+ a 4)) 19))   ; seen + in-ARP + has-mac
+                        (dotimes [k 6] (store8! (+ a (+ 16 k)) (load8 (+ scr k))))
+                        (nk-dev-reguess! i))))
+                ;; to the end of this line
+                (let [e (loop [q (gi (g-sc-cur))] (if (and (< q len) (!= (tx q) 10)) (recur (+ q 1)) q))]
+                  (recur (+ e 1) (if (>= i 0) (+ touched 1) touched))))))))))
+
+;; ---- display order: pinned first, then by address (unsigned), computed on demand ---------------------------------------------
+(defn ukey [(ip : I32)] : I32 (bit-xor ip (shl 1 31)))   ; flips the sign bit so signed compare == unsigned order
+(defn dev-before [(a : I32) (b : I32)] : Bool            ; does device a sort before device b?
+  (let [pa (nk-dev-pinned a) pb (nk-dev-pinned b)]
+    (if (!= pa pb) (> pa pb)
+        (< (ukey (nk-dev-ip a)) (ukey (nk-dev-ip b))))))
+
+(defn nk-dev-sort [] : Unit
+  (let [n (gi (g-sc-ndev))]
+    (do (dotimes [i n] (store32! (+ (ord-base) (shl i 2)) i))
+        (loop [i 1]
+          (when (< i n)
+            (let [v (load32 (+ (ord-base) (shl i 2)))]
+              (do (loop [j (- i 1)]
+                    (if (and (>= j 0) (dev-before v (load32 (+ (ord-base) (shl j 2)))))
+                        (do (store32! (+ (ord-base) (shl (+ j 1) 2)) (load32 (+ (ord-base) (shl j 2))))
+                            (recur (- j 1)))
+                        (store32! (+ (ord-base) (shl (+ j 1) 2)) v)))
+                  (recur (+ i 1)))))))))
+;; the k-th device in display order (call nk-dev-sort first)
+(defn nk-dev-order [(k : I32)] : I32 (load32 (+ (ord-base) (shl k 2))))
+
+(defn nk-scan-reset [] : Unit
+  (do (loop [k 64] (when (< k 128) (gi! k 0) (recur (+ k 1))))
+      (zero-mem! (dev-base) (* (dev-max) 64))
+      (nk-ports-default!)))
+
+;; ---- connection-check vocabulary (the "Port check" / "Ping" tools and every connect failure) ---------------------------------
+;; The shell reports the same 0..4 codes for any single connect; this turns one into an ErrorKind.
+(defn nk-conn-kind [(code : I32)] : I32
+  (case code
+    0 (ek-none)
+    1 (ek-port-closed)
+    2 (ek-timeout)
+    3 (ek-unreachable)
+    (ek-unknown)))
+
+;; What a successful or failed port check says, in words (port 22 -> "SSH", 5900 -> "VNC", ...).
+(defn nk-service-name-addr [(port : I32)] : I32
+  (case port
+    22 (str-addr "SSH")
+    80 (str-addr "Web (HTTP)")
+    443 (str-addr "Web (HTTPS)")
+    445 (str-addr "Windows file sharing")
+    3389 (str-addr "Windows Remote Desktop")
+    5900 (str-addr "VNC")
+    5901 (str-addr "VNC")
+    8080 (str-addr "Web (alt)")
+    (str-addr "")))

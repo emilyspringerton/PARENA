@@ -2,3 +2,4 @@
 stdlib/netkit/nk_mem.prn
 stdlib/netkit/nk_des.prn
 stdlib/netkit/nk_rfb.prn
+stdlib/netkit/nk_scan.prn
