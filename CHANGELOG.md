@@ -12,8 +12,19 @@
     against an independent encoder written from the RFC) plus 13 against a REAL VNC server (`tests/netkit/vncd.c`, libvncserver,
     TightVNC's lineage): real auth, the server's own encoders, a live resize, final screen compared byte for byte.
     A 1080p raw frame decodes in ~40 ms under wasmtime.
-  - Not done yet (named, not hidden): the scanner module, SSH (PARENA has no I64; plan is 8-bit-limb field math in I32), the
-    page host (PARENA -> TypeScript) and the Android shell. Tight/ZRLE encodings are not implemented.
+  - `nk_scan.prn`: the scanner's brain -- CIDR sweep plan (clamped to /22, loudly), host-major job enumeration, merging of one
+    connect result code per probe (an RST proves a host is up), a /proc/net/arp parser, the "what is this device" guesser
+    (Raspberry Pi OUIs, Windows/VNC/SSH/web), unsigned address order with pinned-first. 60 checks.
+  - **An SSH-2 client, all PARENA** (`nk_ssh_wire.prn`, `nk_ssh.prn`): curve25519-sha256 + ssh-ed25519 + chacha20-poly1305@openssh.com,
+    none -> password / keyboard-interactive, pty + shell, window-change, flow control both ways. Built on PARENA-native
+    SHA-256, SHA-512, ChaCha20, Poly1305, X25519 (PARENA has no I64, so the field is 32 limbs of 8 bits in I32) and Ed25519
+    verification (`nk_crypto.prn`, `nk_x25519.prn`, `nk_sha512.prn`, `nk_ed25519.prn`), each checked against RFC vectors AND an
+    independent implementation (hashlib / pyca/cryptography). The client verifies the server's signature over the exchange hash
+    and never sends credentials to a host that has not been accepted (a saved fingerprint that differs fails with HOST_KEY and
+    sends nothing). 61 interop checks against asyncssh: whole/byte/random delivery, 300 KB down and a paste up through the
+    windows, wrong passwords, forged signatures, tampered packets, servers without chacha20 refused plainly.
+  - Not done yet (named, not hidden): the page host (PARENA -> TypeScript) and the Android shell; SSH public-key auth, other
+    ciphers and kex algorithms; Tight/ZRLE VNC encodings.
 
 ## 2026-11-14
 

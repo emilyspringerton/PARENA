@@ -149,6 +149,7 @@ for mode in ("whole", "byte", "random"):
     check(fp_b64() == srv.fingerprint().split(":", 1)[1], f"[{mode}] the host key fingerprint the client computed equals asyncssh's own SHA256 fingerprint")
     check(nk.nk_ssh_seq_out() == 3, f"[{mode}] before the user accepts, the client has sent exactly KEXINIT, ECDH_INIT, NEWKEYS -- no credentials")
     check(srv.logins == 0, f"[{mode}] ...and the server saw no login attempt")
+    check(nk.nk_ssh_sigok() == 1, f"[{mode}] the server's Ed25519 signature over the exchange hash was verified against its host key")
     check(nk.nk_ssh_accept_hostkey() == 1, f"[{mode}] the user accepts the fingerprint"); c.drain()
     ok = c.run(lambda: c.phase() in (5, 8, 9), 15)
     check(ok and c.phase() == 5, f"[{mode}] authentication (none -> password) succeeds and the shell opens (phase 5 running)")
@@ -214,6 +215,18 @@ for where, label in ((enc_start + 6, "inside the encrypted body"), (enc_start + 
     c = Client(px.port); c.run(lambda: c.phase() in (2, 8, 9), 10); nk.nk_ssh_accept_hostkey(); c.drain(); c.run(lambda: c.phase() in (5, 8, 9), 10)
     check(c.phase() == 9 and nk.nk_err_kind() == 5 and nk.nk_err_msg() in (13, 14) and srv.logins == 0,
           f"one flipped bit {label} of the first encrypted server packet fails the connection (msg {nk.nk_err_msg()}), nothing proceeds"); c.close(); srv.stop()
+
+# a server that cannot prove it owns the host key: flip one bit inside the signature in the (plain) KEX_ECDH_REPLY.
+# The client must refuse BEFORE NEWKEYS, so only KEXINIT and ECDH_INIT ever leave it.
+srv = Srv(); c = Client(srv.port); c.run(lambda: c.phase() == 2, 10); enc_start2 = nk.g(6); c.close(); srv.stop()
+for where, label in ((enc_start2 - 36, "S half"), (enc_start2 - 60, "R half")):
+    srv = Srv(); px = Proxy(srv.port, flip_after=where)
+    c = Client(px.port); c.run(lambda: c.phase() in (2, 8, 9), 10)
+    check(c.phase() == 9 and nk.nk_err_msg() == 22 and nk.nk_ssh_sigok() == 0 and nk.nk_ssh_seq_out() == 2 and srv.logins == 0,
+          f"a forged signature ({label}) is refused with 'could not prove it owns its host key' (msg {nk.nk_err_msg()}); only KEXINIT + ECDH_INIT were sent"); c.close(); srv.stop()
+srv = Srv(); px = Proxy(srv.port, flip_after=enc_start2 - 330)       # a bit inside the host key blob / server ephemeral key: the hash changes, the signature no longer matches
+c = Client(px.port); c.run(lambda: c.phase() in (2, 8, 9), 10)
+check(c.phase() == 9 and nk.nk_err_kind() == 5 and srv.logins == 0, f"a flipped bit in the server's key exchange values fails the connection (msg {nk.nk_err_msg()})"); c.close(); srv.stop()
 
 srv = Srv(enc=("aes256-ctr",)); c = Client(srv.port); c.run(lambda: c.phase() in (2, 8, 9), 10)
 check(c.phase() == 9 and nk.nk_err_msg() == 11, "a server with no chacha20-poly1305: refused with the plain message naming what is missing (no silent downgrade)")

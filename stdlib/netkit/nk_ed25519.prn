@@ -1,4 +1,211 @@
-;; stdlib/netkit/nk_ed25519.prn -- TEMPORARY STUB, replaced by the real Ed25519 verification in the next commit.
-;; ssh-verify-hostkey-real! must check the server's signature over the exchange hash H; until it does it returns 1
-;; WITHOUT setting g-ss-sigok, so nk-ssh-sigok stays 0 and no page may treat the host as authenticated.
-(defn ssh-verify-hostkey-real! [(sgp : I32) (sgl : I32)] : I32 1)
+;; stdlib/netkit/nk_ed25519.prn -- Ed25519 signature VERIFICATION (RFC 8032) in pure PARENA, and the SSH host-key check built on it.
+;;
+;; Why verification and not just a fingerprint: pinning an SSH host key is only worth anything if the server proves it holds the
+;; key. A client that accepts the key blob without checking the signature over the exchange hash H is "trust on first use" in
+;; name only -- an attacker replays the (public) key blob of the real server and forges the rest. So credentials are not sent
+;; until this check has passed (nk_ssh.prn: st-kexreply fails with message 22 otherwise, and nk-ssh-sigok reports it).
+;;
+;; Method: the TweetNaCl algorithm, ported onto this repo's I32-only field (nk_x25519.prn's fe-* on 32 limbs of 8 bits) and a
+;; 64-bit SHA-512 built from I32 pairs (nk_sha512.prn). R' = [S]B + [h](-A) must encode to R. Verification handles only public
+;; data, so the scalar multiplications are plain double-and-add (no constant-time requirement). Unlike TweetNaCl this also
+;; rejects S >= L (RFC 8032 s5.1.7, malleability) and non-canonical y >= p.
+;; Checked in tests/netkit/test_ed25519.py against RFC 8032 vectors and pyca/cryptography (valid, and 1-bit-tampered
+;; signature / message / key must all be rejected), and the mod-L reduction against Python big integers.
+;;
+;; Scratch (CRY + 8192): 6 points of 512 bytes (X,Y,Z,T = 4 field elements of 128), 16 field temporaries, byte scratch, constants.
+
+(defn edb [] : I32 (+ (cry-base) 8192))
+(defn ed-pt [(k : I32)] : I32 (+ (edb) (* k 512)))
+(defn ed-ft [(k : I32)] : I32 (+ (edb) (+ 3072 (* k 128))))
+(defn eb-h64 [] : I32 (+ (edb) 5120))
+(defn eb-hred [] : I32 (+ (edb) 5184))
+(defn eb-pack [] : I32 (+ (edb) 5216))
+(defn eb-msg [] : I32 (+ (edb) 5248))
+(defn eb-modl [] : I32 (+ (edb) 5504))
+(defn fe-d [] : I32 (+ (edb) 5760))
+(defn fe-d2 [] : I32 (+ (edb) 5888))
+(defn fe-sqrtm1 [] : I32 (+ (edb) 6016))
+(defn fe-bx [] : I32 (+ (edb) 6144))
+(defn fe-by [] : I32 (+ (edb) 6272))
+
+;; constants as 32 little-endian bytes (64 hex digits): d = -121665/121666, 2d, sqrt(-1), the base point, L
+(defn ed-d-hex [] : String "a3785913ca4deb75abd841414d0a700098e879777940c78c73fe6f2bee6c0352")
+(defn ed-d2-hex [] : String "59f1b226949bd6eb56b183829a14e00030d1f3eef2808e19e7fcdf56dcd90624")
+(defn ed-i-hex [] : String "b0a00e4a271beec478e42fad0618432fa7d7fb3d99004d2b0bdfc14f8024832b")
+(defn ed-bx-hex [] : String "1ad5258f602d56c9b2a7259560c72c695cdcd6fd31e2a4c0fe536ecdd3366921")
+(defn ed-by-hex [] : String "5866666666666666666666666666666666666666666666666666666666666666")
+(defn ed-l-hex [] : String "edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010")
+
+(defn fe-from-hex! [(dst : I32) (hex : String)] : Unit
+  (let [a (str-addr hex)]
+    (dotimes [i 32] (fl! dst i (bit-or (shl (hexnib (load8 (+ a (shl i 1)))) 4) (hexnib (load8 (+ a (+ (shl i 1) 1)))))))))
+(defn ed-lbyte [(i : I32)] : I32
+  (let [a (str-addr (ed-l-hex))]
+    (bit-or (shl (hexnib (load8 (+ a (shl i 1)))) 4) (hexnib (load8 (+ a (+ (shl i 1) 1)))))))
+
+(defn ed-init! [] : Unit
+  (do (fe-from-hex! (fe-d) (ed-d-hex)) (fe-from-hex! (fe-d2) (ed-d2-hex)) (fe-from-hex! (fe-sqrtm1) (ed-i-hex))
+      (fe-from-hex! (fe-bx) (ed-bx-hex)) (fe-from-hex! (fe-by) (ed-by-hex))))
+
+(defn fe-neg! [(o : I32) (a : I32)] : Unit (do (fe-zero! (ed-ft 12)) (fe-sub! o (ed-ft 12) a)))
+
+;; parity (low bit) of the canonical value
+(defn fe-par [(a : I32)] : I32
+  (do (fe-copy! (ed-ft 11) a) (fe-freeze! (ed-ft 11)) (bit-and (fl (ed-ft 11) 0) 1)))
+;; a == b as field elements?
+(defn fe-eq [(a : I32) (b : I32)] : Bool
+  (do (fe-copy! (ed-ft 11) a) (fe-copy! (ed-ft 12) b) (fe-freeze! (ed-ft 11)) (fe-freeze! (ed-ft 12))
+      (= 0 (loop [i 0 acc 0] (if (= i 32) acc (recur (+ i 1) (bit-or acc (bit-xor (fl (ed-ft 11) i) (fl (ed-ft 12) i)))))))))
+
+;; x^((p-5)/8) = x^(2^252 - 3)
+(defn fe-pow2523! [(o : I32) (x : I32)] : Unit
+  (let [c (ed-ft 9)]
+    (do (fe-copy! c x)
+        (loop [a 250]
+          (when (>= a 0)
+            (do (fe-sqr! c c)
+                (when (!= a 1) (fe-mul! c c x))
+                (recur (- a 1)))))
+        (fe-copy! o c))))
+
+;; ---- points: extended coordinates (X, Y, Z, T), X = p, Y = p+128, Z = p+256, T = p+384 --------------------------------------
+(defn ed-neutral! [(p : I32)] : Unit
+  (do (fe-zero! p) (fe-one! (+ p 128)) (fe-one! (+ p 256)) (fe-zero! (+ p 384))))
+
+;; p = p + q (the unified add-2008-hwcd-3 formula: also correct for p = q, so it doubles too)
+(defn ed-add! [(p : I32) (q : I32)] : Unit
+  (let [px p py (+ p 128) pz (+ p 256) ptt (+ p 384)
+        qx q qy (+ q 128) qz (+ q 256) qt (+ q 384)
+        a (ed-ft 0) b (ed-ft 1) c (ed-ft 2) d (ed-ft 3) e (ed-ft 4) f (ed-ft 5) g (ed-ft 6) h (ed-ft 7) t (ed-ft 8)]
+    (do (fe-sub! a py px) (fe-sub! t qy qx) (fe-mul! a a t)
+        (fe-add! b px py) (fe-add! t qx qy) (fe-mul! b b t)
+        (fe-mul! c ptt qt) (fe-mul! c c (fe-d2))
+        (fe-mul! d pz qz) (fe-add! d d d)
+        (fe-sub! e b a) (fe-sub! f d c) (fe-add! g d c) (fe-add! h b a)
+        (fe-mul! px e f) (fe-mul! py h g) (fe-mul! pz g f) (fe-mul! ptt e h))))
+
+;; r = [s]q, s = 32 little-endian bytes at addr. Plain double-and-add (public inputs only).
+(defn ed-scalarmult! [(r : I32) (q : I32) (s : I32)] : Unit
+  (do (ed-neutral! r)
+      (loop [i 255]
+        (when (>= i 0)
+          (do (ed-add! r r)
+              (when (= (bit-and (shr (load8 (+ s (shr i 3))) (bit-and i 7)) 1) 1) (ed-add! r q))
+              (recur (- i 1)))))))
+
+(defn ed-base! [(p : I32)] : Unit
+  (do (fe-copy! p (fe-bx)) (fe-copy! (+ p 128) (fe-by)) (fe-one! (+ p 256)) (fe-mul! (+ p 384) (fe-bx) (fe-by))))
+
+;; the canonical 32-byte encoding of p: y with the parity of x in bit 255
+(defn ed-pack! [(out : I32) (p : I32)] : Unit
+  (let [tz (ed-ft 0) tx (ed-ft 1) ty (ed-ft 2)]
+    (do (fe-inv! tz (+ p 256))
+        (fe-mul! tx p tz)
+        (fe-mul! ty (+ p 128) tz)
+        (fe-freeze! ty)
+        (dotimes [i 32] (store8! (+ out i) (fl ty i)))
+        (store8! (+ out 31) (bit-xor (load8 (+ out 31)) (shl (fe-par tx) 7))))))
+
+;; y (32 bytes, top bit ignored) >= p ?  (p = 2^255 - 19: 0xed, 0xff x30, 0x7f)
+(defn y-ge-p [(src : I32)] : Bool
+  (and (= (bit-and (load8 (+ src 31)) 127) 127)
+       (and (= 0 (loop [i 1 acc 0] (if (= i 31) acc (recur (+ i 1) (bit-or acc (bit-xor (load8 (+ src i)) 255))))))
+            (>= (load8 src) 237))))
+
+;; Decode the point at src and store its NEGATION in p. 1 if valid, else 0.
+(defn ed-unpack-neg! [(p : I32) (src : I32)] : I32
+  (let [num (ed-ft 0) den (ed-ft 1) den2 (ed-ft 2) den4 (ed-ft 3) den6 (ed-ft 4) t (ed-ft 5) chk (ed-ft 6) x p y (+ p 128)]
+    (if (y-ge-p src) 0
+        (do (dotimes [i 32] (fl! y i (load8 (+ src i))))
+            (fl! y 31 (bit-and (fl y 31) 127))
+            (fe-one! (+ p 256))
+            (fe-sqr! num y)
+            (fe-mul! den num (fe-d))
+            (fe-one! (ed-ft 7))
+            (fe-sub! num num (ed-ft 7))
+            (fe-add! den (ed-ft 7) den)
+            (fe-sqr! den2 den) (fe-sqr! den4 den2) (fe-mul! den6 den4 den2)
+            (fe-mul! t den6 num) (fe-mul! t t den)
+            (fe-pow2523! t t)
+            (fe-mul! t t num) (fe-mul! t t den) (fe-mul! t t den)
+            (fe-mul! x t den)
+            (fe-sqr! chk x) (fe-mul! chk chk den)
+            (when (not (fe-eq chk num)) (fe-mul! x x (fe-sqrtm1)))
+            (fe-sqr! chk x) (fe-mul! chk chk den)
+            (if (not (fe-eq chk num)) 0
+                (let [sign (ushr (load8 (+ src 31)) 7)]
+                  (do (fe-zero! (ed-ft 8))
+                      (if (and (fe-eq x (ed-ft 8)) (= sign 1)) 0     ; x = 0 with the sign bit set is not a valid encoding
+                          (do (when (= (fe-par x) sign) (fe-neg! x x))
+                              (fe-mul! (+ p 384) x y)
+                              1)))))))))
+
+;; ---- scalars: reduce a 64-byte value mod L (TweetNaCl's modL, balanced digits in I32) ------------------------------------------------
+(defn ed-modl! [(r : I32) (x : I32)] : Unit
+  (do
+    (loop [i 63]
+      (when (>= i 32)
+        (let [xi (fl x i)
+              carry (loop [j (- i 32) carry 0]
+                      (if (< j (- i 12))
+                          (let [v (- (+ (fl x j) carry) (* (* 16 xi) (ed-lbyte (- j (- i 32)))))
+                                c2 (shr (+ v 128) 8)]
+                            (do (fl! x j (- v (shl c2 8))) (recur (+ j 1) c2)))
+                          carry))]
+          (do (fl! x (- i 12) (+ (fl x (- i 12)) carry))
+              (fl! x i 0)
+              (recur (- i 1))))))
+    (let [q (shr (fl x 31) 4)
+          c (loop [j 0 carry 0]
+              (if (= j 32) carry
+                  (let [v (- (+ (fl x j) carry) (* q (ed-lbyte j)))]
+                    (do (fl! x j (bit-and v 255)) (recur (+ j 1) (shr v 8))))))]
+      (do (dotimes [j 32] (fl! x j (- (fl x j) (* c (ed-lbyte j)))))
+          (dotimes [i 32]
+            (do (fl! x (+ i 1) (+ (fl x (+ i 1)) (shr (fl x i) 8)))
+                (store8! (+ r i) (bit-and (fl x i) 255))))))))
+
+;; S < L ?  (both 32 bytes little-endian; compare from the top)
+(defn ed-s-lt-l [(s : I32)] : Bool
+  (loop [i 31]
+    (if (< i 0) false
+        (let [a (load8 (+ s i)) b (ed-lbyte i)]
+          (if (< a b) true (if (> a b) false (recur (- i 1))))))))
+
+;; verify sig (64 bytes: R || S) over msg (msglen bytes) for the public key pk (32 bytes). 1 = valid.
+(defn nk-ed25519-verify [(pk : I32) (msg : I32) (msglen : I32) (sig : I32)] : I32
+  (do (ed-init!)
+      (if (not (ed-s-lt-l (+ sig 32))) 0
+          (if (= (ed-unpack-neg! (ed-pt 2) pk) 0) 0
+              (do (copy-mem! (eb-msg) sig 32)
+                  (copy-mem! (+ (eb-msg) 32) pk 32)
+                  (copy-mem! (+ (eb-msg) 64) msg msglen)
+                  (nk-sha512 (eb-msg) (+ 64 msglen) (eb-h64))
+                  (dotimes [i 64] (fl! (eb-modl) i (load8 (+ (eb-h64) i))))
+                  (ed-modl! (eb-hred) (eb-modl))
+                  (ed-scalarmult! (ed-pt 0) (ed-pt 2) (eb-hred))          ; [h](-A)
+                  (ed-base! (ed-pt 3))
+                  (ed-scalarmult! (ed-pt 1) (ed-pt 3) (+ sig 32))          ; [S]B
+                  (ed-add! (ed-pt 0) (ed-pt 1))
+                  (ed-pack! (eb-pack) (ed-pt 0))
+                  (ct-eq (eb-pack) sig 32))))))
+
+;; exposed for the mod-L test: x = 64 bytes at in; 32-byte result at out
+(defn nk-ed25519-modl [(out : I32) (in : I32)] : Unit
+  (do (dotimes [i 64] (fl! (eb-modl) i (load8 (+ in i)))) (ed-modl! out (eb-modl))))
+
+;; ---- the SSH host-key check --------------------------------------------------------------------------------------------------------------
+;; the host key blob is  string "ssh-ed25519" || string pk(32)  (51 bytes);  the signature blob is
+;; string "ssh-ed25519" || string sig(64) (83 bytes);  what was signed is the exchange hash H (32 bytes).
+(defn blob-is-ed25519 [(p : I32) (len : I32) (body : I32)] : Bool
+  (and (= len (+ 19 body))
+       (and (= (be32 p) 11)
+            (and (= 1 (namelist-first-is (+ p 4) 11 (str-addr "ssh-ed25519")))
+                 (= (be32 (+ p 15)) body)))))
+
+(defn ssh-verify-hostkey-real! [(sgp : I32) (sgl : I32)] : I32
+  (if (and (blob-is-ed25519 (hostkey-base) (gi (g-ss-kslen)) 32) (blob-is-ed25519 sgp sgl 64))
+      (if (= (nk-ed25519-verify (+ (hostkey-base) 19) (key-at (k-h)) 32 (+ sgp 19)) 1)
+          (do (gi! (g-ss-sigok) 1) 1)
+          0)
+      0))

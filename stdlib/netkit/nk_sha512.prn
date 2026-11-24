@@ -1,0 +1,140 @@
+;; stdlib/netkit/nk_sha512.prn -- SHA-512 (FIPS 180-4) in pure PARENA, wasm-safe. PARENA has no I64, so every 64-bit word is a
+;; (hi, lo) pair of I32 held in memory, with add / rotate / shift / xor written out on the halves (carry of the low add detected by
+;; an unsigned compare done as a sign-bit flip). Needed by Ed25519 (nk_ed25519.prn): the SSH host-key signature check hashes
+;; R || A || M with it. Checked against hashlib on every length class in tests/netkit/test_ed25519.py.
+;;
+;; Scratch (CRY + 16384): H[8] +0 | W[80] +64 | working variables a..h +704 | temporaries +768 (8 slots of 8 bytes).
+;; A 64-bit value at address a: low word at a, high word at a+4.
+
+(defn s5 [] : I32 (+ (cry-base) 16384))
+(defn s5-h [] : I32 (s5))
+(defn s5-w [] : I32 (+ (s5) 64))
+(defn s5-v [] : I32 (+ (s5) 704))
+(defn s5-t [(k : I32)] : I32 (+ (s5) (+ 768 (shl k 3))))
+(defn sgn [] : I32 (shl 1 31))
+
+(defn lo64 [(a : I32)] : I32 (load32 a))
+(defn hi64 [(a : I32)] : I32 (load32 (+ a 4)))
+(defn set64! [(d : I32) (hi : I32) (lo : I32)] : Unit (do (store32! d lo) (store32! (+ d 4) hi)))
+(defn cp64! [(d : I32) (a : I32)] : Unit (set64! d (hi64 a) (lo64 a)))
+
+(defn add64! [(d : I32) (a : I32) (b : I32)] : Unit
+  (let [al (lo64 a) ah (hi64 a) bl (lo64 b) bh (hi64 b)
+        l (+ al bl)
+        carry (if (< (bit-xor l (sgn)) (bit-xor al (sgn))) 1 0)]
+    (set64! d (+ (+ ah bh) carry) l)))
+(defn xor64! [(d : I32) (a : I32) (b : I32)] : Unit
+  (set64! d (bit-xor (hi64 a) (hi64 b)) (bit-xor (lo64 a) (lo64 b))))
+(defn and64! [(d : I32) (a : I32) (b : I32)] : Unit
+  (set64! d (bit-and (hi64 a) (hi64 b)) (bit-and (lo64 a) (lo64 b))))
+(defn not64! [(d : I32) (a : I32)] : Unit (set64! d (bit-xor (hi64 a) -1) (bit-xor (lo64 a) -1)))
+
+;; rotate right by n (1..63)
+(defn rotr64! [(d : I32) (a : I32) (n : I32)] : Unit
+  (let [al (lo64 a) ah (hi64 a)]
+    (if (< n 32)
+        (set64! d (bit-or (ushr ah n) (shl al (- 32 n))) (bit-or (ushr al n) (shl ah (- 32 n))))
+        (if (= n 32) (set64! d al ah)
+            (let [m (- n 32)]
+              (set64! d (bit-or (ushr al m) (shl ah (- 32 m))) (bit-or (ushr ah m) (shl al (- 32 m)))))))))
+;; shift right by n (1..31)
+(defn shr64! [(d : I32) (a : I32) (n : I32)] : Unit
+  (let [al (lo64 a) ah (hi64 a)]
+    (set64! d (ushr ah n) (bit-or (ushr al n) (shl ah (- 32 n))))))
+
+;; the four sigma functions of s4.1.3, result in d (uses temporaries 0..2)
+(defn bsig0! [(d : I32) (x : I32)] : Unit
+  (do (rotr64! (s5-t 0) x 28) (rotr64! (s5-t 1) x 34) (xor64! (s5-t 0) (s5-t 0) (s5-t 1))
+      (rotr64! (s5-t 1) x 39) (xor64! d (s5-t 0) (s5-t 1))))
+(defn bsig1! [(d : I32) (x : I32)] : Unit
+  (do (rotr64! (s5-t 0) x 14) (rotr64! (s5-t 1) x 18) (xor64! (s5-t 0) (s5-t 0) (s5-t 1))
+      (rotr64! (s5-t 1) x 41) (xor64! d (s5-t 0) (s5-t 1))))
+(defn ssig0! [(d : I32) (x : I32)] : Unit
+  (do (rotr64! (s5-t 0) x 1) (rotr64! (s5-t 1) x 8) (xor64! (s5-t 0) (s5-t 0) (s5-t 1))
+      (shr64! (s5-t 1) x 7) (xor64! d (s5-t 0) (s5-t 1))))
+(defn ssig1! [(d : I32) (x : I32)] : Unit
+  (do (rotr64! (s5-t 0) x 19) (rotr64! (s5-t 1) x 61) (xor64! (s5-t 0) (s5-t 0) (s5-t 1))
+      (shr64! (s5-t 1) x 6) (xor64! d (s5-t 0) (s5-t 1))))
+
+;; constants, 16 hex digits each: K[0..79] in five literals of 20, IV in one
+(defn s5-k0 [] : String "428a2f98d728ae227137449123ef65cdb5c0fbcfec4d3b2fe9b5dba58189dbbc3956c25bf348b53859f111f1b605d019923f82a4af194f9bab1c5ed5da6d8118d807aa98a303024212835b0145706fbe243185be4ee4b28c550c7dc3d5ffb4e272be5d74f27b896f80deb1fe3b1696b19bdc06a725c71235c19bf174cf692694e49b69c19ef14ad2efbe4786384f25e30fc19dc68b8cd5b5240ca1cc77ac9c65")
+(defn s5-k1 [] : String "2de92c6f592b02754a7484aa6ea6e4835cb0a9dcbd41fbd476f988da831153b5983e5152ee66dfaba831c66d2db43210b00327c898fb213fbf597fc7beef0ee4c6e00bf33da88fc2d5a79147930aa72506ca6351e003826f142929670a0e6e7027b70a8546d22ffc2e1b21385c26c9264d2c6dfc5ac42aed53380d139d95b3df650a73548baf63de766a0abb3c77b2a881c2c92e47edaee692722c851482353b")
+(defn s5-k2 [] : String "a2bfe8a14cf10364a81a664bbc423001c24b8b70d0f89791c76c51a30654be30d192e819d6ef5218d69906245565a910f40e35855771202a106aa07032bbd1b819a4c116b8d2d0c81e376c085141ab532748774cdf8eeb9934b0bcb5e19b48a8391c0cb3c5c95a634ed8aa4ae3418acb5b9cca4f7763e373682e6ff3d6b2b8a3748f82ee5defb2fc78a5636f43172f6084c87814a1f0ab728cc702081a6439ec")
+(defn s5-k3 [] : String "90befffa23631e28a4506cebde82bde9bef9a3f7b2c67915c67178f2e372532bca273eceea26619cd186b8c721c0c207eada7dd6cde0eb1ef57d4f7fee6ed17806f067aa72176fba0a637dc5a2c898a6113f9804bef90dae1b710b35131c471b28db77f523047d8432caab7b40c724933c9ebe0a15c9bebc431d67c49c100d4c4cc5d4becb3e42b6597f299cfc657e2a5fcb6fab3ad6faec6c44198c4a475817")
+(defn s5-iv [] : String "6a09e667f3bcc908bb67ae8584caa73b3c6ef372fe94f82ba54ff53a5f1d36f1510e527fade682d19b05688c2b3e6c1f1f83d9abfb41bd6b5be0cd19137e2179")
+(defn s5-kaddr [(t : I32)] : I32
+  (let [g (/ t 20)]
+    (if (= g 0) (str-addr (s5-k0)) (if (= g 1) (str-addr (s5-k1)) (if (= g 2) (str-addr (s5-k2)) (str-addr (s5-k3)))))))
+;; load K[t] into slot d
+(defn s5-load-k! [(d : I32) (t : I32)] : Unit
+  (let [a (s5-kaddr t) j (- t (* (/ t 20) 20))]
+    (set64! d (hexword a (shl j 1)) (hexword a (+ (shl j 1) 1)))))
+
+(defn s5-init! [] : Unit
+  (dotimes [i 8] (set64! (+ (s5-h) (shl i 3)) (hexword (str-addr (s5-iv)) (shl i 1)) (hexword (str-addr (s5-iv)) (+ (shl i 1) 1)))))
+
+;; one 128-byte block at addr
+(defn s5-block! [(addr : I32)] : Unit
+  (let [w (s5-w) v (s5-v) t1 (s5-t 3) t2 (s5-t 4) t3 (s5-t 5) t4 (s5-t 6) t5 (s5-t 7)]
+    (do
+      (dotimes [t 16] (set64! (+ w (shl t 3)) (be32 (+ addr (shl t 3))) (be32 (+ addr (+ (shl t 3) 4)))))
+      (loop [t 16]
+        (when (< t 80)
+          (do (ssig1! t1 (+ w (shl (- t 2) 3)))
+              (add64! t1 t1 (+ w (shl (- t 7) 3)))
+              (ssig0! t2 (+ w (shl (- t 15) 3)))
+              (add64! t1 t1 t2)
+              (add64! (+ w (shl t 3)) t1 (+ w (shl (- t 16) 3)))
+              (recur (+ t 1)))))
+      (dotimes [i 8] (cp64! (+ v (shl i 3)) (+ (s5-h) (shl i 3))))
+      ;; v: a=0 b=8 c=16 d=24 e=32 f=40 g=48 h=56
+      (dotimes [t 80]
+        (do
+          ;; T1 = h + Sigma1(e) + Ch(e,f,g) + K[t] + W[t]
+          (bsig1! t1 (+ v 32))
+          (add64! t1 t1 (+ v 56))
+          (and64! t2 (+ v 32) (+ v 40))
+          (not64! t3 (+ v 32))
+          (and64! t3 t3 (+ v 48))
+          (xor64! t2 t2 t3)
+          (add64! t1 t1 t2)
+          (s5-load-k! t2 t)
+          (add64! t1 t1 t2)
+          (add64! t1 t1 (+ w (shl t 3)))
+          ;; T2 = Sigma0(a) + Maj(a,b,c)
+          (bsig0! t2 v)
+          (and64! t3 v (+ v 8))
+          (and64! t4 v (+ v 16))
+          (xor64! t3 t3 t4)
+          (and64! t4 (+ v 8) (+ v 16))
+          (xor64! t3 t3 t4)
+          (add64! t2 t2 t3)
+          ;; rotate the working variables
+          (cp64! (+ v 56) (+ v 48))
+          (cp64! (+ v 48) (+ v 40))
+          (cp64! (+ v 40) (+ v 32))
+          (add64! (+ v 32) (+ v 24) t1)
+          (cp64! (+ v 24) (+ v 16))
+          (cp64! (+ v 16) (+ v 8))
+          (cp64! (+ v 8) v)
+          (add64! v t1 t2)))
+      (dotimes [i 8] (add64! (+ (s5-h) (shl i 3)) (+ (s5-h) (shl i 3)) (+ v (shl i 3)))))))
+
+;; SHA-512 of len bytes at in -> 64 bytes at out
+(defn nk-sha512 [(in : I32) (len : I32) (out : I32)] : Unit
+  (let [full (/ len 128)
+        rem (- len (* full 128))
+        tail (+ (s5) 1536)]
+    (do (s5-init!)
+        (dotimes [b full] (s5-block! (+ in (* b 128))))
+        (dotimes [i 256] (store8! (+ tail i) 0))
+        (dotimes [i rem] (store8! (+ tail i) (load8 (+ in (+ (* full 128) i)))))
+        (store8! (+ tail rem) 128)
+        (let [tl (if (< rem 112) 128 256)]
+          (do (put-be32! (+ tail (- tl 8)) (ushr len 29))      ; the 128-bit big-endian bit length: high 64 bits are zero
+              (put-be32! (+ tail (- tl 4)) (shl len 3))
+              (s5-block! tail)
+              (when (= tl 256) (s5-block! (+ tail 128)))))
+        (dotimes [i 8]
+          (do (put-be32! (+ out (shl i 3)) (hi64 (+ (s5-h) (shl i 3))))
+              (put-be32! (+ out (+ (shl i 3) 4)) (lo64 (+ (s5-h) (shl i 3)))))))))
