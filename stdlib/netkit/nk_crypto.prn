@@ -1,0 +1,205 @@
+;; stdlib/netkit/nk_crypto.prn -- SHA-256, ChaCha20 and Poly1305 in pure PARENA over linear memory (wasm-safe: no malloc,
+;; no imports, I32 words only).
+;;
+;; Why these three, here: they are what the SSH transport needs to speak to OpenSSH with `curve25519-sha256` +
+;; `chacha20-poly1305@openssh.com` (nk_ssh.prn). Founder 2026-11-24: "ensure its all parena based mods first dev";
+;; root CLAUDE.md "Core Deps Are PARENA-First". This is hand-written crypto, which is a classic source of
+;; vulnerabilities, so what keeps it honest is the tests: tests/netkit/test_crypto.py checks every function against
+;; published vectors (FIPS 180-4, RFC 8439) AND against an independent implementation (hashlib / cryptography) on random
+;; inputs of every length class. No secret-dependent branches or table lookups in ChaCha20 / Poly1305; SHA-256 is not
+;; secret-keyed here (it hashes public handshake data and derives keys).
+;;
+;; I32 words hold 32 bits; wasm's add/shl/lshr/xor wrap and are unsigned-correct for these ciphers. Scratch (CRY):
+;;   +0 H[8]  +64 W[64]  +512 tail[128]  |  +1024 chacha state[16]  +1088 chacha work[16]  +1152 keystream block[64]
+;;   +2048 poly h[17] +2116 r[17] +2184 c[17] +2252 x[17] +2320 g[17]   (one limb per I32, 8 bits per limb)
+
+(defn rotr [(x : I32) (n : I32)] : I32 (bit-or (ushr x n) (shl x (- 32 n))))
+(defn rotl [(x : I32) (n : I32)] : I32 (bit-or (shl x n) (ushr x (- 32 n))))
+
+(defn be32 [(a : I32)] : I32
+  (bit-or (shl (load8 a) 24) (bit-or (shl (load8 (+ a 1)) 16) (bit-or (shl (load8 (+ a 2)) 8) (load8 (+ a 3))))))
+(defn put-be32! [(a : I32) (v : I32)] : Unit
+  (do (store8! a (bit-and (ushr v 24) 255)) (store8! (+ a 1) (bit-and (ushr v 16) 255))
+      (store8! (+ a 2) (bit-and (ushr v 8) 255)) (store8! (+ a 3) (bit-and v 255))))
+(defn le32 [(a : I32)] : I32
+  (bit-or (load8 a) (bit-or (shl (load8 (+ a 1)) 8) (bit-or (shl (load8 (+ a 2)) 16) (shl (load8 (+ a 3)) 24)))))
+(defn put-le32! [(a : I32) (v : I32)] : Unit
+  (do (store8! a (bit-and v 255)) (store8! (+ a 1) (bit-and (ushr v 8) 255))
+      (store8! (+ a 2) (bit-and (ushr v 16) 255)) (store8! (+ a 3) (bit-and (ushr v 24) 255))))
+
+(defn copy-mem! [(dst : I32) (src : I32) (n : I32)] : Unit
+  (loop [i 0] (when (< i n) (store8! (+ dst i) (load8 (+ src i))) (recur (+ i 1)))))
+
+;; constant-time compare of n bytes: 1 if equal
+(defn ct-eq [(a : I32) (b : I32) (n : I32)] : I32
+  (let [d (loop [i 0 acc 0] (if (= i n) acc (recur (+ i 1) (bit-or acc (bit-xor (load8 (+ a i)) (load8 (+ b i)))))))]
+    (if (= d 0) 1 0)))
+
+;; ================================================================ SHA-256 (FIPS 180-4)
+(defn sha-k-hex [] : String
+  "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da983e5152a831c66db00327c8bf597fc7c6e00bf3d5a7914706ca63511429296727b70a852e1b21384d2c6dfc53380d13650a7354766a0abb81c2c92e92722c85a2bfe8a1a81a664bc24b8b70c76c51a3d192e819d6990624f40e3585106aa07019a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2")
+(defn sha-iv-hex [] : String "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19")
+(defn hexnib [(c : I32)] : I32 (if (>= c 97) (- c 87) (- c 48)))
+(defn hexword [(a : I32) (i : I32)] : I32
+  (loop [j 0 acc 0]
+    (if (>= j 8) acc (recur (+ j 1) (bit-or (shl acc 4) (hexnib (load8 (+ a (+ (* i 8) j)))))))))
+(defn sha-k [(t : I32)] : I32 (hexword (str-addr (sha-k-hex)) t))
+
+(defn sha-h [] : I32 (cry-base))
+(defn sha-w [] : I32 (+ (cry-base) 64))
+(defn sha-tail [] : I32 (+ (cry-base) 512))
+(defn wget [(base : I32) (i : I32)] : I32 (load32 (+ base (shl i 2))))
+(defn wput! [(base : I32) (i : I32) (v : I32)] : Unit (store32! (+ base (shl i 2)) v))
+
+(defn sha-iv! [] : Unit
+  (dotimes [i 8] (wput! (sha-h) i (hexword (str-addr (sha-iv-hex)) i))))
+
+;; one 64-byte block at addr
+(defn sha-block! [(addr : I32)] : Unit
+  (do
+    (dotimes [t 16] (wput! (sha-w) t (be32 (+ addr (shl t 2)))))
+    (loop [t 16]
+      (when (< t 64)
+        (let [w15 (wget (sha-w) (- t 15))
+              w2 (wget (sha-w) (- t 2))
+              s0 (bit-xor (rotr w15 7) (bit-xor (rotr w15 18) (ushr w15 3)))
+              s1 (bit-xor (rotr w2 17) (bit-xor (rotr w2 19) (ushr w2 10)))]
+          (do (wput! (sha-w) t (+ (+ (wget (sha-w) (- t 16)) s0) (+ (wget (sha-w) (- t 7)) s1)))
+              (recur (+ t 1))))))
+    (let [h0 (wget (sha-h) 0) h1 (wget (sha-h) 1) h2 (wget (sha-h) 2) h3 (wget (sha-h) 3)
+          h4 (wget (sha-h) 4) h5 (wget (sha-h) 5) h6 (wget (sha-h) 6) h7 (wget (sha-h) 7)]
+      (loop [t 0 a h0 b h1 c h2 d h3 e h4 f h5 g h6 h h7]
+        (if (< t 64)
+            (let [bs1 (bit-xor (rotr e 6) (bit-xor (rotr e 11) (rotr e 25)))
+                  ch (bit-xor (bit-and e f) (bit-and (bit-xor e -1) g))
+                  t1 (+ (+ h bs1) (+ (+ ch (sha-k t)) (wget (sha-w) t)))
+                  bs0 (bit-xor (rotr a 2) (bit-xor (rotr a 13) (rotr a 22)))
+                  mj (bit-xor (bit-and a b) (bit-xor (bit-and a c) (bit-and b c)))
+                  t2 (+ bs0 mj)]
+              (recur (+ t 1) (+ t1 t2) a b c (+ d t1) e f g))
+            (do (wput! (sha-h) 0 (+ h0 a)) (wput! (sha-h) 1 (+ h1 b)) (wput! (sha-h) 2 (+ h2 c)) (wput! (sha-h) 3 (+ h3 d))
+                (wput! (sha-h) 4 (+ h4 e)) (wput! (sha-h) 5 (+ h5 f)) (wput! (sha-h) 6 (+ h6 g)) (wput! (sha-h) 7 (+ h7 h))))))))
+
+;; SHA-256 of len bytes at in -> 32 bytes at out. Messages under 256 MB (the length word's high half is len >> 29).
+(defn nk-sha256 [(in : I32) (len : I32) (out : I32)] : Unit
+  (let [full (/ len 64)
+        rem (- len (* full 64))]
+    (do (sha-iv!)
+        (dotimes [b full] (sha-block! (+ in (* b 64))))
+        (dotimes [i 128] (store8! (+ (sha-tail) i) 0))
+        (dotimes [i rem] (store8! (+ (sha-tail) i) (load8 (+ in (+ (* full 64) i)))))
+        (store8! (+ (sha-tail) rem) 128)
+        (let [tl (if (< rem 56) 64 128)]
+          (do (put-be32! (+ (sha-tail) (- tl 8)) (ushr len 29))
+              (put-be32! (+ (sha-tail) (- tl 4)) (shl len 3))
+              (sha-block! (sha-tail))
+              (when (= tl 128) (sha-block! (+ (sha-tail) 64)))))
+        (dotimes [i 8] (put-be32! (+ out (shl i 2)) (wget (sha-h) i))))))
+
+;; ================================================================ ChaCha20 (RFC 8439 core; the OpenSSH 64-bit-counter layout)
+;; state words 12,13 = 64-bit block counter (lo, hi); 14,15 = 8-byte nonce. (RFC 8439's IETF layout is counter32 + nonce96;
+;; for counter < 2^32 the two layouts differ only in where the nonce's first word sits, and OpenSSH's is this one.)
+(defn cc-st [] : I32 (+ (cry-base) 1024))
+(defn cc-wk [] : I32 (+ (cry-base) 1088))
+(defn cc-ks [] : I32 (+ (cry-base) 1152))
+
+(defn cc-qr! [(a : I32) (b : I32) (c : I32) (d : I32)] : Unit
+  (let [wk (cc-wk)]
+    (do (wput! wk a (+ (wget wk a) (wget wk b)))
+        (wput! wk d (rotl (bit-xor (wget wk d) (wget wk a)) 16))
+        (wput! wk c (+ (wget wk c) (wget wk d)))
+        (wput! wk b (rotl (bit-xor (wget wk b) (wget wk c)) 12))
+        (wput! wk a (+ (wget wk a) (wget wk b)))
+        (wput! wk d (rotl (bit-xor (wget wk d) (wget wk a)) 8))
+        (wput! wk c (+ (wget wk c) (wget wk d)))
+        (wput! wk b (rotl (bit-xor (wget wk b) (wget wk c)) 7)))))
+
+;; one 64-byte keystream block into cc-ks. key: 32 bytes at key; nonce: 8 bytes at nonce.
+(defn cc-block! [(key : I32) (ctr-lo : I32) (ctr-hi : I32) (nonce : I32)] : Unit
+  (let [st (cc-st) wk (cc-wk)]
+    (do (wput! st 0 1634760805) (wput! st 1 857760878) (wput! st 2 2036477234) (wput! st 3 1797285236)
+        (dotimes [i 8] (wput! st (+ 4 i) (le32 (+ key (shl i 2)))))
+        (wput! st 12 ctr-lo) (wput! st 13 ctr-hi)
+        (wput! st 14 (le32 nonce)) (wput! st 15 (le32 (+ nonce 4)))
+        (dotimes [i 16] (wput! wk i (wget st i)))
+        (dotimes [r 10]
+          (do (cc-qr! 0 4 8 12) (cc-qr! 1 5 9 13) (cc-qr! 2 6 10 14) (cc-qr! 3 7 11 15)
+              (cc-qr! 0 5 10 15) (cc-qr! 1 6 11 12) (cc-qr! 2 7 8 13) (cc-qr! 3 4 9 14)))
+        (dotimes [i 16] (put-le32! (+ (cc-ks) (shl i 2)) (+ (wget wk i) (wget st i)))))))
+
+;; XOR len bytes of in with the keystream starting at block counter ctr-lo (the high word starts at 0 and carries when
+;; the low word wraps, as OpenSSH's 64-bit counter does); out may equal in.
+(defn nk-chacha20-xor [(key : I32) (nonce : I32) (ctr-lo : I32) (in : I32) (out : I32) (len : I32)] : Unit
+  (loop [pos 0 ctr ctr-lo hi 0]
+    (when (< pos len)
+      (do (cc-block! key ctr hi nonce)
+          (let [n (if (< (- len pos) 64) (- len pos) 64)]
+            (dotimes [i n]
+              (store8! (+ out (+ pos i)) (bit-xor (load8 (+ in (+ pos i))) (load8 (+ (cc-ks) i))))))
+          (recur (+ pos 64) (+ ctr 1) (if (= (+ ctr 1) 0) (+ hi 1) hi))))))
+
+;; the raw first keystream block bytes (used for the Poly1305 key): 32 bytes of block 0 at out
+(defn nk-chacha20-polykey [(key : I32) (nonce : I32) (out : I32)] : Unit
+  (do (cc-block! key 0 0 nonce) (copy-mem! out (cc-ks) 32)))
+
+;; ================================================================ Poly1305 (RFC 8439), 8-bit limbs, TweetNaCl's method
+(defn pl-h [] : I32 (+ (cry-base) 2048))
+(defn pl-r [] : I32 (+ (cry-base) 2116))
+(defn pl-c [] : I32 (+ (cry-base) 2184))
+(defn pl-x [] : I32 (+ (cry-base) 2252))
+(defn pl-g [] : I32 (+ (cry-base) 2320))
+(defn pl-minusp [] : I32 (+ (cry-base) 2388))
+
+(defn pl-add! [(h : I32) (c : I32)] : Unit
+  (loop [j 0 u 0]
+    (when (< j 17)
+      (let [t (+ u (+ (wget h j) (wget c j)))]
+        (do (wput! h j (bit-and t 255)) (recur (+ j 1) (ushr t 8)))))))
+
+(defn nk-poly1305 [(out : I32) (msg : I32) (len : I32) (key : I32)] : Unit
+  (let [h (pl-h) r (pl-r) c (pl-c) x (pl-x) g (pl-g) mp (pl-minusp)]
+    (do
+      (dotimes [j 17] (do (wput! r j 0) (wput! h j 0) (wput! mp j 0)))
+      (wput! mp 0 5) (wput! mp 16 252)
+      (dotimes [j 16] (wput! r j (load8 (+ key j))))
+      (wput! r 3 (bit-and (wget r 3) 15)) (wput! r 4 (bit-and (wget r 4) 252))
+      (wput! r 7 (bit-and (wget r 7) 15)) (wput! r 8 (bit-and (wget r 8) 252))
+      (wput! r 11 (bit-and (wget r 11) 15)) (wput! r 12 (bit-and (wget r 12) 252))
+      (wput! r 15 (bit-and (wget r 15) 15))
+      (loop [pos 0]
+        (when (< pos len)
+          (let [n (if (< (- len pos) 16) (- len pos) 16)]
+            (do (dotimes [j 17] (wput! c j 0))
+                (dotimes [j n] (wput! c j (load8 (+ msg (+ pos j)))))
+                (wput! c n 1)
+                (pl-add! h c)
+                (dotimes [i 17]
+                  (wput! x i
+                    (loop [j 0 acc 0]
+                      (if (= j 17) acc
+                          (recur (+ j 1)
+                                 (+ acc (* (wget h j)
+                                           (if (<= j i) (wget r (- i j)) (* 320 (wget r (- (+ i 17) j)))))))))))
+                (dotimes [i 17] (wput! h i (wget x i)))
+                (let [u1 (loop [j 0 u 0]
+                           (if (= j 16) u
+                               (let [t (+ u (wget h j))]
+                                 (do (wput! h j (bit-and t 255)) (recur (+ j 1) (ushr t 8))))))
+                      t16 (+ u1 (wget h 16))]
+                  (do (wput! h 16 (bit-and t16 3))
+                      (let [u2 (* 5 (ushr t16 2))
+                            u3 (loop [j 0 u u2]
+                                 (if (= j 16) u
+                                     (let [t (+ u (wget h j))]
+                                       (do (wput! h j (bit-and t 255)) (recur (+ j 1) (ushr t 8))))))]
+                        (wput! h 16 (+ u3 (wget h 16))))))
+                (recur (+ pos 16))))))
+      ;; final reduction: h or h - p, in constant time
+      (dotimes [j 17] (wput! g j (wget h j)))
+      (pl-add! h mp)
+      (let [s (- 0 (ushr (wget h 16) 7))]
+        (dotimes [j 17] (wput! h j (bit-xor (wget h j) (bit-and s (bit-xor (wget g j) (wget h j)))))))
+      (dotimes [j 16] (wput! c j (load8 (+ key (+ 16 j)))))
+      (wput! c 16 0)
+      (pl-add! h c)
+      (dotimes [j 16] (store8! (+ out j) (wget h j))))))

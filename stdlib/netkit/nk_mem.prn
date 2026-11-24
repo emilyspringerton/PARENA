@@ -18,6 +18,7 @@
 ;;   0x032200 REASON 256 bytes  the server's own failure reason text, NUL-terminated
 ;;   0x040000 TXT    64 KB      text exchange: page writes a CIDR / ARP table / a name here, then calls a nk-* fn
 ;;   0x050000 DEV    512 x 64 B device table (sorted by IP)           (nk_scan.prn)
+;;   0x060000 CRY    64 KB      crypto scratch (SHA-256, ChaCha20, Poly1305, X25519 temporaries)
 ;;   0x058000 PORTS  32 x 4 B   the port list being scanned           (nk_scan.prn)
 ;;   0x080000 OUT    64 KB      bytes the module wants sent to the peer
 ;;   0x100000 IN     1 MB       bytes received from the peer (page appends at the tail)
@@ -42,6 +43,7 @@
 (defn reason-base [] : I32 205312)
 (defn txt-base [] : I32 262144)
 (defn dev-base [] : I32 327680)
+(defn cry-base [] : I32 393216)
 (defn ports-base [] : I32 360448)
 (defn out-base [] : I32 524288)
 (defn in-base [] : I32 1048576)
