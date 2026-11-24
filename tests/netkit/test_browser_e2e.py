@@ -78,6 +78,8 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
     page.on("requestfailed", lambda r: errors.append(f"requestfailed: {r.url} {r.failure}"))
     page.goto(f"http://127.0.0.1:{site.port}/")
+    page.wait_for_selector("#view-garage", state="visible", timeout=20000)     # the page opens on the garage (test_browser_garage.py covers it);
+    page.click("#tab-devices")                                                  # everything below is the device list and the tools behind it
 
     # ---- boot + scan ---------------------------------------------------------------------------------------------------------------------------------------
     wait(lambda: page.inner_text('#scan-status').startswith('Scanned'), 25, 'the scan to finish')

@@ -1,0 +1,141 @@
+;; stdlib/shankpit/keybind_rules.prn -- SHANKPIT's WoW-style key binding decisions (founder real-time 2026-11-24:
+;; "full wow like key binding mode with up to 3 key binds per operation such as activating the action bar,
+;; remap interact (F) etc").
+;;
+;; The mod owns every DECISION: what the operations are, which category/contexts they live in, what the
+;; defaults are, how a (scancode + modifiers) pair is encoded, when a held key matches a bind, whether a
+;; modifier-less bind is shadowed by a more specific one, and whether binding a key to one operation
+;; steals it from another. The host owns the table (op x 3 slots), SDL, persistence and the UI -- same
+;; split as party_rules / action_bar_rules (scalar-only I32, pure and total, no state).
+;;
+;; KEY CODE (one I32): mods * 1024 + scancode.  scancode 1..1023 (SDL scancodes; mouse buttons are
+;; 400+button). mods bit 1 = Shift, 2 = Ctrl, 4 = Alt. 0 = unbound.
+;;
+;; CONTEXTS (bitmask): 1 on foot, 2 in a ground vehicle, 4 flying a fixed-wing, 8 in a helicopter. The
+;; same key can mean different things in different contexts (Space = jump on foot, throttle up in a
+;; plane). Two operations only conflict on a key when their context masks overlap.
+;;
+;; SHAREABLE operations (the action-bar modifier keys) coexist with anything on the same key: Shift is
+;; both "rocket-car boost" and "action bar bank 2" today, exactly as before.
+;;
+;; OPERATION IDS are append-only (they are persisted). Categories: 1 Movement 2 Combat 3 Action Bar
+;; 4 Vehicles 5 Camera 6 Interface.
+(module shankpit/keybind-rules)
+(export kb-op-count kb-slots kb-category-count kb-op-valid kb-op-category kb-op-ctx kb-op-shareable
+        kb-default kb-key-make kb-key-scan kb-key-mods kb-key-valid kb-bindable kb-match kb-mod-count
+        kb-shadowed kb-ctx-overlap kb-op-active kb-ctx-for kb-conflicts kb-is-default)
+
+(defn kb-op-count [] : I32 32)
+(defn kb-slots [] : I32 3)
+(defn kb-category-count [] : I32 6)
+(defn kb-op-valid [(op : I32)] : I32 (if (>= op 1) (if (<= op 32) 1 0) 0))
+
+;; ---- key code encode/decode -------------------------------------------------------------------------
+(defn kb-key-make [(scan : I32) (mods : I32)] : I32
+  (if (< scan 1) 0 (if (> scan 1023) 0
+    (+ (* (if (< mods 0) 0 (if (> mods 7) 7 mods)) 1024) scan))))
+(defn kb-key-mods [(key : I32)] : I32 (if (< key 0) 0 (/ key 1024)))
+(defn kb-key-scan [(key : I32)] : I32 (if (< key 0) 0 (mod key 1024)))
+(defn kb-key-valid [(key : I32)] : I32
+  (if (< key 0) 0 (if (> key 8191) 0 (if (= key 0) 1 (if (= (mod key 1024) 0) 0 1)))))
+;; 1 if this key may be bound. Plain Esc is reserved: in the capture screen it CANCELS, and in game it opens
+;; the pause menu, so a player can never bind themselves out of the menu.
+(defn kb-bindable [(key : I32)] : I32
+  (if (= (kb-key-valid key) 0) 0
+    (if (= key 0) 0
+      (if (= key 41) 0 1))))
+
+(defn kb-mod-count [(mods : I32)] : I32
+  (+ (mod mods 2) (+ (mod (/ mods 2) 2) (mod (/ mods 4) 2))))
+
+;; A bind matches the held key (scan, mods) when the scancode is equal and every modifier the bind
+;; demands is held. A modifier-less bind therefore still fires with Shift down (W while sprinting).
+(defn kb-match [(bind : I32) (scan : I32) (mods : I32)] : I32
+  (if (= bind 0) 0
+    (if (!= (kb-key-scan bind) scan) 0
+      (if (= (mod (/ (kb-key-mods bind) 1) 2) 1) (if (= (mod mods 2) 1) (kb-match-hi bind mods) 0)
+        (kb-match-hi bind mods)))))
+(defn kb-match-hi [(bind : I32) (mods : I32)] : I32
+  (if (= (mod (/ (kb-key-mods bind) 2) 2) 1) (if (= (mod (/ mods 2) 2) 1) (kb-match-alt bind mods) 0)
+    (kb-match-alt bind mods)))
+(defn kb-match-alt [(bind : I32) (mods : I32)] : I32
+  (if (= (mod (/ (kb-key-mods bind) 4) 2) 1) (if (= (mod (/ mods 4) 2) 1) 1 0) 1))
+
+;; `bind` matches the held key but `other` also matches AND demands strictly more modifiers: the more
+;; specific bind wins (Shift+F beats F while Shift is down). 1 = bind is shadowed.
+(defn kb-shadowed [(bind : I32) (other : I32) (scan : I32) (mods : I32)] : I32
+  (if (= (kb-match other scan mods) 0) 0
+    (if (> (kb-mod-count (kb-key-mods other)) (kb-mod-count (kb-key-mods bind))) 1 0)))
+
+;; ---- registry ---------------------------------------------------------------------------------------
+;; 1 FWD 2 BACK 3 LEFT 4 RIGHT 5 JUMP 6 CROUCH 7 BOOST | 8 RELOAD 9 ABILITY 10 PHEROMONE
+;; 11 INTERACT (also vehicle enter/exit) 12 HELI_LEFT 13 HELI_RIGHT 14 THROTTLE_UP 15 THROTTLE_DOWN
+;; 16 FLAPS 17 WHEEL_BRAKE | 18 CAMERA_TOGGLE | 19 OVERLAY_MODE | 20..29 ACTION BAR 1..10
+;; 30 AB_SHIFT 31 AB_CTRL 32 AB_ALT
+(defn kb-op-category [(op : I32)] : I32
+  (if (< op 1) 0 (if (<= op 7) 1 (if (<= op 10) 2 (if (<= op 17) 4 (if (= op 18) 5 (if (= op 19) 6
+    (if (<= op 32) 3 0))))))))
+
+(defn kb-op-ctx [(op : I32)] : I32
+  (if (= (kb-op-valid op) 0) 0
+    (if (= op 5) 11 (if (= op 6) 11 (if (= op 7) 15
+    (if (= op 8) 7 (if (= op 9) 7 (if (= op 12) 8 (if (= op 13) 8
+    (if (= op 14) 4 (if (= op 15) 4 (if (= op 16) 4 (if (= op 17) 4 15)))))))))))))
+
+(defn kb-op-shareable [(op : I32)] : I32 (if (>= op 30) (if (<= op 32) 1 0) 0))
+
+(defn kb-sc [(c : I32)] : I32 c)
+
+;; Defaults reproduce today's hard-coded scancodes exactly (W S A D Space LCtrl LShift R E G F, heli Q/J + E/L,
+;; V, M, digits 1..9,0 and the three modifier pairs). Slot is 1..3; anything else is unbound.
+(defn kb-default [(op : I32) (slot : I32)] : I32
+  (if (= (kb-op-valid op) 0) 0
+    (if (= slot 1) (kb-default-1 op)
+      (if (= slot 2) (kb-default-2 op) 0))))
+(defn kb-default-1 [(op : I32)] : I32
+  (if (<= op 7) (kb-default-1a op)
+    (if (<= op 19) (kb-default-1b op)
+      (if (<= op 28) (+ 10 op)
+        (if (= op 29) 39
+          (if (= op 30) 225 (if (= op 31) 224 (if (= op 32) 226 0))))))))
+(defn kb-default-1a [(op : I32)] : I32
+  (if (= op 1) 26 (if (= op 2) 22 (if (= op 3) 4 (if (= op 4) 7 (if (= op 5) 44 (if (= op 6) 224 225)))))))
+(defn kb-default-1b [(op : I32)] : I32
+  (if (= op 8) 21 (if (= op 9) 8 (if (= op 10) 10 (if (= op 11) 9 (if (= op 12) 20 (if (= op 13) 8
+  (if (= op 14) 44 (if (= op 15) 224 (if (= op 16) 27 (if (= op 17) 5 (if (= op 18) 25 16))))))))))))
+(defn kb-default-2 [(op : I32)] : I32
+  (if (= op 7) 229 (if (= op 12) 13 (if (= op 13) 15
+  (if (= op 30) 229 (if (= op 31) 228 (if (= op 32) 230 0)))))))
+
+(defn kb-is-default [(op : I32) (k1 : I32) (k2 : I32) (k3 : I32)] : I32
+  (if (!= k1 (kb-default op 1)) 0
+    (if (!= k2 (kb-default op 2)) 0
+      (if (!= k3 (kb-default op 3)) 0 1))))
+
+;; ---- contexts ---------------------------------------------------------------------------------------
+(defn kb-ctx-overlap [(a : I32) (b : I32)] : I32
+  (if (= (mod a 2) 1) (if (= (mod b 2) 1) 1 (kb-ctx-overlap-2 a b)) (kb-ctx-overlap-2 a b)))
+(defn kb-ctx-overlap-2 [(a : I32) (b : I32)] : I32
+  (if (= (mod (/ a 2) 2) 1) (if (= (mod (/ b 2) 2) 1) 1 (kb-ctx-overlap-4 a b)) (kb-ctx-overlap-4 a b)))
+(defn kb-ctx-overlap-4 [(a : I32) (b : I32)] : I32
+  (if (= (mod (/ a 4) 2) 1) (if (= (mod (/ b 4) 2) 1) 1 (kb-ctx-overlap-8 a b)) (kb-ctx-overlap-8 a b)))
+(defn kb-ctx-overlap-8 [(a : I32) (b : I32)] : I32
+  (if (= (mod (/ a 8) 2) 1) (if (= (mod (/ b 8) 2) 1) 1 0) 0))
+
+;; Is `op` live in the player's current context (1/2/4/8)?
+(defn kb-op-active [(op : I32) (ctx : I32)] : I32 (kb-ctx-overlap (kb-op-ctx op) ctx))
+
+;; Player state -> context: airplane 4, helicopter 8, any other vehicle 2, on foot 1.
+(defn kb-ctx-for [(in-vehicle : I32) (is-heli : I32) (is-airplane : I32)] : I32
+  (if (= in-vehicle 0) 1 (if (!= is-airplane 0) 4 (if (!= is-heli 0) 8 2))))
+
+;; ---- conflicts (WoW "this key is already bound to X, steal it?" -- returned as data) -----------------
+;; Binding `key-new` to `op-a`: does `op-b`, currently holding `key-b` in one of its slots, lose it?
+;; Yes when it is a different operation, neither is shareable, their contexts overlap and the codes are equal.
+(defn kb-conflicts [(op-a : I32) (op-b : I32) (key-b : I32) (key-new : I32)] : I32
+  (if (= key-new 0) 0
+    (if (= op-a op-b) 0
+      (if (!= key-b key-new) 0
+        (if (!= (kb-op-shareable op-a) 0) 0
+          (if (!= (kb-op-shareable op-b) 0) 0
+            (kb-ctx-overlap (kb-op-ctx op-a) (kb-op-ctx op-b))))))))

@@ -1,0 +1,196 @@
+;; stdlib/netkit/nk_garage.prn -- SHANKPIT Netkit's flat-mode GARAGE (the CONSTRUCT hub, as the tablet sees it): every Netkit function
+;; is an OBJECT you tap, and the page host only places and paints what this file decides. PARENA, wasm32, no imports.
+;;
+;; Founder real-time 2026-11-24 (EMILY/BACKLOG.md SECTION 639): "ensure CONSTRUCT affordances are available in the SHANKPIT android
+;; build ... all wasm based, all parena mods based." The hub's doctrine (Osaka Garage): every affordance is a physical object; flat
+;; mode on a tablet means you tap the same objects; status lives ON the objects as lights; a cable means a live connection.
+;; Nothing is drawn for a thing that is not real: there is no greyed placeholder object and no cable between things that are not
+;; connected. (What was deliberately NOT ported from the 3D hub, and why: SHANKPIT/docs/NETKIT_NORTHSTAR.md "CONSTRUCT port table".)
+;;
+;; Objects (ids):
+;;   1 scanner bench   -> the device list (Scan)          light: scanning / devices found / nothing found
+;;   2 terminal        -> the SSH view                    light: connecting / live
+;;   3 monitor         -> the VNC view                    light: connecting / live
+;;   4 arcade cabinet  -> BRAWLPIT, inside this page      light: loading / ready / could not load
+;;
+;; PURE SCALAR FUNCTIONS, no linear-memory state at all: the page host passes the facts in (view size, scan state, session states) and
+;; gets a number or a static string address back. That keeps the layout testable on any target and means the garage can never drift
+;; out of step with a table in memory. Coordinates are PERMILLE of the floor (0..1000 on each axis); the host maps them to pixels.
+;;
+;; State codes the host passes in (it owns the sessions; this file only reads their summary):
+;;   session   0 none, 1 connecting, 2 live          (ssh, vnc)
+;;   scan      0 never scanned, 1 scanning, 2 scanned (with the device count passed separately)
+;;   arcade    0 not loaded yet, 1 loading, 2 ready, 3 could not load
+;; View codes: 0 garage, 1 devices, 2 ssh, 3 vnc, 4 arcade.
+
+(defn nk-garage-count [] : I32 4)
+
+;; landscape tablet: one row of four; portrait: a 2 x 2 grid
+(defn nk-garage-cols [(vw : I32) (vh : I32)] : I32 (if (>= vw vh) 4 2))
+(defn nk-garage-rows [(vw : I32) (vh : I32)] : I32 (/ (+ (nk-garage-count) (- (nk-garage-cols vw vh) 1)) (nk-garage-cols vw vh)))
+
+(defn garage-col [(id : I32) (vw : I32) (vh : I32)] : I32 (mod (- id 1) (nk-garage-cols vw vh)))
+(defn garage-row [(id : I32) (vw : I32) (vh : I32)] : I32 (/ (- id 1) (nk-garage-cols vw vh)))
+(defn garage-cw [(vw : I32) (vh : I32)] : I32 (/ 1000 (nk-garage-cols vw vh)))
+(defn garage-ch [(vw : I32) (vh : I32)] : I32 (/ 1000 (nk-garage-rows vw vh)))
+
+;; an object fills 80% of its cell, centred; ids outside 1..4 are not objects (all zero)
+(defn nk-garage-obj-x [(id : I32) (vw : I32) (vh : I32)] : I32
+  (if (and (>= id 1) (<= id (nk-garage-count)))
+      (+ (* (garage-col id vw vh) (garage-cw vw vh)) (/ (garage-cw vw vh) 10))
+      0))
+(defn nk-garage-obj-y [(id : I32) (vw : I32) (vh : I32)] : I32
+  (if (and (>= id 1) (<= id (nk-garage-count)))
+      (+ (* (garage-row id vw vh) (garage-ch vw vh)) (/ (garage-ch vw vh) 10))
+      0))
+(defn nk-garage-obj-w [(id : I32) (vw : I32) (vh : I32)] : I32
+  (if (and (>= id 1) (<= id (nk-garage-count))) (/ (* (garage-cw vw vh) 8) 10) 0))
+(defn nk-garage-obj-h [(id : I32) (vw : I32) (vh : I32)] : I32
+  (if (and (>= id 1) (<= id (nk-garage-count))) (/ (* (garage-ch vw vh) 8) 10) 0))
+
+;; where a cable attaches: the middle of the object
+(defn nk-garage-anchor-x [(id : I32) (vw : I32) (vh : I32)] : I32
+  (+ (nk-garage-obj-x id vw vh) (/ (nk-garage-obj-w id vw vh) 2)))
+(defn nk-garage-anchor-y [(id : I32) (vw : I32) (vh : I32)] : I32
+  (+ (nk-garage-obj-y id vw vh) (/ (nk-garage-obj-h id vw vh) 2)))
+
+;; which object a tap at (px, py) -- permille of the floor -- is on; the object's cell counts (so a tap in the 10% margin between two
+;; objects still picks the nearer one instead of nothing); 0 when the tap is outside the floor
+(defn nk-garage-hit [(px : I32) (py : I32) (vw : I32) (vh : I32)] : I32
+  (if (and (and (>= px 0) (< px 1000)) (and (>= py 0) (< py 1000)))
+      (let [c (/ px (garage-cw vw vh))
+            r (/ py (garage-ch vw vh))
+            cols (nk-garage-cols vw vh)
+            id (+ (* r cols) (+ c 1))]
+        (if (and (< c cols) (<= id (nk-garage-count))) id 0))
+      0))
+
+;; ---- lights ------------------------------------------------------------------------------------------------------------------------
+;; colour codes: 0 off, 1 green, 2 amber, 3 red. a, b, c are the object's own facts:
+;;   bench:    a = scan state, b = device count
+;;   terminal: a = ssh session      monitor: a = vnc session      cabinet: a = arcade state
+(defn nk-garage-light [(id : I32) (a : I32) (b : I32) (c : I32)] : I32
+  (case id
+    1 (cond (= a 1) 2
+            (and (= a 2) (> b 0)) 1
+            (= a 2) 3
+            :else 0)
+    2 (cond (= a 2) 1 (= a 1) 2 :else 0)
+    3 (cond (= a 2) 1 (= a 1) 2 :else 0)
+    4 (cond (= a 2) 1 (= a 1) 2 (= a 3) 3 :else 0)
+    0))
+
+(defn nk-garage-light-name-addr [(l : I32)] : I32
+  (case l
+    1 (str-addr "green")
+    2 (str-addr "amber")
+    3 (str-addr "red")
+    (str-addr "off")))
+
+;; ---- words on the objects --------------------------------------------------------------------------------------------------------
+(defn nk-garage-label-addr [(id : I32)] : I32
+  (case id
+    1 (str-addr "Scanner bench")
+    2 (str-addr "Terminal")
+    3 (str-addr "Monitor")
+    4 (str-addr "Arcade cabinet")
+    (str-addr "")))
+
+;; what the object is for (always shown)
+(defn nk-garage-sub-addr [(id : I32)] : I32
+  (case id
+    1 (str-addr "Find devices on this network")
+    2 (str-addr "SSH to a device")
+    3 (str-addr "See a device's screen")
+    4 (str-addr "Play BRAWLPIT")
+    (str-addr "")))
+
+;; what the light means right now
+(defn nk-garage-status-addr [(id : I32) (light : I32)] : I32
+  (case id
+    1 (case light
+        1 (str-addr "Devices found")
+        2 (str-addr "Scanning")
+        3 (str-addr "Nothing found")
+        (str-addr "Not scanned yet"))
+    2 (case light
+        1 (str-addr "Connected")
+        2 (str-addr "Connecting")
+        (str-addr "No session"))
+    3 (case light
+        1 (str-addr "Connected")
+        2 (str-addr "Connecting")
+        (str-addr "No session"))
+    4 (case light
+        1 (str-addr "Ready")
+        2 (str-addr "Loading")
+        3 (str-addr "Could not load")
+        (str-addr "Tap to load"))
+    (str-addr "")))
+
+;; ---- cables: a cable exists only while the connection it stands for is live ------------------------------------------------------
+;; cable 0: scanner bench -- terminal (a live SSH session)     cable 1: scanner bench -- monitor (a live VNC session)
+(defn nk-garage-cable-count [] : I32 2)
+(defn nk-garage-cable-from [(i : I32)] : I32 1)
+(defn nk-garage-cable-to [(i : I32)] : I32 (if (= i 0) 2 (if (= i 1) 3 0)))
+(defn nk-garage-cable-live [(i : I32) (ssh : I32) (vnc : I32)] : I32
+  (cond (= i 0) (if (= ssh 2) 1 0)
+        (= i 1) (if (= vnc 2) 1 0)
+        :else 0))
+
+;; ---- taps ------------------------------------------------------------------------------------------------------------------------------
+;; The view to go to for a tap on object `id`; ssh/vnc are the session states. A terminal or monitor with no live session has nothing
+;; to show, so it sends you to the device list, where a session is started, with a hint (nk-garage-hint-addr).
+;; 0 = nothing; 1 devices; 2 ssh; 3 vnc; 4 arcade; 5 devices (hint: start an SSH session there); 6 devices (hint: start a screen session)
+(defn nk-garage-action [(id : I32) (ssh : I32) (vnc : I32)] : I32
+  (case id
+    1 1
+    2 (if (= ssh 0) 5 2)
+    3 (if (= vnc 0) 6 3)
+    4 4
+    0))
+
+(defn nk-garage-action-view [(action : I32)] : I32
+  (case action
+    1 1
+    2 2
+    3 3
+    4 4
+    5 1
+    6 1
+    0))
+
+(defn nk-garage-hint-addr [(action : I32)] : I32
+  (case action
+    5 (str-addr "Pick a device and tap SSH to open a terminal.")
+    6 (str-addr "Pick a device and tap Screen to watch its desktop.")
+    (str-addr "")))
+
+;; the Android back button: where it goes from view `v`. -1 = leave the app (the garage is the top). From a live ssh / vnc view the
+;; host closes the session first (that is the existing behaviour); arcade and devices go back to the garage.
+(defn nk-garage-back [(v : I32)] : I32
+  (case v
+    0 -1
+    1 0
+    4 0
+    -1))
+
+;; ---- BRAWLPIT's touch controls --------------------------------------------------------------------------------------------------
+;; The game reads keyboard key codes (stdlib/brawlpit/bp_input.prn): A/D move, W/S up/down (menus too), Space jump (also confirms),
+;; J attack (also confirms), Shift shield, K special, Enter confirm, Esc back, P pause. Button codes -> key codes:
+;;   1 left 2 right 3 up 4 down 5 jump 6 attack 7 shield 8 special 9 pause 10 confirm 11 back
+(defn nk-garage-touch-key [(btn : I32)] : I32
+  (case btn
+    1 65
+    2 68
+    3 87
+    4 83
+    5 32
+    6 74
+    7 16
+    8 75
+    9 80
+    10 13
+    11 27
+    0))
+(defn nk-garage-touch-count [] : I32 11)

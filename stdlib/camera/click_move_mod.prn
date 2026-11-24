@@ -1,0 +1,109 @@
+;; stdlib/camera/click_move_mod.prn -- WoW-style click-to-move decisions, shared by REDGARDEN and SHANKPIT.
+;; Founder direction, BACKLOG SECTION 636 (UNIFY-2/3): left-click on the ground sets a destination; WASD
+;; cancels; steering is CLIENT-SIDE and only feeds the normal movement input, so the server stays authoritative
+;; and the wire protocol is unchanged.
+;;
+;; The host owns the ray-cast (world -> ground hit), the rotation of the world delta into the camera's frame and
+;; the actual input injection; this module decides: accept the click?  arrived?  cancel?  how hard to push?
+;; All I32 fixed point:  *-milli world units x1000   *-permille fractions x1000 (1000 = full stick)   *-ms.
+;;
+;; Per-frame recipe:
+;;   on click: if click-move-accept(...) -> dest = hit point, stuck = 0
+;;   each frame with a dest:
+;;     if click-move-should-cancel(enabled, fp, wasd, stuck) or click-move-arrived(dx, dz, radius) -> drop dest
+;;     else   fwd = click-move-steer-fwd-permille(lf, lr),  right = click-move-steer-right-permille(lf, lr)
+;;            where (lf, lr) = the world delta to dest rotated into the camera yaw frame, forward / right, milli
+;;            stuck = click-move-stuck-update(stuck, dt, moved_milli_this_frame)
+(module camera/click-move-mod)
+(export click-move-arrive-radius-milli click-move-slow-radius-milli click-move-min-push-permille
+        click-move-stuck-timeout-ms click-move-ahead-lookahead-milli click-move-min-normal-y-permille
+        click-move-accept click-move-arrived click-move-should-cancel click-move-stuck-update
+        click-move-isqrt click-move-steer-fwd-permille click-move-steer-right-permille
+        click-move-steer-scale-permille click-move-ahead-active click-move-ahead-milli)
+
+(defn click-move-arrive-radius-milli [] : I32 400)
+(defn click-move-slow-radius-milli [] : I32 1500)
+(defn click-move-min-push-permille [] : I32 350)
+(defn click-move-stuck-timeout-ms [] : I32 1500)
+(defn click-move-ahead-lookahead-milli [] : I32 3000)
+;; Ground only: a hit whose surface normal.y is under 0.3 is a wall or a cliff face, not somewhere to walk to.
+(defn click-move-min-normal-y-permille [] : I32 300)
+
+;; Does this left click set a destination? Only when the option is on, we are zoomed out (first person keeps the
+;; mouse captured for aiming), the click was not on a UI element, the ray hit something, and it is walkable.
+(defn click-move-accept [(enabled : I32) (first-person : I32) (ui-captured : I32)
+                         (hit-valid : I32) (normal-y-permille : I32)] : I32
+  (if (and (> enabled 0) (and (= first-person 0) (and (= ui-captured 0) (> hit-valid 0))))
+    (if (>= normal-y-permille (click-move-min-normal-y-permille)) 1 0)
+    0))
+
+;; Inside the arrive radius? (dx, dz) = dest - self, milli. Chebyshev pre-reject keeps the squares in range.
+(defn click-move-arrived [(dx : I32) (dz : I32) (radius : I32)] : I32
+  (let [r (cam-ease-clamp 0 30000 radius)
+        ax (cam-ease-abs dx)
+        az (cam-ease-abs dz)]
+    (if (or (> ax r) (> az r))
+      0
+      (if (<= (+ (* ax ax) (* az az)) (* r r)) 1 0))))
+
+;; Cancel the destination? Any of: option switched off, entered first person, a WASD key down, or stuck (no
+;; progress) for the timeout -- walking into a wall must not push forever.
+(defn click-move-should-cancel [(enabled : I32) (first-person : I32) (wasd : I32) (stuck-ms : I32)] : I32
+  (if (or (= enabled 0) (or (> first-person 0) (or (> wasd 0) (>= stuck-ms (click-move-stuck-timeout-ms))))) 1 0))
+
+;; Stuck timer: grows while the player covers under 0.2 units/s toward the goal, resets as soon as it moves.
+;; dt <= 0 leaves it alone. Capped so it cannot overflow.
+(defn click-move-stuck-update [(stuck-ms : I32) (dt-ms : I32) (moved-milli : I32)] : I32
+  (if (<= dt-ms 0)
+    stuck-ms
+    (if (< (/ (* (cam-ease-clamp 0 100000 moved-milli) 1000) dt-ms) 200)
+      (cam-ease-clamp 0 60000 (+ stuck-ms dt-ms))
+      0)))
+
+;; Integer square root (floor) by bisection, for 0 <= n < 2^31.
+(defn click-move-isqrt [(n : I32)] : I32
+  (if (<= n 0)
+    0
+    (loop [lo 0 hi 46341]
+      (if (<= (- hi lo) 1)
+        lo
+        (let [mid (/ (+ lo hi) 2)]
+          (if (<= (* mid mid) n) (recur mid hi) (recur lo mid)))))))
+
+;; Push strength 0..1000 from distance to goal: full stick beyond the slow radius, easing down linearly to
+;; min-push at the arrive radius so the hero decelerates instead of orbiting the point; 0 once arrived.
+(defn click-move-steer-scale-permille [(dist-milli : I32)] : I32
+  (let [arr (click-move-arrive-radius-milli)
+        slow (click-move-slow-radius-milli)
+        mn (click-move-min-push-permille)]
+    (if (<= dist-milli arr)
+      0
+      (if (>= dist-milli slow)
+        1000
+        (+ mn (/ (* (- 1000 mn) (- dist-milli arr)) (- slow arr)))))))
+
+;; Unit direction of the delta, per axis, permille, times the push strength. lf = forward component, lr = right
+;; component of the camera-frame delta, milli. Both calls share one definition so they stay orthogonal.
+(defn click-move-steer-dir [(lf : I32) (lr : I32) (want-fwd : I32)] : I32
+  (let [m (if (> (cam-ease-abs lf) (cam-ease-abs lr)) (cam-ease-abs lf) (cam-ease-abs lr))]
+    (if (<= m 0)
+      0
+      (let [a (/ (* (cam-ease-clamp -2000000 2000000 lf) 1000) m)
+            b (/ (* (cam-ease-clamp -2000000 2000000 lr) 1000) m)
+            len (click-move-isqrt (+ (* a a) (* b b)))
+            dist (/ (* m len) 1000)
+            push (click-move-steer-scale-permille dist)
+            comp (if (> want-fwd 0) a b)]
+        (/ (* (/ (* comp 1000) len) push) 1000)))))
+
+(defn click-move-steer-fwd-permille [(lf : I32) (lr : I32)] : I32 (click-move-steer-dir lf lr 1))
+(defn click-move-steer-right-permille [(lf : I32) (lr : I32)] : I32 (click-move-steer-dir lf lr 0))
+
+;; REDGARDEN first person (ASSUMPTION, flagged in the docs): WASD + mouselook issue move targets AHEAD of the
+;; hero. The host rotates the pressed keys + yaw into a world-space direction (permille per axis); active when
+;; the stick magnitude exceeds 0.1, target = hero + dir * lookahead.
+(defn click-move-ahead-active [(dir-x-permille : I32) (dir-z-permille : I32)] : I32
+  (if (> (+ (* dir-x-permille dir-x-permille) (* dir-z-permille dir-z-permille)) 10000) 1 0))
+
+(defn click-move-ahead-milli [(hero-milli : I32) (dir-permille : I32)] : I32
+  (+ hero-milli (/ (* dir-permille (click-move-ahead-lookahead-milli)) 1000)))

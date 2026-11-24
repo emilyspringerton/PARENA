@@ -1,0 +1,75 @@
+;; stdlib/camera/zoom_cam_mod.prn -- World-of-Warcraft style mouse-wheel camera zoom, shared by REDGARDEN and
+;; SHANKPIT. Founder direction, BACKLOG SECTION 636 (UNIFY-0..3, "ALL PARENA FIRST, MODS FIRST"): the wheel
+;; zooms the camera arm; zoomed all the way in IS first person, zooming out is third person / orbit.
+;;
+;; The decisions live here; host C only reads the SDL wheel, owns the floats, matrices and the render.
+;; All I32 fixed point (the mod ABI takes no F32):
+;;   *-milli  world units x 1000 (arm length: camera distance from the pivot behind the head)
+;;   *-ms     milliseconds       *-permille  fractions x 1000
+;;   clicks   SDL wheel.y notches, POSITIVE = scroll up = zoom IN (host negates when SDL reports a flipped wheel)
+;;
+;; The per-frame recipe for a host:
+;;   target = zoom-cam-wheel-target-milli(target, wheel_y, 0, min, max)       ;; on a wheel event
+;;   arm    = zoom-cam-ease-arm-milli(arm, target, dt_ms, zoom-cam-tau-ms())  ;; every frame
+;;   fp     = zoom-cam-is-first-person(arm, fp)                               ;; every frame, hysteresis
+;;   if fp: hide body, mouselook always on, camera at the eye.  else: orbit at distance `arm`.
+(module camera/zoom-cam-mod)
+(export zoom-cam-tau-ms zoom-cam-fp-enter-milli zoom-cam-fp-exit-milli zoom-cam-step-permille
+        zoom-cam-snap-milli zoom-cam-out-floor-milli
+        zoom-cam-wheel-one zoom-cam-wheel-target-milli zoom-cam-ease-arm-milli zoom-cam-is-first-person)
+
+;; Ease time constant of the displayed arm, ms (about 0.4 s to settle ~95%).
+(defn zoom-cam-tau-ms [] : I32 140)
+;; Arm below this enters first person; at or above the exit value leaves it. 0.6 / 0.8 units: a 0.2 unit
+;; dead band so an arm easing across the line cannot flicker between the two views.
+(defn zoom-cam-fp-enter-milli [] : I32 600)
+(defn zoom-cam-fp-exit-milli [] : I32 800)
+;; Default wheel step, permille per notch (1150 = each notch scales the arm by 1.15x, WoW's geometric feel).
+(defn zoom-cam-step-permille [] : I32 1150)
+;; Zooming IN past this arm snaps the TARGET to the minimum (first person) -- there is no useful arm between
+;; "behind the head" and "in it".  Zooming OUT of a target below it jumps to the floor, clear of the exit line.
+(defn zoom-cam-snap-milli [] : I32 1500)
+(defn zoom-cam-out-floor-milli [] : I32 2000)
+
+;; One wheel notch. dir > 0 zoom in, dir < 0 zoom out, 0 no change. Result clamped to [lo, hi].
+(defn zoom-cam-wheel-one [(t : I32) (dir : I32) (step : I32) (lo : I32) (hi : I32)] : I32
+  (if (> dir 0)
+    (let [v (/ (* t 1000) step)]
+      (cam-ease-clamp lo hi (if (< v (zoom-cam-snap-milli)) lo v)))
+    (if (< dir 0)
+      (let [v (/ (* t step) 1000)]
+        (cam-ease-clamp lo hi (if (< v (zoom-cam-out-floor-milli)) (zoom-cam-out-floor-milli) v)))
+      t)))
+
+;; Apply `clicks` wheel notches to the TARGET arm. step-permille <= 0 selects the default; it is clamped to
+;; 1010..2000. clicks is clamped to +-8 per call (a runaway accumulated wheel cannot spin the loop).
+;; min-milli 0 means "first person reachable"; a host that wants no first person passes e.g. 4000.
+(defn zoom-cam-wheel-target-milli [(target-milli : I32) (clicks : I32) (step-permille : I32)
+                                   (min-milli : I32) (max-milli : I32)] : I32
+  (let [lo   (if (< min-milli 0) 0 min-milli)
+        hi   (if (< max-milli lo) lo max-milli)
+        step (cam-ease-clamp 1010 2000 (if (<= step-permille 0) (zoom-cam-step-permille) step-permille))
+        n    (cam-ease-clamp -8 8 clicks)]
+    (loop [t (cam-ease-clamp lo hi target-milli) k n]
+      (if (= k 0)
+        t
+        (if (> k 0)
+          (recur (zoom-cam-wheel-one t 1 step lo hi) (- k 1))
+          (recur (zoom-cam-wheel-one t -1 step lo hi) (+ k 1)))))))
+
+;; One frame of the displayed arm easing toward the target. Frame-rate independent (cam-ease-step is the exact
+;; exponential); dt <= 0 leaves the arm alone; within 2 milli it snaps (so first person is actually reached).
+;; Result is never negative.
+(defn zoom-cam-ease-arm-milli [(arm-milli : I32) (target-milli : I32) (dt-ms : I32) (tau-ms : I32)] : I32
+  (if (<= dt-ms 0)
+    arm-milli
+    (let [next (cam-ease-step arm-milli target-milli dt-ms tau-ms)]
+      (if (< (cam-ease-abs (- target-milli next)) 3)
+        (if (< target-milli 0) 0 target-milli)
+        (if (< next 0) 0 next)))))
+
+;; First-person flag with hysteresis: enter below 600, leave at 800 or more. `was` is last frame's flag.
+(defn zoom-cam-is-first-person [(arm-milli : I32) (was : I32)] : I32
+  (if (> was 0)
+    (if (< arm-milli (zoom-cam-fp-exit-milli)) 1 0)
+    (if (< arm-milli (zoom-cam-fp-enter-milli)) 1 0)))

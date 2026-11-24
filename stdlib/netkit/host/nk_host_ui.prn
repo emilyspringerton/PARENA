@@ -5,16 +5,24 @@
 
 ;; ---- views -----------------------------------------------------------------------------------------------------------------------------------------
 (defn show-view! [(name : String)] : Unit
-  (do (set-hidden! "view-devices" (!= name "devices"))
+  (do (set-hidden! "view-garage" (!= name "garage"))
+      (set-hidden! "view-devices" (!= name "devices"))
       (set-hidden! "view-ssh" (!= name "ssh"))
       (set-hidden! "view-vnc" (!= name "vnc"))
-      (dotimes [i 3]
-        (let [n (js/aget (js/array "devices" "ssh" "vnc") i)
+      (set-hidden! "view-arcade" (!= name "arcade"))
+      (dotimes [i 5]
+        (let [n (view-name i)
               b (el (str "tab-" n))]
           (when (not (js/null? b))
             (js/call (js/get b "classList") "toggle" "on" (= n name)))))
+      ;; the hint a garage tap leaves on the device list is for that one visit
+      (when (!= name "devices") (set-hidden! "devices-hint" true))
+      (if (= name "arcade") (arcade-enter!) (arcade-leave!))
+      (when (= name "garage") (gar-refresh!))
       (when (= name "ssh") (js/call (el "term-ime") "focus"))
       (when (= name "vnc") (vnc-fit!))))
+
+(defn on-arcade-exit [(e : Any)] : Unit (show-view! "garage"))
 
 (defn on-tab-click [(e : Any)] : Unit
   (let [b (js/call (js/get e "target") "closest" "button")]
@@ -157,14 +165,23 @@
       (= t "name") (on-name! ev)
       :else unit)))
 
-;; Android's back button: close what is on top, else let the app finish
+;; Android's back button: close what is on top, else go up one level (devices and the arcade return to the garage -- nk_garage_back decides),
+;; else let the app finish (the garage is the top)
+(defn cur-view [] : I32
+  (cond (not (js/get (el "view-garage") "hidden")) 0
+        (not (js/get (el "view-devices") "hidden")) 1
+        (not (js/get (el "view-ssh") "hidden")) 2
+        (not (js/get (el "view-vnc") "hidden")) 3
+        :else 4))
+
 (defn nk-back [] : Bool
   (cond
     (not (js/get (el "dlg-hostkey") "hidden")) (do (on-hk-cancel null) true)
     (not (js/get (el "dlg-connect") "hidden")) (do (set-hidden! "dlg-connect" true) true)
     (and (not (js/null? ssh)) (not (js/get (el "view-ssh") "hidden"))) (do (ssh-close!) true)
     (and (not (js/null? vnc)) (not (js/get (el "view-vnc") "hidden"))) (do (vnc-close!) true)
-    :else false))
+    :else (let [t (js/call scan-x "nk_garage_back" (cur-view))]
+            (if (< t 0) false (do (show-view! (view-name t)) true)))))
 
 ;; the network pill: the range we would scan, or the plain fact that there is none
 (defn net-label [(c : String)] : String (if (= c "") "No network" c))
@@ -185,6 +202,13 @@
 (defn wire-ui! [] : Unit
   (do
     (on! "tabs" "click" (callback on-tab-click))
+    (on! "garage-floor" "click" (callback on-garage-click))
+    (on! "btn-arcade-exit" "click" (callback on-arcade-exit))
+    (on! "arc-pad" "pointerdown" (callback arc-pad-down))
+    (on! "arc-pad" "pointerup" (callback arc-pad-up))
+    (on! "arc-pad" "pointercancel" (callback arc-pad-up))
+    (on! "arc-pad" "lostpointercapture" (callback arc-pad-up))
+    (on! "arc-pad" "contextmenu" (callback arc-no-menu))
     (on! "btn-scan" "click" (callback on-scan-click))
     (on! "device-list" "click" (callback on-device-click))
     (on! "saved-list" "click" (callback on-saved-click))
@@ -215,6 +239,8 @@
     (on! "vnc-wrap" "pointerup" (callback on-vnc-up))
     (on! "vnc-wrap" "pointercancel" (callback on-vnc-up))
     (on! "vnc-wrap" "wheel" (callback on-vnc-wheel))
+    (js/call (win) "addEventListener" "resize" (callback on-resize))
+    (js/call (win) "addEventListener" "orientationchange" (callback on-resize))
     (js/call (win) "addEventListener" "keydown" (callback on-keydown))
     (js/call (doc) "addEventListener" "paste" (callback on-paste-event))))
 
@@ -233,12 +259,13 @@
     (wire-ui!)
     (render-saved!)
     (render-devices!)
-    (show-view! "devices")
+    (show-view! "garage")
     (set! ready true)
     (status! (net-label (pick-cidr (local-info))))
     (js/call (win) "requestAnimationFrame" (callback term-frame))
     (js/call (win) "requestAnimationFrame" (callback vnc-frame))
     (js/call-fn (js/global "setInterval") (callback blink!) 530)
+    (js/call-fn (js/global "setInterval") (callback gar-tick) 500)
     (when (have-native?) (start-scan!))))
 
 (defn boot [] : Unit
