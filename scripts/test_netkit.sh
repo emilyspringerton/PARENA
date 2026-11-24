@@ -2,9 +2,11 @@
 # Builds netkit.wasm from stdlib/netkit/*.prn and runs every netkit test against the built artifact:
 #   - DES          vs an independent implementation (pycryptodome) + the NIST vector
 #   - RFB (VNC)    a scripted fake server, every scenario fed whole / byte-by-byte / in random chunks
+#   - SSH          a PARENA SSH client vs asyncssh, and vs the real OpenSSH sshd (unprivileged, libnss_wrapper)
 #   - interop      a REAL VNC server (libvncserver, TightVNC's lineage; tests/netkit/vncd.c): real auth, real encoders,
 #                  final screen compared byte for byte. Skipped (loudly) if libvncserver headers are not installed.
-# Needs: the LLVM toolchain (see build_netkit_wasm.sh), python3 with `wasmtime` and `pycryptodome`.
+# Needs: the LLVM toolchain (see build_netkit_wasm.sh), python3 with wasmtime, pycryptodome, cryptography, asyncssh;
+#        openssh-server + libnss-wrapper for the real-OpenSSH leg (skipped, loudly, without them).
 #   VNC_ROOT=<dir>   an extracted libvncserver1+libvncserver-dev (dpkg -x) when it is not installed system-wide
 set -euo pipefail
 cd "$(dirname "$0")/.."
