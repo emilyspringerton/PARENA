@@ -1,0 +1,148 @@
+;; stdlib/netkit/host/nk_host_garage.prn -- the garage (flat-mode CONSTRUCT hub) as the page paints it. Every decision is nk_garage.prn's (wasm):
+;; where each object stands, what colour its light is, what words it carries, which cables exist, where a tap goes. This file only creates
+;; the DOM objects once, positions them from the numbers the wasm returns, paints the cables on a canvas, and forwards taps.
+;;
+;; The objects are real <button>s (real hit targets, focusable, announced by a screen reader); the floor is a 1000 x 1000 permille space.
+;; A light is a lamp on the object with its words beside it; a cable is drawn ONLY while the connection it stands for is live.
+
+(def gar-built false)
+(def gar-vw 1280)
+(def gar-vh 800)
+
+;; session summaries the wasm reads: 0 none, 1 connecting, 2 live
+(defn gar-ssh-state [] : I32
+  (cond (js/null? ssh) 0
+        (js/get ssh "up") 2
+        :else 1))
+(defn gar-vnc-state [] : I32
+  (cond (js/null? vnc) 0
+        (js/get vnc "up") 2
+        :else 1))
+(defn gar-scan-state [] : I32
+  (cond scan-active 1
+        (> (js/call scan-x "nk_scan_done") 0) 2
+        :else 0))
+
+;; the three facts an object's light is computed from (see nk-garage-light)
+(defn gar-fact-a [(id : I32)] : I32
+  (case id
+    1 (gar-scan-state)
+    2 (gar-ssh-state)
+    3 (gar-vnc-state)
+    4 arc-state
+    0))
+(defn gar-fact-b [(id : I32)] : I32 (if (= id 1) (js/call scan-x "nk_dev_count") 0))
+
+(defn gar-word [(fn : String) (a : I32) (b : I32)] : String
+  (cstr scan-u8 (js/call-fn (js/aget scan-x fn) a b)))
+(defn gar-word1 [(fn : String) (a : I32)] : String
+  (cstr scan-u8 (js/call-fn (js/aget scan-x fn) a)))
+
+(defn gar-pct [(v : I32)] : String (str (/ v 10.0) "%"))
+
+;; ---- build once --------------------------------------------------------------------------------------------------------------------------
+(defn gar-object-html [(id : I32)] : String
+  (str "<button class=\"obj obj-" id "\" data-id=\"" id "\" id=\"obj-" id "\">"
+       "<span class=\"art\" aria-hidden=\"true\"></span>"
+       "<span class=\"obj-name\">" (esc (gar-word1 "nk_garage_label_addr" id)) "</span>"
+       "<span class=\"obj-sub\">" (esc (gar-word1 "nk_garage_sub_addr" id)) "</span>"
+       "<span class=\"obj-status\"><i class=\"lamp l0\" id=\"lamp-" id "\"></i><span id=\"status-" id "\"></span></span>"
+       "</button>"))
+
+(defn gar-objects-html [(n : I32)] : String
+  (loop [i 1 acc ""]
+    (if (<= i n) (recur (+ i 1) (str acc (gar-object-html i))) acc)))
+
+(defn gar-build! [] : Unit
+  (when (not gar-built)
+    (let [n (js/call scan-x "nk_garage_count")]
+      (do (set! gar-built true)
+          (set-html! "garage-objects" (gar-objects-html n))))))
+
+;; ---- place, light, cable -----------------------------------------------------------------------------------------------------------------------
+(defn gar-place! [(id : I32)] : Unit
+  (let [b (el (str "obj-" id))]
+    (when (not (js/null? b))
+      (let [st (js/get b "style")]
+        (do (js/set! st "left" (gar-pct (js/call scan-x "nk_garage_obj_x" id gar-vw gar-vh)))
+            (js/set! st "top" (gar-pct (js/call scan-x "nk_garage_obj_y" id gar-vw gar-vh)))
+            (js/set! st "width" (gar-pct (js/call scan-x "nk_garage_obj_w" id gar-vw gar-vh)))
+            (js/set! st "height" (gar-pct (js/call scan-x "nk_garage_obj_h" id gar-vw gar-vh))))))))
+
+(defn gar-light! [(id : I32)] : Unit
+  (let [l (js/call scan-x "nk_garage_light" id (gar-fact-a id) (gar-fact-b id) 0)
+        lamp (el (str "lamp-" id))]
+    (do (when (not (js/null? lamp)) (js/set! lamp "className" (str "lamp l" l)))
+        (set-text! (str "status-" id)
+                   (if (and (= id 1) (= l 1))
+                       (str (gar-word "nk_garage_status_addr" id l) ": " (gar-fact-b 1))
+                       (gar-word "nk_garage_status_addr" id l)))
+        (let [b (el (str "obj-" id))]
+          (when (not (js/null? b))
+            (js/call b "setAttribute" "aria-label"
+                     (str (gar-word1 "nk_garage_label_addr" id) ". " (gar-word "nk_garage_status_addr" id l))))))))
+
+(defn gar-cable! [(g : Any) (i : I32) (w : F64) (h : F64)] : Unit
+  (when (= (js/call scan-x "nk_garage_cable_live" i (gar-ssh-state) (gar-vnc-state)) 1)
+    (let [a (js/call scan-x "nk_garage_cable_from" i)
+          b (js/call scan-x "nk_garage_cable_to" i)
+          ax (* (/ (js/call scan-x "nk_garage_anchor_x" a gar-vw gar-vh) 1000.0) w)
+          ay (* (/ (js/call scan-x "nk_garage_anchor_y" a gar-vw gar-vh) 1000.0) h)
+          bx (* (/ (js/call scan-x "nk_garage_anchor_x" b gar-vw gar-vh) 1000.0) w)
+          by (* (/ (js/call scan-x "nk_garage_anchor_y" b gar-vw gar-vh) 1000.0) h)]
+      (do (js/call g "beginPath")
+          (js/call g "moveTo" ax ay)
+          ;; a cable hangs: a quadratic curve dipping below the straight line
+          (js/call g "quadraticCurveTo" (/ (+ ax bx) 2.0) (+ (/ (+ ay by) 2.0) (* h 0.12)) bx by)
+          (js/call g "stroke")))))
+
+(defn gar-cables! [] : Unit
+  (let [floor (el "garage-floor")
+        c (el "garage-cables")]
+    (when (and (not (js/null? floor)) (not (js/null? c)))
+      (let [w (js/get floor "clientWidth") h (js/get floor "clientHeight")]
+        (do (when (!= (js/get c "width") w) (js/set! c "width" w))
+            (when (!= (js/get c "height") h) (js/set! c "height" h))
+            (let [g (js/call c "getContext" "2d")]
+              (do (js/call g "clearRect" 0 0 w h)
+                  (js/set! g "strokeStyle" "#5fd38d")
+                  (js/set! g "lineWidth" 4)
+                  (js/set! g "lineCap" "round")
+                  (dotimes [i (js/call scan-x "nk_garage_cable_count")] (gar-cable! g i w h)))))))))
+
+;; the whole garage, from the wasm's numbers; cheap enough to run on a timer while the garage is up
+(defn gar-refresh! [] : Unit
+  (when (not (js/null? scan-x))
+    (do (set! gar-vw (js/get (win) "innerWidth"))
+        (set! gar-vh (js/get (win) "innerHeight"))
+        (gar-build!)
+        (dotimes [i (js/call scan-x "nk_garage_count")]
+          (do (gar-place! (+ i 1)) (gar-light! (+ i 1))))
+        (gar-cables!))))
+
+(defn gar-visible? [] : Bool (not (js/get (el "view-garage") "hidden")))
+(defn gar-tick [] : Unit (when (gar-visible?) (gar-refresh!)))
+(defn on-resize [(e : Any)] : Unit (gar-tick))
+
+;; ---- taps ------------------------------------------------------------------------------------------------------------------------------------
+(defn view-name [(i : I32)] : String (js/aget (js/array "garage" "devices" "ssh" "vnc" "arcade") i))
+
+(defn garage-act! [(id : I32)] : Unit
+  (let [action (js/call scan-x "nk_garage_action" id (gar-ssh-state) (gar-vnc-state))
+        v (js/call scan-x "nk_garage_action_view" action)]
+    (when (> action 0)
+      (do (show-view! (view-name v))
+          (let [hint (gar-word1 "nk_garage_hint_addr" action)]
+            (set-text! "devices-hint" hint)
+            (set-hidden! "devices-hint" (= hint "")))))))
+
+(defn on-garage-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-id]")]
+    (if (js/null? b)
+        ;; a tap on the floor between objects: the wasm decides which object's cell it is in
+        (let [r (js/call (el "garage-floor") "getBoundingClientRect")
+              px (math/floor (/ (* (- (js/get e "clientX") (js/get r "left")) 1000.0) (js/get r "width")))
+              py (math/floor (/ (* (- (js/get e "clientY") (js/get r "top")) 1000.0) (js/get r "height")))
+              id (js/call scan-x "nk_garage_hit" px py gar-vw gar-vh)]
+          (when (> id 0) (garage-act! id)))
+        (garage-act! (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "id") 10)))))

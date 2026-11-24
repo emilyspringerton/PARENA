@@ -1,0 +1,14 @@
+;; stdlib/actionbar/example_plugin_mod.prn -- the smallest possible action-bar PLUGIN, proving the contract.
+;;
+;; CONTRACT: a plugin exports one provider  (provider-name bank:I32 slot:I32) : I32  returning a packed action
+;; (kind*65536 + id, see action_bar_rules.prn) or 0 for "nothing here". Provider names are snake_case-lowered C symbols,
+;; by convention  ab_plugin_<modname>_action. The plugin does NOT see other plugins, binds or defaults -- the action-bar
+;; mod resolves conflicts. Kinds 1-3 are for arsenal/ability/item; a plugin's own actions use kind 4 (mod) with its own id space.
+;; Ids are the plugin's to define; the host maps (kind=4,id) to an icon/label/handler by table.
+;;
+;; This example contributes ONE action: Shift+1 (bank 2, slot 1) = mod action id 1.
+(module actionbar/example-plugin-mod)
+(export ab-plugin-example-action)
+
+(defn ab-plugin-example-action [(bank : I32) (slot : I32)] : I32
+  (if (= bank 2) (if (= slot 1) (+ (* 4 65536) 1) 0) 0))

@@ -1,0 +1,261 @@
+;; stdlib/netkit/host/nk_host_arcade.prn -- the arcade cabinet's host: BRAWLPIT (WOTAN's WebAssembly fighter) running INSIDE the Netkit page.
+;;
+;; BRAWLPIT's web build (brawlpit.wasm, from stdlib/brawlpit/bp_*.prn, scripts/build_brawlpit_wasm.sh) imports NOTHING and has no allocator, so
+;; it is instantiated here with an empty import object -- the same zero-import rule every Netkit module obeys, and nothing it needs is blocked
+;; by the page's CSP (script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'). This is a port of stdlib/brawlpit/bp_host.prn's duties 1-3 and
+;; the two art loads, with names prefixed arc-/bp- because every host file is concatenated into one namespace (build_netkit_web.sh).
+;; DELIBERATELY NOT PORTED from bp_host.prn: the Hat Store flow (IDUNA fetches and emoji rasterization -- there is no IDUNA session in the
+;; Android shell and connect-src 'self' forbids it; the game simply runs without a hat) and fullscreen. The Gamepad API is polled only if the
+;; WebView has it (bp_pad); that path is untested on a device.
+;;
+;; The game is loaded lazily on first entry, drawn only while the arcade view is up (the frame loop stops when you leave), and every held key is
+;; released on leaving, on blur and on visibilitychange, so nothing stays "pressed". The decisions (which touch button is which key, where Back
+;; goes) are the wasm's: nk_garage_touch_key / nk_garage_back.
+
+;; arcade state, as nk_garage.prn defines it: 0 not loaded, 1 loading, 2 ready, 3 could not load
+(def arc-state 0)
+(def arc-x null)            ; BRAWLPIT's exports
+(def arc-mem null)          ; its memory
+(def arc-canvas null)
+(def arc-ctx null)
+(def arc-img null)          ; ImageData over the wasm framebuffer, no copy
+(def arc-run false)         ; the arcade view is up
+(def arc-looping false)     ; a requestAnimationFrame is pending
+(def arc-held null)         ; pointerId -> key code currently held by that finger
+(def arc-listening false)
+
+(defn arc-say! [(text : Any)] : Unit
+  (do (set-text! "arcade-msg" text)
+      (set-hidden! "arcade-msg" (= text ""))))
+
+;; ---- load ---------------------------------------------------------------------------------------------------------------------------------
+(defn arc-on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "brawlpit.wasm: HTTP " (js/get r "status")))))
+
+(defn arc-on-bytes [(bytes : Any)] : Any
+  (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj)))
+
+(defn arc-fail! [(err : Any)] : Unit
+  (do (set! arc-state 3)
+      (arc-say! (str "BRAWLPIT could not load: " err))
+      (js/call (js/get (js/global "console") "error") "call" (js/global "console") err)))
+
+(defn arcade-load! [] : Unit
+  (do (set! arc-state 1)
+      (arc-say! "Loading BRAWLPIT...")
+      (set! arc-held (js/obj))
+      (set! arc-canvas (el "bp-canvas"))
+      (set! arc-ctx (js/call arc-canvas "getContext" "2d"))
+      (js/call
+        (js/call
+          (js/call
+            (js/call
+              (js/call-fn (js/global "fetch") "brawlpit.wasm")
+              "then" (callback arc-on-response))
+            "then" (callback arc-on-bytes))
+          "then" (callback arc-on-instance))
+        "catch" (callback arc-fail!))))
+
+(defn arc-on-instance [(result : Any)] : Unit
+  (do
+    (set! arc-x (js/get (js/get result "instance") "exports"))
+    (set! arc-mem (js/get arc-x "memory"))
+    (js/call arc-x "bp_init")
+    (set! arc-img
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get arc-mem "buffer") (js/call arc-x "bp_fb_addr")
+                          (* (* (js/call arc-x "bp_fb_w") (js/call arc-x "bp_fb_h")) 4))
+                  (js/call arc-x "bp_fb_w") (js/call arc-x "bp_fb_h")))
+    (arc-install!)
+    (set! arc-state 2)
+    (arc-say! "")
+    (arc-load-sprites!)
+    (arc-load-duck!)
+    (when arc-run (arc-start-loop!))))
+
+;; ---- the frame loop (only while the arcade view is up) ----------------------------------------------------------------------
+(defn arc-tick [(t : F64)] : Unit
+  (do (set! arc-looping false)
+      (when (and arc-run (= arc-state 2))
+        (do (arc-poll-pads!)
+            (js/call arc-x "bp_frame" t)
+            (js/call arc-ctx "putImageData" arc-img 0 0)
+            (arc-start-loop!)))))
+
+(defn arc-start-loop! [] : Unit
+  (when (not arc-looping)
+    (do (set! arc-looping true)
+        (js/call (win) "requestAnimationFrame" (callback arc-tick)))))
+
+;; ---- entering and leaving ---------------------------------------------------------------------------------------------------
+(defn arcade-enter! [] : Unit
+  (do (set! arc-run true)
+      (when (or (= arc-state 0) (= arc-state 3)) (arcade-load!))
+      (when (= arc-state 2) (arc-start-loop!))))
+
+(defn arcade-leave! [] : Unit
+  (when arc-run
+    (do (set! arc-run false)
+        (arc-release-all!))))
+
+;; releases every held touch key and tells the game to forget the keyboard
+(defn arc-release-all! [] : Unit
+  (when (not (js/null? arc-held))
+    (let [ids (js/call (js/global "Object") "keys" arc-held)]
+      (do (dotimes [i (js/get ids "length")]
+            (let [k (js/aget ids i)]
+              (arc-key-up! (js/aget arc-held k))))
+          (set! arc-held (js/obj))
+          (js/call (js/call (doc) "querySelectorAll" "#arc-pad .down") "forEach" (callback arc-unpress!))
+          (when (not (js/null? arc-x)) (js/call arc-x "bp_blur"))))))
+
+(defn arc-unpress! [(b : Any)] : Unit (js/call (js/get b "classList") "remove" "down"))
+
+(defn arc-key-down! [(code : I32)] : Unit
+  (when (and (not (js/null? arc-x)) (> code 0)) (js/call arc-x "bp_key" code 1)))
+(defn arc-key-up! [(code : I32)] : Unit
+  (when (and (not (js/null? arc-x)) (> code 0)) (js/call arc-x "bp_key" code 0)))
+
+;; ---- input ---------------------------------------------------------------------------------------------------------------------------
+;; touch buttons: one finger per pointerId, so move + jump at once works; the wasm says which key each button is
+(defn arc-pad-down [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-bp]")]
+    (when (and (not (js/null? b)) arc-run)
+      (let [code (js/call scan-x "nk_garage_touch_key" (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "bp") 10))
+            pid (js/get e "pointerId")]
+        (do (js/call e "preventDefault")
+            (js/call b "setPointerCapture" pid)
+            (js/call (js/get b "classList") "add" "down")
+            (js/aset! arc-held (str pid) code)
+            (arc-key-down! code))))))
+
+(defn arc-pad-up [(e : Any)] : Unit
+  (let [pid (str (js/get e "pointerId"))]
+    (when (not (js/null? arc-held))
+      (let [code (js/aget arc-held pid)]
+        (when (= (js/typeof code) "number")
+          (do (arc-key-up! code)
+              (js/aset! arc-held pid 0)
+              (let [b (js/call (js/get e "target") "closest" "[data-bp]")]
+                (when (not (js/null? b)) (js/call (js/get b "classList") "remove" "down")))))))))
+
+;; hardware keyboard (Bluetooth, ChromeOS): forwarded while the arcade is up and no text field has focus
+(defn arc-key-id [(e : Any)] : I32 (+ (js/get e "keyCode") (if (= (js/get e "location") 2) 256 0)))
+(defn arc-game-key? [(e : Any)] : Bool
+  (let [k (js/get e "keyCode")] (or (and (>= k 37) (<= k 40)) (or (= k 32) (= k 9)))))
+(defn arc-typing? [] : Bool
+  (let [a (js/get (doc) "activeElement")]
+    (and (not (js/null? a)) (or (= (js/get a "tagName") "INPUT") (or (= (js/get a "tagName") "TEXTAREA") (= (js/get a "tagName") "SELECT"))))))
+(defn arc-on-keydown [(e : Any)] : Unit
+  (when (and arc-run (not (arc-typing?)))
+    (do (arc-key-down! (arc-key-id e))
+        (when (arc-game-key? e) (js/call e "preventDefault")))))
+(defn arc-on-keyup [(e : Any)] : Unit
+  (when (and arc-run (not (arc-typing?))) (arc-key-up! (arc-key-id e))))
+
+;; a tap or click on the picture itself (menus): CSS pixels -> the 960x540 framebuffer
+(defn arc-on-pointer [(e : Any)] : Unit
+  (when (= arc-state 2)
+    (let [rect (js/call arc-canvas "getBoundingClientRect")
+          x (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call arc-x "bp_fb_w")) (js/get rect "width"))
+          y (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call arc-x "bp_fb_h")) (js/get rect "height"))]
+      (js/call arc-x "bp_pointer" (math/floor x) (math/floor y) (bit-and (js/get e "buttons") 1)))))
+
+(defn arc-on-blur [(e : Any)] : Unit (arc-release-all!))
+(defn arc-on-visibility [(e : Any)] : Unit
+  (when (js/get (doc) "hidden") (arc-release-all!)))
+
+(defn arc-install! [] : Unit
+  (when (not arc-listening)
+    (do (set! arc-listening true)
+        (let [w (win)]
+          (do (js/call w "addEventListener" "keydown" (callback arc-on-keydown))
+              (js/call w "addEventListener" "keyup" (callback arc-on-keyup))
+              (js/call w "addEventListener" "blur" (callback arc-on-blur))
+              (js/call (doc) "addEventListener" "visibilitychange" (callback arc-on-visibility))))
+        (js/call arc-canvas "addEventListener" "pointerdown" (callback arc-on-pointer))
+        (js/call arc-canvas "addEventListener" "pointermove" (callback arc-on-pointer))
+        (js/call arc-canvas "addEventListener" "pointerup" (callback arc-on-pointer))
+        (js/call arc-canvas "addEventListener" "contextmenu" (callback arc-no-menu)))))
+
+(defn arc-no-menu [(e : Any)] : Unit (js/call e "preventDefault"))
+
+;; the Gamepad API, only if the WebView has it
+(defn arc-pad-api? [] : Bool
+  (and (js/defined? "navigator")
+       (= (js/typeof (js/get (js/global "navigator") "getGamepads")) "function")))
+(defn arc-pad-mask [(gp : Any)] : I32
+  (let [buttons (js/get gp "buttons")
+        n (math/min 16 (js/get buttons "length"))]
+    (loop [i 0 m 0]
+      (if (< i n)
+          (recur (+ i 1) (if (js/get (js/aget buttons i) "pressed") (bit-or m (shl 1 i)) m))
+          m))))
+(defn arc-pad-value [(gp : Any) (i : I32)] : F64
+  (let [b (js/aget (js/get gp "buttons") i)]
+    (if (js/null? b) 0.0 (js/get b "value"))))
+(defn arc-poll-pads! [] : Unit
+  (when (arc-pad-api?)
+    (let [pads (js/call (js/global "navigator") "getGamepads")]
+      (dotimes [i 4]
+        (let [gp (js/aget pads i)]
+          (if (js/null? gp)
+              (js/call arc-x "bp_pad_gone" i)
+              (let [axes (js/get gp "axes")]
+                (js/call arc-x "bp_pad" i
+                         (js/aget axes 0) (js/aget axes 1) (js/aget axes 2) (js/aget axes 3)
+                         (arc-pad-value gp 6) (arc-pad-value gp 7) (arc-pad-mask gp)))))))))
+
+;; ---- art: portraits (4x2 atlas of 128x128 tiles, character id t+2) and the duck (640x340 atlas) -----------------------------------
+;; the browser decodes the PNG, the RGBA is copied into the wasm module's own regions; absent art means the engine's fallback drawing.
+(defn arc-blob-of [(r : Any)] : Any
+  (if (js/get r "ok") (js/call r "blob") (js/call (js/global "Promise") "reject" (str "HTTP " (js/get r "status")))))
+(defn arc-decode [(blob : Any)] : Any (js/call-fn (js/global "createImageBitmap") blob))
+
+(defn arc-pixels [(bmp : Any) (w : I32) (h : I32)] : Any
+  (let [c2 (js/call (doc) "createElement" "canvas")]
+    (do (js/set! c2 "width" w)
+        (js/set! c2 "height" h)
+        (let [g (js/call c2 "getContext" "2d")]
+          (do (js/set! g "imageSmoothingEnabled" false)
+              (js/call g "drawImage" bmp 0 0)
+              (js/get (js/call g "getImageData" 0 0 w h) "data"))))))
+
+(defn arc-load-sprites! [] : Unit
+  (js/call
+    (js/call
+      (js/call
+        (js/call (js/call-fn (js/global "fetch") "sprites.png") "then" (callback arc-blob-of))
+        "then" (callback arc-decode))
+      "then" (callback arc-on-sprites))
+    "catch" (callback ignore!)))
+
+(defn arc-copy-tile! [(data : Any) (t : I32)] : Unit
+  (let [tx (* (mod t 4) 128)
+        ty (* (/ t 4) 128)
+        base (js/call arc-x "bp_sprite_addr" (+ t 2))]
+    (dotimes [row 128]
+      (let [src (* (+ (* (+ ty row) 512) tx) 4)]
+        (js/call (js/new "Uint8Array" (js/get arc-mem "buffer") (+ base (* row 512)) 512)
+                 "set" (js/call data "subarray" src (+ src 512)))))))
+
+(defn arc-on-sprites [(bmp : Any)] : Unit
+  (let [data (arc-pixels bmp 512 256)]
+    (do (dotimes [t 8] (arc-copy-tile! data t))
+        (dotimes [t 8] (js/call arc-x "bp_sprite_set" (+ t 2) 1)))))
+
+(defn arc-load-duck! [] : Unit
+  (js/call
+    (js/call
+      (js/call
+        (js/call (js/call-fn (js/global "fetch") "duck.png") "then" (callback arc-blob-of))
+        "then" (callback arc-decode))
+      "then" (callback arc-on-duck))
+    "catch" (callback ignore!)))
+
+(defn arc-on-duck [(bmp : Any)] : Unit
+  (let [data (arc-pixels bmp 640 340)]
+    (do (js/call (js/new "Uint8Array" (js/get arc-mem "buffer") (js/call arc-x "bp_duck_addr") 870400) "set" data)
+        (js/call arc-x "bp_duck_set" 1))))

@@ -1,0 +1,112 @@
+;; stdlib/shankpit/item_rules.prn -- SHANKPIT basic desk items you can pick up and use (founder real-time 2026-11-24, BACKLOG
+;; SECTION 643: "ensure we have basic items that we can pick up that are affordances for notebook, pencil, pencil sharpener, etc").
+;; Every affordance is a physical object you can see, walk to and use. The host (packages/simulation/world_items.c) owns the pool,
+;; the carried list and the drawing; every decision lives here: what the items ARE, how far you can reach them, how many you can
+;; carry, and what using one item on another does to both of them. Scalar-only, pure, total: out-of-range inputs clamp, never trap.
+;;
+;; Item ids: 1 notebook, 2 pencil, 3 pencil sharpener, 4 eraser, 5 pen, 6 ruler, 7 scissors.
+;; Per-instance state is two ints (aux, aux2):
+;;   notebook  aux = pencil pages written, aux2 = pen pages written (80 pages total)
+;;   pencil    aux = point 0..100 (100 sharp), aux2 = length in mm (190 new, each sharpening costs 8, below 20 it cannot be sharpened)
+;;   sharpener aux = shavings 0..20 (full = jammed until emptied), aux2 unused
+;;   eraser    aux = rubber left 0..100, aux2 unused
+;;   pen       aux = ink 0..100 (never needs sharpening), aux2 unused
+;;   ruler / scissors: no state
+;; item-use-effect(actor, target, actor.aux, actor.aux2, target.aux, target.aux2) -> effect code (>0 happened, <0 refused, 0 no effect):
+;;   1 sharpen (pencil on sharpener)      2 write in pencil (point >= 30)   3 write faintly (dull pencil, point 1..29)
+;;   4 write in pen                       5 erase a pencil page             6 empty the sharpener (sharpener alone)
+;;   7 read the notebook (alone)          8 measure (ruler alone / on pencil)   9 cut a page out (scissors on notebook)
+;;   -1 pencil already sharp  -2 sharpener full  -3 pencil too short  -4 notebook full  -5 pen out of ink
+;;   -6 eraser used up        -7 pencil blunt (point 0)   -8 only pen on the page, rubber cannot lift it   -9 nothing to erase/cut
+;; item-use-apply(effect, field, ha, hb, ta, tb) -> the new value of one field: 0 actor.aux, 1 actor.aux2, 2 target.aux, 3 target.aux2.
+(module shankpit/item-rules)
+(export item-valid item-count item-pickup-radius-mm item-pickup-height-mm item-carry-cap item-can-pickup item-prompt
+        item-color item-dim-mm item-init-aux item-init-aux2 item-notebook-pages
+        item-use-effect item-use-apply)
+
+(defn item-valid [(id : I32)] : I32 (if (< id 1) 0 (if (> id 7) 0 1)))
+(defn item-count [] : I32 7)
+
+;; How far you can reach (horizontal, millimetres). Small things are fiddlier to grab.
+(defn item-pickup-radius-mm [(id : I32)] : I32
+  (if (= id 2) 1800 (if (= id 5) 1800 (if (= id 4) 1800 2200))))
+(defn item-pickup-height-mm [(id : I32)] : I32 2500)
+
+;; How many things fit in your pockets.
+(defn item-carry-cap [] : I32 8)
+;; 1 you can take it, 0 not an item, -1 pockets full.
+(defn item-can-pickup [(id : I32) (carried : I32)] : I32
+  (if (= (item-valid id) 0) 0 (if (>= carried 8) -1 1)))
+
+;; Prompt shown near an item: 0 none, 1 "F pick up", 2 "pockets full".
+(defn item-prompt [(id : I32) (carried : I32)] : I32
+  (if (= (item-valid id) 0) 0 (if (>= carried 8) 2 1)))
+
+;; 0xRRGGBB
+(defn item-color [(id : I32)] : I32
+  (if (= id 1) 3427700
+  (if (= id 2) 15646497
+  (if (= id 3) 10066329
+  (if (= id 4) 15641728
+  (if (= id 5) 1519786
+  (if (= id 6) 14729296 11927552)))))))
+
+;; Model box size in millimetres per axis (0 w, 1 h, 2 d) as it lies on a desk.
+(defn item-dim-mm [(id : I32) (axis : I32)] : I32
+  (if (= id 1) (if (= axis 0) 150 (if (= axis 1) 20 210))
+  (if (= id 2) (if (= axis 0) 10 (if (= axis 1) 10 190))
+  (if (= id 3) (if (= axis 0) 35 (if (= axis 1) 20 25))
+  (if (= id 4) (if (= axis 0) 20 (if (= axis 1) 10 45))
+  (if (= id 5) (if (= axis 0) 10 (if (= axis 1) 10 150))
+  (if (= id 6) (if (= axis 0) 35 (if (= axis 1) 3 300))
+    (if (= axis 0) 80 (if (= axis 1) 8 170)))))))))
+
+(defn item-init-aux [(id : I32)] : I32
+  (if (= id 2) 100 (if (= id 4) 100 (if (= id 5) 100 0))))
+(defn item-init-aux2 [(id : I32)] : I32
+  (if (= id 2) 190 0))
+(defn item-notebook-pages [] : I32 80)
+
+(defn item-use-effect [(actor : I32) (target : I32) (ha : I32) (hb : I32) (ta : I32) (tb : I32)] : I32
+  (if (= actor 2)
+    (if (= target 3)
+      (if (>= ha 100) -1 (if (< hb 20) -3 (if (>= ta 20) -2 1)))
+      (if (= target 1)
+        (if (<= ha 0) -7 (if (>= (+ ta tb) 80) -4 (if (< ha 30) 3 2)))
+        0))
+  (if (= actor 5)
+    (if (= target 1)
+      (if (<= ha 0) -5 (if (>= (+ ta tb) 80) -4 4))
+      0)
+  (if (= actor 4)
+    (if (= target 1)
+      (if (<= ha 0) -6 (if (> ta 0) 5 (if (> tb 0) -8 -9)))
+      0)
+  (if (= actor 3)
+    (if (= target 0) (if (> ha 0) 6 0) 0)
+  (if (= actor 1)
+    (if (= target 0) 7 0)
+  (if (= actor 6)
+    (if (= target 0) 8 (if (= target 2) 8 0))
+  (if (= actor 7)
+    (if (= target 1) (if (> (+ ta tb) 0) 9 -9) 0)
+    0))))))))
+
+(defn item-use-apply [(effect : I32) (field : I32) (ha : I32) (hb : I32) (ta : I32) (tb : I32)] : I32
+  (if (= effect 1)
+    (if (= field 0) 100 (if (= field 1) (- hb 8) (if (= field 2) (+ ta 1) tb)))
+  (if (= effect 2)
+    (if (= field 0) (if (< ha 10) 0 (- ha 10)) (if (= field 1) hb (if (= field 2) (+ ta 1) tb)))
+  (if (= effect 3)
+    (if (= field 0) (if (< ha 5) 0 (- ha 5)) (if (= field 1) hb (if (= field 2) (+ ta 1) tb)))
+  (if (= effect 4)
+    (if (= field 0) (- ha 5) (if (= field 1) hb (if (= field 2) ta (+ tb 1))))
+  (if (= effect 5)
+    (if (= field 0) (- ha 2) (if (= field 1) hb (if (= field 2) (- ta 1) tb)))
+  (if (= effect 6)
+    (if (= field 0) 0 (if (= field 1) hb (if (= field 2) ta tb)))
+  (if (= effect 9)
+    (if (= field 2) (if (> ta 0) (- ta 1) ta)
+      (if (= field 3) (if (> ta 0) tb (- tb 1))
+        (if (= field 0) ha hb)))
+    (if (= field 0) ha (if (= field 1) hb (if (= field 2) ta tb)))))))))))

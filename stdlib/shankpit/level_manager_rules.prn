@@ -21,7 +21,9 @@
 (module shankpit/level-manager)
 (export lm-st-none lm-st-loading lm-st-fg lm-st-bg lm-st-source lm-st-source-none
         lm-cmd-toggle lm-cmd-source lm-cmd-close lm-cmd-load-ok lm-cmd-load-fail lm-cmd-trap lm-cmd-overlay-closed
-        lm-cmd-suspend
+        lm-cmd-suspend lm-cmd-arcade-play lm-cmd-arcade-enter
+        lm-arcade-near lm-arcade-prompt lm-arcade-use-cmd lm-arcade-screen lm-arcade-light lm-arcade-pulse
+        lm-arcade-attract-phase lm-arcade-range-cm
         lm-chord lm-next lm-announce lm-close-reason lm-loaded lm-ticks lm-owns-input lm-world-input lm-banner
         lm-max-steps lm-tick-us lm-dt-cap-us lm-acc-add lm-steps lm-acc-left lm-dom-key
         lm-compile-now lm-swap-on)
@@ -44,6 +46,13 @@
 ;; the game leaves the world for its menu (a net drop, Esc to the menu): nothing of the level may stay in front.
 ;; The level steps back to BG (BRAWLPIT pauses its match on the HIDDEN this announces), the overlay closes.
 (defn lm-cmd-suspend [] : I32 8)
+;; ARCADE (SECTION 638, ARCADE-0..2): the CONSTRUCT hub's arcade cabinet. F at the machine is ARCADE_PLAY: a level
+;; that is not loaded starts loading (NONE -> LOADING), a suspended one comes to the front (BG -> FG); anything
+;; else is unchanged. ARCADE_ENTER is the hub being entered from the menu, world first: a boot-pending load is
+;; cancelled (LOADING -> NONE) and a level in front steps back (FG -> BG), so the player meets the machine, not
+;; BRAWLPIT. Shift+M / Shift+X still work from the hub exactly as everywhere else (the way back to the hub).
+(defn lm-cmd-arcade-play [] : I32 9)
+(defn lm-cmd-arcade-enter [] : I32 10)
 
 ;; the lifecycle rows a transition can announce (SHANKPIT packages/reflux/reflux_runtime.h). LOADED,
 ;; LOAD_FAILED and SWAPPED are the loader's own facts, with payloads only the loader has, so the host
@@ -84,22 +93,23 @@
   (if (or (= s (lm-st-fg)) (or (= s (lm-st-bg)) (= s (lm-st-source)))) 1 0))
 
 (defn lm-next-none [(cmd : I32)] : I32
-  (cond ((= cmd (lm-cmd-toggle)) (lm-st-loading))
+  (cond ((or (= cmd (lm-cmd-toggle)) (= cmd (lm-cmd-arcade-play))) (lm-st-loading))
         ((= cmd (lm-cmd-source)) (lm-st-source-none))
         (true (lm-st-none))))
 
 (defn lm-next-loading [(cmd : I32)] : I32
   (cond ((= cmd (lm-cmd-load-ok)) (lm-st-fg))
         ((= cmd (lm-cmd-load-fail)) (lm-st-none))
+        ((= cmd (lm-cmd-arcade-enter)) (lm-st-none))
         (true (lm-st-loading))))
 
 (defn lm-next-fg [(cmd : I32)] : I32
-  (cond ((or (= cmd (lm-cmd-toggle)) (= cmd (lm-cmd-suspend))) (lm-st-bg))
+  (cond ((or (= cmd (lm-cmd-toggle)) (or (= cmd (lm-cmd-suspend)) (= cmd (lm-cmd-arcade-enter)))) (lm-st-bg))
         ((= cmd (lm-cmd-source)) (lm-st-source))
         (true (lm-st-fg))))
 
 (defn lm-next-bg [(cmd : I32)] : I32
-  (cond ((= cmd (lm-cmd-toggle)) (lm-st-fg))
+  (cond ((or (= cmd (lm-cmd-toggle)) (= cmd (lm-cmd-arcade-play))) (lm-st-fg))
         ((= cmd (lm-cmd-close)) (lm-st-none))
         ((= cmd (lm-cmd-source)) (lm-st-source))
         (true (lm-st-bg))))
@@ -245,3 +255,65 @@
 ;; which already loads the newest module there is.
 (defn lm-swap-on [(old : I32) (new : I32)] : I32
   (if (and (= new (lm-st-fg)) (or (= old (lm-st-source)) (= old (lm-st-bg)))) 1 0))
+
+;; ---- the arcade cabinet (SECTION 638) -----------------------------------------------------------------
+;; Every decision the machine's code in SHANKPIT apps/lobby/src/arcade_cabinet.c makes: whether the player is
+;; at it, which prompt the HUD shows, what F does, what the screen and the status light show, the attract-mode
+;; animation. Distances are integer centimetres (the host rounds); times are integer milliseconds.
+;; screen/light inputs: state is the level-manager state, failed = 1 when the last load of the level failed
+;; (LEVEL_LOAD_FAILED: the state is back at NONE and the host holds a message).
+(defn lm-arcade-range-cm [] : I32 320)
+
+(defn lm-arcade-abs [(v : I32)] : I32 (if (< v 0) (- 0 v) v))
+
+;; at the machine: within the use radius horizontally and on its floor (|dy| under 2 m). Far-off values are
+;; rejected before squaring so nothing can overflow.
+(defn lm-arcade-near [(dx-cm : I32) (dy-cm : I32) (dz-cm : I32)] : I32
+  (cond
+    ((> (lm-arcade-abs dx-cm) 1000) 0)
+    ((> (lm-arcade-abs dz-cm) 1000) 0)
+    ((> (lm-arcade-abs dy-cm) 200) 0)
+    ((<= (+ (* dx-cm dx-cm) (* dz-cm dz-cm)) (* (lm-arcade-range-cm) (lm-arcade-range-cm))) 1)
+    (true 0)))
+
+;; the prompt: 0 none, 1 "F: PLAY BRAWLPIT", 2 loading, 3 "BRAWLPIT FAILED TO LOAD (F retries)",
+;; 4 "F: RESUME BRAWLPIT" (a suspended level). Nothing while the level or the source overlay is in front.
+(defn lm-arcade-prompt [(in-hub : I32) (near : I32) (state : I32) (failed : I32)] : I32
+  (cond
+    ((or (= in-hub 0) (= near 0)) 0)
+    ((= state (lm-st-loading)) 2)
+    ((= state (lm-st-bg)) 4)
+    ((and (= state (lm-st-none)) (!= failed 0)) 3)
+    ((= state (lm-st-none)) 1)
+    (true 0)))
+
+;; what F does at the machine: ARCADE_PLAY when there is a prompt to act on (1, 3, 4); 0 = the key passes on.
+(defn lm-arcade-use-cmd [(in-hub : I32) (near : I32) (state : I32) (failed : I32)] : I32
+  (let [p (lm-arcade-prompt in-hub near state failed)]
+    (if (or (= p 1) (or (= p 3) (= p 4))) (lm-cmd-arcade-play) 0)))
+
+;; the screen: 0 attract (lit, cycling), 1 loading, 2 load failed (red), 3 paused game (dim, "F resumes"),
+;; 4 the game is running in front (the world is not drawn then; kept for a flat view)
+(defn lm-arcade-screen [(state : I32) (failed : I32)] : I32
+  (cond
+    ((= state (lm-st-loading)) 1)
+    ((= state (lm-st-bg)) 3)
+    ((= state (lm-st-fg)) 4)
+    ((and (= state (lm-st-none)) (!= failed 0)) 2)
+    (true 0)))
+
+;; the status light: 0 green (ready), 1 amber (loading / a paused game), 2 red (failed)
+(defn lm-arcade-light [(state : I32) (failed : I32)] : I32
+  (let [s (lm-arcade-screen state failed)]
+    (cond ((= s 2) 2)
+          ((or (= s 1) (= s 3)) 1)
+          (true 0))))
+
+;; a triangle wave 0..255 over 1.6 s: the marquee and screen glow breathe with it
+(defn lm-arcade-pulse [(t-ms : I32)] : I32
+  (let [ph (mod (lm-arcade-abs t-ms) 1600)]
+    (if (< ph 800) (/ (* ph 255) 800) (/ (* (- 1600 ph) 255) 800))))
+
+;; attract mode steps through 8 colours bars a step every 450 ms
+(defn lm-arcade-attract-phase [(t-ms : I32)] : I32
+  (mod (/ (lm-arcade-abs t-ms) 450) 8))

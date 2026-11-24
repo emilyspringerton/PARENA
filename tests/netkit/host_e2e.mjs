@@ -26,15 +26,22 @@ for (const m of html.matchAll(/<([a-zA-Z0-9]+)([^>]*?)>/g)) {
   if (idm) idInfo.set(idm[1], { hidden: /\shidden(\s|$|=)/.test(m[2]), value: (/\bvalue="([^"]*)"/.exec(m[2]) || [])[1] || '' });
 }
 const accessed = new Set();
+const dynamicIds = new Set();
 const winListeners = {};
 class El {
   constructor(id, info) {
-    this.id = id; this.hidden = info.hidden; this.textContent = ''; this.innerHTML = ''; this.value = info.value; this.checked = false;
+    this.id = id; this.hidden = info.hidden; this.textContent = ''; this._html = ''; this.value = info.value; this.checked = false;
     this.dataset = {}; this.style = {}; this.listeners = {}; this.classes = new Set(); this.width = 0; this.height = 0;
-    this.clientWidth = 800; this.clientHeight = 600; this.ctx = { puts: [], putImageData: (...a) => { this.ctx.puts.push(a); this.ctx.last = a; } };
+    this.clientWidth = 800; this.clientHeight = 600;
+    const base = { puts: [], strokes: 0, putImageData: (...a) => { base.puts.push(a); base.last = a; } };
+    // any other canvas-2d method (beginPath, stroke, clearRect, ...) is accepted; strokes are counted so a drawn cable can be asserted
+    this.ctx = new Proxy(base, { get: (t, k) => k in t ? t[k] : (k === 'stroke' ? () => { t.strokes++; } : () => {}), set: (t, k, v) => { t[k] = v; return true; } });
     const self = this;
     this.classList = { toggle(c, f) { const on = f === undefined ? !self.classes.has(c) : !!f; on ? self.classes.add(c) : self.classes.delete(c); return on; }, contains: c => self.classes.has(c), add: c => self.classes.add(c), remove: c => self.classes.delete(c) };
   }
+  // elements the page builds itself (the garage's objects) become real ids, as they would in a browser
+  get innerHTML() { return this._html; }
+  set innerHTML(v) { this._html = v; for (const m of String(v).matchAll(/\bid="([^"]+)"/g)) if (!idInfo.has(m[1])) { idInfo.set(m[1], { hidden: false, value: '' }); dynamicIds.add(m[1]); } }
   addEventListener(ev, fn) { (this.listeners[ev] ||= []).push(fn); }
   dispatch(ev, e = {}) { for (const fn of this.listeners[ev] || []) fn({ target: this, preventDefault() {}, ...e }); }
   focus() { document.activeElement = this; }
@@ -45,11 +52,23 @@ class El {
 }
 const els = new Map();
 const getEl = id => { accessed.add(id); if (!idInfo.has(id)) return null; if (!els.has(id)) els.set(id, new El(id, idInfo.get(id))); return els.get(id); };
-globalThis.document = { getElementById: getEl, addEventListener() {}, activeElement: null, body: {} };
+globalThis.document = { getElementById: getEl, addEventListener() {}, activeElement: null, body: {}, hidden: false, createElement: () => new El('~tmp', { hidden: false, value: '' }), querySelectorAll: () => [] };
 globalThis.window = globalThis;
+globalThis.innerWidth = 1280; globalThis.innerHeight = 800;       // a landscape tablet
 globalThis.addEventListener = (ev, fn) => { (winListeners[ev] ||= []).push(fn); };
 globalThis.requestAnimationFrame = fn => setTimeout(() => fn(performance.now()), 16);
 globalThis.ImageData = class ImageData { constructor(data, w, h) { this.data = data; this.width = w; this.height = h; } };
+// BRAWLPIT's game module: instantiate it for real, but hand the page a view of its exports that records the calls the arcade host makes
+const bp = { calls: [], frames: 0 };
+const realInstantiate = WebAssembly.instantiate.bind(WebAssembly);
+WebAssembly.instantiate = async (bytes, imports) => {
+  const r = await realInstantiate(bytes, imports);
+  if (!(r.instance && r.instance.exports.bp_init)) return r;
+  bp.imports = WebAssembly.Module.imports(r.module).length;
+  const ex = new Proxy(r.instance.exports, { get: (t, k) => typeof t[k] === 'function' && /^bp_/.test(k) ? (...a) => { if (k === 'bp_frame') bp.frames++; else bp.calls.push([k, ...a]); return t[k](...a); } : t[k] });
+  bp.exports = r.instance.exports;
+  return { module: r.module, instance: { exports: ex } };
+};
 globalThis.fetch = async url => { const f = path.join(web, url); return { ok: fs.existsSync(f), status: 404, url, arrayBuffer: async () => fs.readFileSync(f) }; };
 const $ = id => getEl(id);
 const instances = [];
@@ -116,6 +135,64 @@ const booted = await waitFor(() => $('btn-scan').listeners.click, 10000);
 check(booted, 'the page boots: three wasm modules fetched, compiled, instantiated; the buttons are wired');
 check(instances.length >= 1 && instances.every(i => Object.keys(i.exports).length > 0), 'the scanner instance exists and exports its functions');
 check($('net-pill').textContent === '127.0.0.0/29', `the network pill shows the range we would scan (${$('net-pill').textContent})`);
+
+// ================================================================ the garage ==================================================================================
+check(visible('view-garage') && !visible('view-devices') && $('tab-garage').classes.has('on'), 'the page opens on the garage (flat-mode CONSTRUCT), not the device list');
+await waitFor(() => /data-id="4"/.test($('garage-objects').innerHTML), 3000);
+check([1, 2, 3, 4].every(n => new RegExp(`data-id="${n}"`).test($('garage-objects').innerHTML)), 'four objects stand on the floor: scanner bench, terminal, monitor, arcade cabinet');
+check(/Scanner bench/.test($('garage-objects').innerHTML) && /Arcade cabinet/.test($('garage-objects').innerHTML), 'their names come from the wasm module (nk_garage_label_addr)');
+check(/%/.test($('obj-2').style.left || '') && parseFloat($('obj-1').style.width) > 0, `objects are placed from the wasm layout (obj-2 left ${$('obj-2').style.left}, obj-1 width ${$('obj-1').style.width})`);
+check($('lamp-2').className === 'lamp l0' && $('status-2').textContent === 'No session', 'the terminal has no session: its lamp is off and says so');
+check(await waitFor(() => $('lamp-1').className === 'lamp l2' || $('lamp-1').className === 'lamp l1', 5000), 'the scanner bench lamp lights as soon as the automatic scan starts (amber while scanning)');
+check($('garage-cables').ctx.strokes === 0, 'no cable is drawn: no connection is live');
+// taps
+$('garage-floor').dispatch('click', { target: { closest: sel => sel === '[data-id]' ? { dataset: { id: '2' } } : null } });
+check(visible('view-devices') && !visible('view-garage') && /SSH/.test($('devices-hint').textContent) && visible('devices-hint'), 'tapping the terminal with no session opens the device list with a hint to start SSH');
+$('tabs').dispatch('click', { target: { closest: sel => sel === 'button' ? { dataset: { tab: 'garage' } } : null } });
+check(visible('view-garage') && !visible('view-devices'), 'the Garage tab returns to the garage');
+$('garage-floor').dispatch('click', { clientX: 300, clientY: 272, target: { closest: () => null } });
+check(visible('view-devices') && /SSH/.test($('devices-hint').textContent), 'a tap on the floor near the terminal (not on its button) is resolved by the wasm hit test');
+check(globalThis.netkitBack() === true && visible('view-garage'), 'back from the device list returns to the garage');
+$('garage-floor').dispatch('click', { target: { closest: sel => sel === '[data-id]' ? { dataset: { id: '1' } } : null } });
+check(visible('view-devices') && !visible('devices-hint') && $('devices-hint').hidden, 'tapping the scanner bench opens the device list (no hint)');
+globalThis.netkitBack();
+
+// ================================================================ the arcade (BRAWLPIT inside the page) ===========================================================================
+const bpFile = path.join(web, 'brawlpit.wasm');
+if (!fs.existsSync(bpFile)) check(false, 'brawlpit.wasm is in the web bundle');
+else {
+  check(bp.frames === 0 && !bp.exports, 'BRAWLPIT is not loaded until the arcade is opened (lazy: the garage pays nothing for it)');
+  $('garage-floor').dispatch('click', { target: { closest: sel => sel === '[data-id]' ? { dataset: { id: '4' } } : null } });
+  check(visible('view-arcade') && !visible('view-garage') && $('tab-arcade').classes.has('on'), 'tapping the arcade cabinet opens the arcade view');
+  check(await waitFor(() => bp.frames > 3 && $('bp-canvas').ctx.puts.length > 3, 10000), 'BRAWLPIT loads as a second wasm module and runs: frames are stepped and putImageData paints the canvas');
+  check(bp.imports === 0, 'brawlpit.wasm was instantiated with an empty import object and imports nothing');
+  const img = $('bp-canvas').ctx.last[0];
+  check(img.width === 960 && img.height === 540 && img.data.length === 960 * 540 * 4, 'the canvas shows the 960x540 framebuffer, a view straight onto wasm memory');
+  let lit = 0; for (let i = 0; i < img.data.length; i += 4 * 97) if (img.data[i] | img.data[i + 1] | img.data[i + 2]) lit++;
+  check(lit > 50, `the picture is not blank (${lit} lit samples)`);
+  check(visible('arcade-msg') === false, 'the loading message is gone once the game runs');
+  // touch: two fingers at once (move + jump); each is its own pointer
+  const press = (pid, btn) => $('arc-pad').dispatch('pointerdown', { pointerId: pid, target: { closest: s => s === '[data-bp]' ? { dataset: { bp: String(btn) }, setPointerCapture() {}, classList: { add() {}, remove() {} } } : null } });
+  const lift = (pid, btn) => $('arc-pad').dispatch('pointerup', { pointerId: pid, target: { closest: s => s === '[data-bp]' ? { dataset: { bp: String(btn) }, classList: { add() {}, remove() {} } } : null } });
+  const keys = () => bp.calls.filter(c => c[0] === 'bp_key').map(c => c.slice(1).join(':'));
+  press(1, 2); press(2, 5);
+  check(keys().includes('68:1') && keys().includes('32:1'), 'Right (finger 1) and Jump (finger 2) are held together: keys D(68) and Space(32) are down');
+  lift(1, 2);
+  check(keys().includes('68:0') && !keys().includes('32:0'), 'lifting finger 1 releases only D; Space stays held');
+  // leaving releases everything
+  const blursBefore = bp.calls.filter(c => c[0] === 'bp_blur').length;
+  check(globalThis.netkitBack() === true && visible('view-garage') && !visible('view-arcade'), "Android's back button leaves the arcade for the garage");
+  check(keys().includes('32:0') && bp.calls.filter(c => c[0] === 'bp_blur').length > blursBefore, 'leaving released the still-held Space and told the game to forget the keyboard');
+  const f0 = bp.frames; await sleep(250);
+  check(bp.frames === f0, 'the frame loop stops while the arcade is not on screen');
+  // coming back resumes (no reload)
+  $('garage-floor').dispatch('click', { target: { closest: sel => sel === '[data-id]' ? { dataset: { id: '4' } } : null } });
+  check(await waitFor(() => bp.frames > f0 + 3, 5000), 'opening the cabinet again resumes the same running game');
+  $('btn-arcade-exit').dispatch('click');
+  check(visible('view-garage') && !visible('view-arcade'), 'the on-screen "Back to garage" button returns to the garage');
+  check(await waitFor(() => $('lamp-4').className === 'lamp l1' && $('status-4').textContent === 'Ready', 3000), 'the cabinet\'s lamp is green and says Ready once the game has loaded');
+  check(globalThis.netkitBack() === false, 'back on the garage finishes the app');
+}
 
 // ================================================================ scan ============================================================================================
 const scanned = await waitFor(() => $('scan-status').textContent.startsWith('Scanned'), 20000);
@@ -257,14 +334,16 @@ check(/scale\(1\)/.test(t1) && t2 !== t1, `1:1 and Fit change the canvas transfo
 $('vnc-wrap').dispatch('wheel', { deltaY: -100, clientX: 100, clientY: 100 });
 check($('vnc-canvas').style.transform !== t2, 'the wheel zooms');
 check(globalThis.netkitBack() === true && visible('view-devices') && $('tab-vnc').hidden, "Android's back button closes the Screen and returns to the devices");
-check(globalThis.netkitBack() === false, "back on the device list is not handled (the app may finish)");
+check(globalThis.netkitBack() === true && visible('view-garage') && !visible('view-devices'), "back on the device list goes up to the garage");
+check(globalThis.netkitBack() === false, "back on the garage is not handled (the app finishes: the garage is the top)");
+$('tabs').dispatch('click', { target: { closest: sel => sel === 'button' ? { dataset: { tab: 'devices' } } : null } });
 
 // a VNC server that wants a password the user did not give
 $('m-proto').value = 'vnc'; $('m-host').value = '127.0.0.1'; $('m-port').value = '9'; $('btn-m-connect').dispatch('click'); $('c-go').dispatch('click');
 check(await waitFor(() => /Nothing is listening on that port/.test($('banner-text').textContent), 8000), 'a closed VNC port is reported plainly'); $('banner-close').dispatch('click');
 
 // ================================================================ the HTML contract ============================================================================================
-const missing = [...accessed].filter(id => !idInfo.has(id));
+const missing = [...accessed].filter(id => !idInfo.has(id) && !dynamicIds.has(id));
 check(missing.length === 0, `every element id the generated page uses exists in index.html${missing.length ? ' -- missing: ' + missing.join(', ') : ''}`);
 for (const s of listeners) s.close();
 console.log(`\n${pass} passed, ${fail} failed`);

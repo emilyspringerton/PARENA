@@ -1,0 +1,67 @@
+;; stdlib/camera/ease.prn -- shared, frame-rate-independent easing for the unified camera mods
+;; (zoom_cam_mod.prn, click_move_mod.prn, camera_follow_mod.prn). Founder direction, BACKLOG SECTION
+;; 636 (UNIFY-0): "mouse wheel zooms like World of Warcraft"; the displayed arm must ease toward the target
+;; the same way at 60 fps and at 144 fps.
+;;
+;; The mod ABI takes no F32 (ECOWAR/docs/ARENA_API.md "Real VS0 limits"; every mod here is scalar I32), so
+;; exp(-dt/tau) -- the exact, composable exponential ease -- is built from integers:
+;;   x = dt/tau (Q12, so 4 digits survive at 144 fps), e^-x = (e^-(x/8))^8, with e^-y by the (2,2) Pade approximant
+;;   (1 - y/2 + y^2/12) / (1 + y/2 + y^2/12)  (error ~ y^5/720, y <= 0.75), three squarings, all Q15
+;;   (1.0 == 32768; every intermediate product stays under 2^31).
+;; Because e^-(a+b) == e^-a * e^-b, easing twice with dt/2 lands where easing once with dt does -- THAT is the
+;; frame-rate independence (the older cam-smooth-step dt/(tau+dt) form is not composable and is not used here).
+;;
+;; Everything is named `cam-ease-` so the generated C symbols cannot collide with a host helper (the
+;; stdlib/shankpit/slide_rules.prn comment records the `s_abs` link error this avoids). Gap magnitudes must
+;; stay under 2^30 milli-units (a million world units) -- far beyond any camera.
+(module camera/ease)
+(export cam-ease-abs cam-ease-clamp cam-ease-exp-neg-q15 cam-ease-alpha-q15 cam-ease-lerp
+        cam-ease-step cam-ease-wrap-mdeg)
+
+(defn cam-ease-abs [(n : I32)] : I32 (if (< n 0) (- 0 n) n))
+
+(defn cam-ease-clamp [(lo : I32) (hi : I32) (x : I32)] : I32
+  (if (< x lo) lo (if (> x hi) hi x)))
+
+;; e^-x in Q15 for x in Q12 (4096 == 1.0). x is clamped to [0, 6.0]; e^-6 = 0.0025 is "arrived" for a camera.
+;; (x/8 in Q15 is numerically the same integer as x in Q12, which is why y is just the clamped input.)
+(defn cam-ease-exp-neg-q15 [(x-q12 : I32)] : I32
+  (let [y  (cam-ease-clamp 0 24576 x-q12)
+        y2 (/ (* y y) 32768)
+        num (+ (- 32768 (/ y 2)) (/ y2 12))
+        den (+ (+ 32768 (/ y 2)) (/ y2 12))
+        e1 (/ (+ (* num 32768) (/ den 2)) den)
+        e2 (/ (+ (* e1 e1) 16384) 32768)
+        e4 (/ (+ (* e2 e2) 16384) 32768)
+        e8 (/ (+ (* e4 e4) 16384) 32768)]
+    e8))
+
+;; Fraction of the remaining gap to close this frame, Q15 (0 = none, 32768 = all). dt <= 0 -> 0 (a paused or
+;; backwards clock moves nothing); tau <= 0 -> 32768 (instant). dt is clamped to 1000 ms.
+(defn cam-ease-alpha-q15 [(dt-ms : I32) (tau-ms : I32)] : I32
+  (if (<= dt-ms 0)
+    0
+    (if (<= tau-ms 0)
+      32768
+      (- 32768 (cam-ease-exp-neg-q15 (/ (+ (* (cam-ease-clamp 0 1000 dt-ms) 4096) (/ tau-ms 2)) tau-ms))))))
+
+;; gap * alpha / 32768, rounded to nearest, but never 0 for a nonzero gap while alpha > 0 (so a slow ease cannot
+;; stall a few milli-units short), never past the gap. Sign-symmetric.
+(defn cam-ease-lerp [(gap : I32) (alpha-q15 : I32)] : I32
+  (let [g  (cam-ease-abs gap)
+        hi (/ g 32768)
+        lo (mod g 32768)
+        s0 (+ (* hi alpha-q15) (/ (+ (* lo alpha-q15) 16384) 32768))
+        s1 (if (and (= s0 0) (> alpha-q15 0)) (if (> g 0) 1 0) s0)
+        s2 (if (> s1 g) g s1)]
+    (if (< gap 0) (- 0 s2) s2)))
+
+;; One eased step of cur toward target.
+(defn cam-ease-step [(cur : I32) (target : I32) (dt-ms : I32) (tau-ms : I32)] : I32
+  (+ cur (cam-ease-lerp (- target cur) (cam-ease-alpha-q15 dt-ms tau-ms))))
+
+;; Wrap an angle in milli-degrees into (-180000, 180000] (shortest-arc difference).
+(defn cam-ease-wrap-mdeg [(d : I32)] : I32
+  (let [m (mod d 360000)
+        p (if (< m 0) (+ m 360000) m)]
+    (if (> p 180000) (- p 360000) p)))

@@ -1,0 +1,97 @@
+;; stdlib/camera/camera_follow_mod.prn -- how the THIRD-PERSON camera behaves (UNIFY-4). Founder: "full camera
+;; options for how the camera behaves when third person -- if it adjusts just when running or based on terrain,
+;; a good amount of options but not too many". Exactly FOUR options, all integers the host stores and persists:
+;;
+;;   follow_style      0 Free             camera moves only when the player orbits it
+;;                     1 Behind w/ moving yaw recenters behind the player only while running (WoW "only when moving")
+;;                     2 Always behind    yaw recenters behind the player all the time
+;;   recenter_speed    0 slow  1 normal  2 fast               (how quickly that recentering happens)
+;;   terrain           0 Off   1 Slope   camera pitch + focus height ease with ground slope and step changes
+;;   smoothing         0 off   1 low     2 high               (camera position lag)
+;;
+;; NOT options: wall pull-in is always on (the host's own collision); manual orbit input always wins and pauses
+;; auto-recenter for 800 ms; first person ignores all of this. Defaults: SHANKPIT = style 1, speed 1, terrain 1,
+;; smoothing 1; REDGARDEN = style 0 (MOBA), speed 1, terrain 0, smoothing 0.
+;;
+;; All I32 fixed point:  *-milli world units x1000   *-mdeg degrees x1000   *-ms   *-permille fractions x1000
+;; yaw/pitch conventions belong to the host; this module only does differences and easing.
+(module camera/camera-follow-mod)
+(export cam-follow-manual-pause-ms cam-follow-moving-speed-milli cam-follow-recenter-tau-ms
+        cam-follow-smooth-tau-ms cam-follow-slope-deadzone-permille cam-follow-slope-pitch-max-mdeg
+        cam-follow-manual-idle-ms cam-follow-recenter-active cam-follow-yaw-step-mdeg
+        cam-follow-slope-pitch-target-mdeg cam-follow-pitch-ease-mdeg cam-follow-wall-damp-mdeg
+        cam-follow-focus-y-step-milli cam-follow-smooth-step-milli)
+
+(defn cam-follow-manual-pause-ms [] : I32 800)
+;; Player horizontal speed (world units/s x1000) above which the player counts as "running".
+(defn cam-follow-moving-speed-milli [] : I32 500)
+;; Yaw recenter time constant by recenter_speed option 0/1/2 (unknown -> normal).
+(defn cam-follow-recenter-tau-ms [(speed-opt : I32)] : I32
+  (if (= speed-opt 0) 900 (if (= speed-opt 2) 180 450)))
+;; Camera position lag time constant by smoothing option 0/1/2 (0 = rigid, unknown -> off).
+(defn cam-follow-smooth-tau-ms [(smoothing-opt : I32)] : I32
+  (if (= smoothing-opt 1) 60 (if (= smoothing-opt 2) 160 0)))
+;; Slopes under 6% (about 3.4 degrees) are ignored: terrain noise, not a hill.
+(defn cam-follow-slope-deadzone-permille [] : I32 60)
+(defn cam-follow-slope-pitch-max-mdeg [] : I32 15000)
+
+;; Time since the player last touched the orbit controls. manual = 1 (mouse orbit / camera key this frame) resets
+;; it; otherwise it grows by dt, capped at one minute. dt <= 0 leaves it unchanged.
+(defn cam-follow-manual-idle-ms [(idle-ms : I32) (dt-ms : I32) (manual : I32)] : I32
+  (if (> manual 0)
+    0
+    (if (<= dt-ms 0) idle-ms (cam-ease-clamp 0 60000 (+ idle-ms dt-ms)))))
+
+;; Should the camera yaw auto-recenter behind the player this frame? Never in first person, never for Free, never
+;; until the manual-orbit pause has elapsed; "Behind when moving" also needs the player to be running.
+(defn cam-follow-recenter-active [(style : I32) (speed-milli : I32) (idle-ms : I32) (first-person : I32)] : I32
+  (if (or (> first-person 0) (or (<= style 0) (< idle-ms (cam-follow-manual-pause-ms))))
+    0
+    (if (= style 1)
+      (if (> speed-milli (cam-follow-moving-speed-milli)) 1 0)
+      1)))
+
+;; One frame of yaw recentering: ease the camera yaw toward the yaw behind the player along the SHORTEST arc.
+;; Returns the new camera yaw in [0, 360000). Inactive (or dt <= 0) returns cam-yaw unchanged.
+(defn cam-follow-yaw-step-mdeg [(cam-yaw : I32) (behind-yaw : I32) (dt-ms : I32) (speed-opt : I32) (active : I32)] : I32
+  (if (or (<= active 0) (<= dt-ms 0))
+    cam-yaw
+    (let [diff (cam-ease-wrap-mdeg (- behind-yaw cam-yaw))
+          step (cam-ease-lerp diff (cam-ease-alpha-q15 dt-ms (cam-follow-recenter-tau-ms speed-opt)))
+          y (mod (+ cam-yaw step) 360000)]
+      (if (< y 0) (+ y 360000) y))))
+
+;; Target camera pitch OFFSET (mdeg, positive = look further down) for the ground slope along the view direction
+;; (slope-permille: rise/run, positive = uphill ahead of the camera). Off -> 0. A 6% dead zone is subtracted,
+;; then 22 mdeg per permille (about half the slope angle), clamped to +-15 degrees. Uphill ahead raises the
+;; camera's look (negative offset), downhill lowers it.
+(defn cam-follow-slope-pitch-target-mdeg [(terrain-opt : I32) (slope-permille : I32)] : I32
+  (if (<= terrain-opt 0)
+    0
+    (let [s (cam-ease-abs slope-permille)
+          eff (if (> s (cam-follow-slope-deadzone-permille)) (- s (cam-follow-slope-deadzone-permille)) 0)
+          off (cam-ease-clamp 0 (cam-follow-slope-pitch-max-mdeg) (* eff 22))]
+      (if (> slope-permille 0) (- 0 off) off))))
+
+;; Eased pitch offset: a slow 350 ms constant, so a bumpy hillside does not make the view wobble.
+(defn cam-follow-pitch-ease-mdeg [(cur : I32) (target : I32) (dt-ms : I32)] : I32
+  (cam-ease-step cur target dt-ms 350))
+
+;; Never fight the wall pull-in: scale the terrain pitch offset by how much of the desired arm survived the wall
+;; test (arm-fraction-permille = actual arm / wanted arm x1000, clamped 0..1000). Fully pulled in -> no offset.
+(defn cam-follow-wall-damp-mdeg [(offset-mdeg : I32) (arm-fraction-permille : I32)] : I32
+  (/ (* offset-mdeg (cam-ease-clamp 0 1000 arm-fraction-permille)) 1000))
+
+;; Camera focus height follows the player's height. Off -> rigid (focus == player). Slope -> eases with a 220 ms
+;; constant so stairs and curbs do not jerk the view, and with 80 ms when the gap is over 3 units (a long fall or a
+;; teleport) so the camera never lags far behind the player.
+(defn cam-follow-focus-y-step-milli [(terrain-opt : I32) (focus-y : I32) (player-y : I32) (dt-ms : I32)] : I32
+  (if (<= terrain-opt 0)
+    player-y
+    (cam-ease-step focus-y player-y dt-ms
+                   (if (> (cam-ease-abs (- player-y focus-y)) 3000) 80 220))))
+
+;; Camera POSITION lag (per axis, milli) from the smoothing option. Off -> exactly the target.
+(defn cam-follow-smooth-step-milli [(smoothing-opt : I32) (cur : I32) (target : I32) (dt-ms : I32)] : I32
+  (let [tau (cam-follow-smooth-tau-ms smoothing-opt)]
+    (if (<= tau 0) target (cam-ease-step cur target dt-ms tau))))

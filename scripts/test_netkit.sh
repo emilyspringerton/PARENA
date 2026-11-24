@@ -14,8 +14,12 @@ cd "$(dirname "$0")/.."
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 scripts/build_netkit_wasm.sh "$W/netkit.wasm"
 scripts/build_netkit_term_wasm.sh "$W/nkterm.wasm"
+# the garage (nk_garage.prn): the SAME checks run twice -- on the compiler's LLVM IR, executed by a small interpreter (needs only python3), and
+# below (in the loop) on the linked wasm. test_garage_ir.py is therefore not part of the wasm loop.
+echo "== test_garage_ir.py (nk_garage.prn: parena's LLVM IR, interpreted)"
+python3 tests/netkit/test_garage_ir.py | tail -3
 for t in tests/netkit/test_*.py; do
-  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py) continue;; esac
+  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py|*/test_browser_garage.py|*/test_garage_ir.py) continue;; esac
   echo "== $(basename "$t")"
   case "$t" in */test_term.py) python3 "$t" "$W/nkterm.wasm" | tail -3;; *) python3 "$t" "$W/netkit.wasm" | tail -3;; esac
 done
@@ -44,3 +48,9 @@ echo "== test_browser_e2e.py (headless Chromium, real clicks and keys, pixel-exa
 if [ ! -f "$HTML" ] || [ ! -x "$W/vncd" ] || [ ! -d "$W/web" ]; then echo "SKIP: needs index.html, the VNC test server and the web build (see above)";
 elif ! python3 -c "import playwright, aiohttp" 2>/dev/null; then echo "SKIP: needs python playwright + aiohttp (pip install playwright aiohttp; python3 -m playwright install --with-deps chromium)";
 else python3 tests/netkit/test_browser_e2e.py "$W/web" "$(dirname "$HTML")" "$W/vncd" ${LD:+"$LD"} "${NETKIT_SHOTS:-$W/shots}" | tail -5; fi
+
+# ---- the garage and the arcade (BRAWLPIT inside the page) in headless Chromium, under the app's CSP (no SSH/VNC server needed) ----
+echo "== test_browser_garage.py (garage + arcade in Chromium under the Android CSP)"
+if command -v node >/dev/null 2>&1 && [ -f "$HTML" ] && [ ! -d "$W/web" ]; then scripts/build_netkit_web.sh "$W/web" | tail -1; fi
+if [ -d "$W/web" ] && python3 -c "import playwright" 2>/dev/null; then python3 tests/netkit/test_browser_garage.py "$W/web" "$(dirname "$HTML")" | tail -4
+else echo "SKIP: needs node (to build the page), playwright and the SHANKPIT checkout"; fi

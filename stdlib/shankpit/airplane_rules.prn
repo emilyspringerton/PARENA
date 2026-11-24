@@ -10,7 +10,12 @@
 ;; angle of attack). Scalar-only I32, pure and total, same convention as the other vehicle mods.
 (module shankpit/airplane-rules)
 (export airplane-top-speed-milli airplane-stall-milli airplane-liftoff-milli airplane-thrust-milli
-        airplane-drag-milli airplane-lift-permille airplane-hull)
+        airplane-drag-milli airplane-lift-permille airplane-hull
+        airplane-pitch-authority-permille airplane-pitch-cmd-milli airplane-roll-cmd-milli
+        airplane-turn-rate-milli airplane-rudder-yaw-milli airplane-ground-steer-milli
+        airplane-vspeed-target-milli airplane-pitch-accel-milli airplane-stall-warn-permille
+        airplane-brake-permille airplane-rotate-speed-milli airplane-unstick
+        airplane-ground-pitch-target-milli)
 
 ;; 12 units/tick: the fastest thing in the game, and it needs the whole map to use it.
 (defn airplane-top-speed-milli [] : I32 12000)
@@ -52,3 +57,114 @@
 
 ;; A transport that lands badly does not explode, it needs a new wing.
 (defn airplane-hull [] : I32 600)
+;; ---------------------------------------------------------------------------------------------------
+;; FLIGHT-0/1 (founder 2026-11-24: "the PROP plane is super jank ... behave more like a real flight
+;; simulator, its super floppy"). The handling LAWS, all scalar I32: stick axes are permille (-1000..1000,
+;; pitch +1000 = pull back = nose up, roll +1000 = bank RIGHT), angles milli-degrees, rates milli-degrees
+;; per tick, speeds milli-units/tick. The host (airplane_flight.h) integrates; it owns no numbers.
+;;
+;; Two modes, one flag (assist):
+;;   sim    stick = RATE command. Centred stick HOLDS attitude (plus a weak roll stability), like a real
+;;          light aircraft. Full authority, no safety net.
+;;   assist stick = ATTITUDE command (pitch to +-25 deg, bank to +-45 deg). Centred stick returns the
+;;          wings level and the nose to the horizon. The gain is below critical damping on purpose, so a
+;;          step input settles without overshoot (the rate lag in the host is 0.25-0.3 per tick).
+;; ---------------------------------------------------------------------------------------------------
+
+(defn airplane-abs [(x : I32)] : I32 (if (< x 0) (- 0 x) x))
+
+;; Elevator authority: full above 1.1x stall, 30% at or below 0.5x stall (a stalled wing barely answers).
+(defn airplane-pitch-authority-permille [(speed-milli : I32) (stall-milli : I32)] : I32
+  (if (>= speed-milli (/ (* stall-milli 11) 10)) 1000
+    (if (<= speed-milli (/ stall-milli 2)) 300
+      (+ 300 (/ (* (- speed-milli (/ stall-milli 2)) 700)
+                (- (/ (* stall-milli 11) 10) (/ stall-milli 2)))))))
+
+;; Commanded pitch rate (milli-deg/tick). Below the stall speed nose-UP commands are dead and the nose
+;; drops (-0.7 deg/tick toward -15 deg) -- recoverable: push forward, the dive builds speed, the wing flies.
+(defn airplane-pitch-rate-raw [(stick : I32) (pitch-mdeg : I32) (assist : I32)] : I32
+  (if (= assist 1)
+    (airplane-clamp -1100 1100 (/ (* (- (* stick 25) pitch-mdeg) 50) 1000))
+    (/ (* stick 1200) 1000)))
+
+(defn airplane-pitch-cmd-milli [(stick : I32) (speed-milli : I32) (stall-milli : I32)
+                                (pitch-mdeg : I32) (assist : I32)] : I32
+  (if (< speed-milli stall-milli)
+    (airplane-clamp -2200 0
+      (+ (if (> (airplane-pitch-rate-raw stick pitch-mdeg assist) 0) 0
+           (/ (* (airplane-pitch-rate-raw stick pitch-mdeg assist)
+                 (airplane-pitch-authority-permille speed-milli stall-milli)) 1000))
+         (if (> pitch-mdeg -15000) -700 0)))
+    (/ (* (airplane-pitch-rate-raw stick pitch-mdeg assist)
+          (airplane-pitch-authority-permille speed-milli stall-milli)) 1000)))
+
+;; Aileron: rate command in sim (2 deg/tick full stick, weak dihedral levelling when the stick is near
+;; centre, hard stop at 70 deg of bank), bank-angle command in assist (+-45 deg, gain 0.06/tick).
+;; Aileron authority fades at taxi speed.
+(defn airplane-roll-authority-permille [(speed-milli : I32)] : I32
+  (airplane-clamp 400 1000 (+ 400 (/ (* (- speed-milli 2000) 600) 2500))))
+
+(defn airplane-roll-cmd-raw [(stick : I32) (roll-mdeg : I32) (assist : I32)] : I32
+  (if (= assist 1)
+    (airplane-clamp -2500 2500 (/ (* (- (* stick 45) roll-mdeg) 60) 1000))
+    (+ (/ (* stick 2000) 1000)
+       (if (< (airplane-abs stick) 80) (- 0 (/ (* roll-mdeg 4) 1000)) 0))))
+
+(defn airplane-roll-cmd-milli [(stick : I32) (speed-milli : I32) (roll-mdeg : I32) (assist : I32)] : I32
+  (if (and (>= roll-mdeg 70000) (> (airplane-roll-cmd-raw stick roll-mdeg assist) 0)) 0
+    (if (and (<= roll-mdeg -70000) (< (airplane-roll-cmd-raw stick roll-mdeg assist) 0)) 0
+      (/ (* (airplane-roll-cmd-raw stick roll-mdeg assist) (airplane-roll-authority-permille speed-milli)) 1000))))
+
+;; Bank-to-turn: the lift vector tilts, so heading rate ~ g*tan(bank)/v. Linearised: bank/speed, with the
+;; speed floored at 4.0 so a slow wing cannot spin. Positive bank (right) -> positive result = a turn
+;; to the RIGHT; the host subtracts it from yaw (this engine's yaw grows to the LEFT).
+(defn airplane-turn-rate-milli [(roll-mdeg : I32) (speed-milli : I32)] : I32
+  (airplane-clamp -2200 2200
+    (/ (* roll-mdeg 140) (airplane-clamp 4000 16000 speed-milli))))
+
+;; Rudder in the air only trims the nose (0.25 deg/tick at full pedal): it no longer steers the aeroplane.
+(defn airplane-rudder-yaw-milli [(rudder : I32)] : I32 (/ (* rudder 250) 1000))
+
+;; Nosewheel steering: 1.6 deg/tick at full lock, none standing still, half at high taxi speed.
+(defn airplane-ground-steer-milli [(steer : I32) (speed-milli : I32)] : I32
+  (/ (* (/ (* steer
+             (if (< speed-milli 2000) (/ (* speed-milli 1000) 2000)
+               (if (> speed-milli 6000) 500 1000))) 1000) 1600) 1000))
+
+;; Flight path follows the nose: climb ~ speed * sin(pitch), minus a sink when the wing is short of lift
+;; (zero at or above 6.0 units/tick clean). A stalled wing (no lift) sinks 0.35 units/tick.
+(defn airplane-vspeed-target-milli [(speed-milli : I32) (pitch-mdeg : I32) (flaps : I32)] : I32
+  (airplane-clamp -3000 1500
+    (- (/ (* speed-milli pitch-mdeg) 57296)
+       (/ (* (if (< (airplane-lift-permille speed-milli flaps 1000) 1000)
+               (- 1000 (airplane-lift-permille speed-milli flaps 1000)) 0) 350) 1000))))
+
+;; Climbing trades speed for height, diving the reverse (milli-units/tick^2 along the nose).
+(defn airplane-pitch-accel-milli [(pitch-mdeg : I32)] : I32
+  (- 0 (/ (* pitch-mdeg 12) 57296)))
+
+;; Stall warning, permille: 0 above 1.3x stall, 1000 at the stall. The HUD / stick-shaker hook.
+(defn airplane-stall-warn-permille [(speed-milli : I32) (stall-milli : I32)] : I32
+  (if (>= speed-milli (/ (* stall-milli 13) 10)) 0
+    (if (<= speed-milli stall-milli) 1000
+      (/ (* (- (/ (* stall-milli 13) 10) speed-milli) 1000)
+         (- (/ (* stall-milli 13) 10) stall-milli)))))
+
+;; Wheel brakes: fraction of ground speed shed per tick, permille, at brake 0..1000 (4% at full).
+(defn airplane-brake-permille [(brake : I32)] : I32 (/ (* (airplane-clamp 0 1000 brake) 40) 1000))
+
+;; Rotation speed: the liftoff speed scaled by how much flaps lowered the stall (6.0 clean, 4.8 flapped).
+(defn airplane-rotate-speed-milli [(flaps : I32)] : I32
+  (/ (* (airplane-liftoff-milli) (airplane-stall-milli flaps)) (airplane-stall-milli 0)))
+
+;; The wheels let go only when it is fast enough AND rotated (nose >= 2.5 deg): speed alone no longer hops it.
+(defn airplane-unstick [(speed-milli : I32) (pitch-mdeg : I32) (flaps : I32)] : I32
+  (if (and (>= speed-milli (airplane-rotate-speed-milli flaps)) (>= pitch-mdeg 2500)) 1 0))
+
+;; Nose attitude while the wheels are down. Sim: nothing until rotation speed, then back-stick rotates it
+;; (to 12 deg). Assist: automatic rotation to 6 deg at rotation speed, back-stick adds more.
+(defn airplane-ground-pitch-target-milli [(stick : I32) (speed-milli : I32) (flaps : I32) (assist : I32)] : I32
+  (if (< (* speed-milli 100) (* (airplane-rotate-speed-milli flaps) 95)) 0
+    (if (= assist 1)
+      (+ 6000 (* (airplane-clamp 0 1000 stick) 6))
+      (* (airplane-clamp 0 1000 stick) 12))))

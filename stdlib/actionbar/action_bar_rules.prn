@@ -1,0 +1,88 @@
+;; stdlib/actionbar/action_bar_rules.prn -- SHANKPIT's action bar (founder, SECTION 637: "ACTION BARS just like Minecraft and
+;; WoW combined, OPTIONAL in SHANKPIT, MODS BASED, ARSENAL BASED. 1 2 3 4 5 6 7 8 9 0 bound to the SHANKPIT defaults but we
+;; get mod keys just like WoW -- all plugins based, PARENA based").
+;;
+;; The mod owns RESOLUTION: (key digit + modifiers) -> (bank, slot) -> action. The host owns SDL keys, drawing and calling
+;; wpn_req. Pure and total over I32, no state, so a replay and a live tick cannot disagree.
+;;
+;; Layout: 4 banks x 10 slots. Digit keys 1..9,0 are slots 1..10 (0 = slot 10).
+;;   bank 1 = no modifier   bank 2 = Shift   bank 3 = Ctrl   bank 4 = Alt
+;;   several modifiers at once: Alt > Ctrl > Shift (Shift+Ctrl = bank 3, Ctrl+Alt = bank 4, all three = bank 4).
+;; Bank 1 defaults reproduce the pre-bar bindings exactly: 1-6 arsenal weapons 0..5, 7 flashlight(7), 8 hammer(8), 9 spraycan(9),
+;; 0 empty. Banks 2-4 are empty by default; plugins and player binds fill them.
+;;
+;; PACKED ACTION (one I32): kind * 65536 + id, id 0..65535.
+;;   kind 0 none/empty   1 weapon (id = WPN_* index)   2 ability   3 item   4 mod-provided   15 CLEARED (player bind: "leave this slot empty")
+;;   0 means "no opinion" for a bind/plugin input and "empty slot" for a resolved output.
+;;
+;; PRECEDENCE (per slot): player bind > plugin > default. A bind of 0 = unbound (fall through); a bind of CLEARED forces the
+;; slot empty even over a plugin/default. A plugin value of 0 = plugin offers nothing here. The host asks each plugin's
+;; provider `(bank slot) -> packed` in load order and passes the first non-zero answer (ab-first-nonzero) as `plugin`.
+;; Out-of-range bank (not 1..4) or slot (not 1..10) always resolves to 0, regardless of bind/plugin.
+(module actionbar/action-bar-rules)
+(export ab-banks ab-slots ab-kind-none ab-kind-weapon ab-kind-ability ab-kind-item ab-kind-mod ab-kind-cleared
+        ab-pack ab-kind-of ab-id-of ab-slot-for-digit ab-digit-for-slot ab-bank-for-mods
+        ab-default ab-resolve ab-source ab-first-nonzero ab-cycle-slot ab-valid-slot ab-valid-bank)
+
+(defn ab-banks [] : I32 4)
+(defn ab-slots [] : I32 10)
+(defn ab-kind-none [] : I32 0)
+(defn ab-kind-weapon [] : I32 1)
+(defn ab-kind-ability [] : I32 2)
+(defn ab-kind-item [] : I32 3)
+(defn ab-kind-mod [] : I32 4)
+(defn ab-kind-cleared [] : I32 15)
+
+;; id is clamped to 0..65535 and kind to 0..15 so a pack is always decodable.
+(defn ab-pack [(kind : I32) (id : I32)] : I32
+  (+ (* (if (< kind 0) 0 (if (> kind 15) 15 kind)) 65536)
+     (if (< id 0) 0 (if (> id 65535) 65535 id))))
+(defn ab-kind-of [(a : I32)] : I32 (/ (if (< a 0) 0 a) 65536))
+(defn ab-id-of [(a : I32)] : I32 (- (if (< a 0) 0 a) (* (/ (if (< a 0) 0 a) 65536) 65536)))
+
+(defn ab-valid-slot [(slot : I32)] : I32 (if (>= slot 1) (if (<= slot 10) 1 0) 0))
+(defn ab-valid-bank [(bank : I32)] : I32 (if (>= bank 1) (if (<= bank 4) 1 0) 0))
+
+;; Digit key (0..9, with '0' = 0) -> slot 1..10; anything else -> 0 (not an action-bar key).
+(defn ab-slot-for-digit [(d : I32)] : I32
+  (if (< d 0) 0 (if (> d 9) 0 (if (= d 0) 10 d))))
+;; Inverse, for drawing the key label: slot 1..10 -> 1..9,0; invalid -> -1.
+(defn ab-digit-for-slot [(slot : I32)] : I32
+  (if (= (ab-valid-slot slot) 0) -1 (if (= slot 10) 0 slot)))
+
+;; Modifier flags (non-zero = held) -> bank 1..4. Alt > Ctrl > Shift.
+(defn ab-bank-for-mods [(shift : I32) (ctrl : I32) (alt : I32)] : I32
+  (if (!= alt 0) 4 (if (!= ctrl 0) 3 (if (!= shift 0) 2 1))))
+
+;; Default arsenal (bank 1 only): slots 1-6 -> weapons 0..5; 7,8,9 -> weapons 7 (flashlight), 8 (hammer), 9 (spraycan).
+(defn ab-default [(bank : I32) (slot : I32)] : I32
+  (if (!= bank 1) 0
+    (if (= (ab-valid-slot slot) 0) 0
+      (if (<= slot 6) (ab-pack 1 (- slot 1))
+        (if (<= slot 9) (ab-pack 1 slot) 0)))))
+
+;; The final answer for (bank, slot). bind/plugin are packed actions (0 = no opinion).
+(defn ab-resolve [(bank : I32) (slot : I32) (bind : I32) (plugin : I32)] : I32
+  (if (= (ab-valid-bank bank) 0) 0
+    (if (= (ab-valid-slot slot) 0) 0
+      (if (= (ab-kind-of bind) 15) 0
+        (if (!= bind 0) bind
+          (if (!= plugin 0) (if (= (ab-kind-of plugin) 15) 0 plugin)
+            (ab-default bank slot)))))))
+
+;; Where the resolved action came from, for the bar UI: 0 empty, 1 default, 2 plugin, 3 player bind, 4 player-cleared.
+(defn ab-source [(bank : I32) (slot : I32) (bind : I32) (plugin : I32)] : I32
+  (if (= (ab-valid-bank bank) 0) 0
+    (if (= (ab-valid-slot slot) 0) 0
+      (if (= (ab-kind-of bind) 15) 4
+        (if (!= bind 0) 3
+          (if (!= plugin 0) 2
+            (if (!= (ab-default bank slot) 0) 1 0)))))))
+
+;; Plugin chaining: the first provider with an opinion wins (host folds this over providers in load order).
+(defn ab-first-nonzero [(a : I32) (b : I32)] : I32 (if (!= a 0) a b))
+
+;; Minecraft-style hotbar scroll: step the selected slot by delta (any sign/size), wrapping 1..10. Invalid slot -> 1.
+(defn ab-cycle-slot [(slot : I32) (delta : I32)] : I32
+  (if (= (ab-valid-slot slot) 0) 1
+    (+ 1 (mod (+ (+ (- slot 1) (mod delta 10)) 10) 10))))

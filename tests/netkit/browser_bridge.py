@@ -81,7 +81,7 @@ def make_app(html_dir, web_dir):
         base = html_dir if name in ("index.html", "netkit.css") else web_dir
         path = os.path.join(base, os.path.basename(name))
         if not os.path.exists(path): return web.Response(status=404)
-        ctype = {"html": "text/html", "css": "text/css", "js": "text/javascript", "wasm": "application/wasm"}.get(name.rsplit(".", 1)[-1], "application/octet-stream")
+        ctype = {"html": "text/html", "css": "text/css", "js": "text/javascript", "wasm": "application/wasm", "png": "image/png"}.get(name.rsplit(".", 1)[-1], "application/octet-stream")
         body = open(path, "rb").read()
         if name == "index.html":      # the shim goes in before the page's own module script runs
             body = body.replace(b"<script type=\"module\" src=\"nk-host.js\">", b"<script src=\"/shim.js\"></script>\n<script type=\"module\" src=\"nk-host.js\">")
