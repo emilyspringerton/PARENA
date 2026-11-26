@@ -35,6 +35,8 @@ echo "== garage_spec.prn (nk_garage.prn)"
 scripts/scarab_wasm.sh tests/netkit/garage_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== term_spec.prn (nk_term.prn, the SSH terminal)"
 scripts/scarab_wasm.sh tests/netkit/term_spec.prn --modules stdlib/netkit/term/MODULES --file $V/term.vec | tail -3
+echo "== rfb_spec.prn (nk_rfb.prn vs a scripted server; whole / byte / random-chunk delivery)"
+scripts/scarab_wasm.sh tests/netkit/rfb_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
 scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
 for t in tests/netkit/test_*.py; do

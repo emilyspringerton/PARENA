@@ -1,5 +1,11 @@
 ## 2026-11-26
 
+- **feat(test): the VNC/RFB tests are a SCARAB spec, and they now cover the Hextile foreground path.** `test_rfb.py` ->
+  `tests/netkit/rfb_spec.prn` (84 specs, 151 expectations): every handshake variant, failures and their words, Raw / Hextile / CopyRect in
+  whole, byte-at-a-time and random-chunk delivery (a seeded xorshift in the spec), DesktopSize and the other server messages, hostile
+  servers, the view-only guarantee (a client-message parser in the spec), a 1080p frame and clean close. The Hextile encoder is written
+  in the spec from RFC 6143. Mutation checks found a gap the Python test had too: its image never produced one-colour subrect tiles, so
+  breaking the foreground register went unnoticed. A second, two-colour image now forces that path (both mutations caught).
 - **fix(lexer): string literals of any length are kept whole.** `lex_string` used a fixed 4096-byte buffer and silently dropped every byte
   past 4095. `stdlib/gfd/term_font.prn`'s font table is one 8160-byte literal, so every wasm build that uses it (the Netkit SSH terminal,
   BRAWLPIT, D2, EMPIRE, REDGARDEN, shankpit-460) read glyphs 128..254 -- the box-drawing and block characters -- from whatever followed
