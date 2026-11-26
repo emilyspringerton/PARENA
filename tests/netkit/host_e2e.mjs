@@ -49,6 +49,9 @@ class El {
   getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 544 }; }
   setPointerCapture() {}
   closest() { return null; }
+  // the garage sets aria-label on its objects (a real DOM method; the mock just records it)
+  setAttribute(k, v) { (this.attrs ||= {})[k] = String(v); }
+  getAttribute(k) { return this.attrs && k in this.attrs ? this.attrs[k] : null; }
 }
 const els = new Map();
 const getEl = id => { accessed.add(id); if (!idInfo.has(id)) return null; if (!els.has(id)) els.set(id, new El(id, idInfo.get(id))); return els.get(id); };
@@ -65,7 +68,8 @@ WebAssembly.instantiate = async (bytes, imports) => {
   const r = await realInstantiate(bytes, imports);
   if (!(r.instance && r.instance.exports.bp_init)) return r;
   bp.imports = WebAssembly.Module.imports(r.module).length;
-  const ex = new Proxy(r.instance.exports, { get: (t, k) => typeof t[k] === 'function' && /^bp_/.test(k) ? (...a) => { if (k === 'bp_frame') bp.frames++; else bp.calls.push([k, ...a]); return t[k](...a); } : t[k] });
+  // wasm exports are frozen, so a Proxy over them may not return a wrapper (proxy invariant); wrap a plain copy instead
+  const ex = new Proxy({ ...r.instance.exports }, { get: (t, k) => typeof t[k] === 'function' && /^bp_/.test(k) ? (...a) => { if (k === 'bp_frame') bp.frames++; else bp.calls.push([k, ...a]); return t[k](...a); } : t[k] });
   bp.exports = r.instance.exports;
   return { module: r.module, instance: { exports: ex } };
 };
@@ -294,6 +298,8 @@ $('banner-close').dispatch('click');
 
 // the device's identity changed: nothing is sent
 const hk = JSON.parse(store.get('hostkeys')); hk[`127.0.0.1:${sshPort}`] = Buffer.alloc(32, 7).toString('base64'); store.set('hostkeys', JSON.stringify(hk));
+// the counters are files a 20 ms pump refreshes: wait until the wrong password above has landed, or it lands mid-check
+await waitFor(() => cfg.ssh.failuresNow() >= 1, 3000);
 const failsBefore = cfg.ssh.failuresNow(), loginsBefore = cfg.ssh.loginsNow();
 $('m-host').value = '127.0.0.1'; $('btn-m-connect').dispatch('click'); $('c-user').value = 'tester'; $('c-pass').value = 's3cret'; $('c-go').dispatch('click');
 check(await waitFor(() => /identity changed/.test($('banner-text').textContent), 15000), `a changed host key: "${$('banner-text').textContent}"`);
