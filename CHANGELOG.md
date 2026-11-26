@@ -1,5 +1,6 @@
 ## 2026-11-26
 
+- feat(k8s): `parena-pod-render` gains a Vultr provider (`PARENA_K8S_PROVIDER=vultr`): `service-udp`/`service-tcp` become hostPorts on a pause sidecar plus `nodeSelector emily/pool=$PARENA_VULTR_GAME_POOL`, no LoadBalancer Service; `gateway` renders an Envoy Gateway (class/tls-secret) with one BackendTrafficPolicy for the request timeout; BackendConfig dropped; PVCs raised to Vultr's 10 GB minimum; `ingress` refused. New `pod-hostports-container-yaml`, `pod-node-selector-yaml`, `pod-gateway-vultr-yaml` in `stdlib/k8s/pod.prn`; tests in `test_k8s_pod.c`. Default (gke) output unchanged byte-for-byte. (sess-20261126-1643-452c2f1a)
 - **feat(netkit): a text editor that saves to a USB drive, and a VNC kit for a PC with no screen** (founder: "we have no way to write to
   the SD card so we need to build a text editor into netkit ... that allows us to save to the usb drive connected over usb c"; KIT-USB).
   - `stdlib/netkit/nk_edit.prn`: the document over linear memory (0x400000..0x800000 in netkit-lite): insert/backspace/delete, the six

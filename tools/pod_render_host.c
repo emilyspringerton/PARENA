@@ -14,6 +14,14 @@
  *   gateway name=G namespace=NS certmap=MAP ip-name=GLOBAL_ADDR routes=H@svc@8081 [timeout=3600]   # stand-alone Gateway API HTTPS gateway w/ Certificate Manager cert map (+HTTPRoute/GCPBackendPolicy per route)
  *   ingress name=edge namespace=NS rules=H@svc@8082,H2@svc2@9091 [ip-name=GLOBAL_ADDR]   # the cluster's ONE Ingress (host@service@port); may stand alone, no pod needed
  *
+ * Provider (env PARENA_K8S_PROVIDER, default "gke"): "vultr" renders for Vultr Kubernetes Engine instead --
+ *   service-udp / service-tcp  -> hostPorts on a pause sidecar + nodeSelector emily/pool=$PARENA_VULTR_GAME_POOL
+ *                                 (default "game"; that pool carries the Reserved IP). No LoadBalancer Service, ip= ignored.
+ *   backendconfig / backend-config= -> dropped (GKE-only; timeouts live on the Gateway's BackendTrafficPolicy)
+ *   gateway                     -> Envoy Gateway: [class=eg] [tls-secret=edge-tls]; certmap/ip-name ignored
+ *   pvc-gb                      -> raised to Vultr's 10 GB block-storage minimum
+ *   ingress                     -> refused (GCE-only, and nothing uses it)
+ *
  * usage: parena-pod-render SPEC
  */
 #include "parena_runtime.h"
@@ -44,6 +52,12 @@ int main(int argc, char **argv) {
     FILE *f = fopen(argv[1], "r");
     if (!f) { perror(argv[1]); return 2; }
     Arena a; arena_init(&a);
+    const char *prov = getenv("PARENA_K8S_PROVIDER");
+    int vultr = prov && !strcmp(prov, "vultr");
+    if (prov && *prov && !vultr && strcmp(prov, "gke")) { fprintf(stderr, "PARENA_K8S_PROVIDER=%s: want gke or vultr\n", prov); return 2; }
+    const char *pool = getenv("PARENA_VULTR_GAME_POOL");
+    if (!pool || !*pool) pool = "game";
+    char gw_class[64] = "", gw_tls[128] = "";
     char line[4096];
     int lineno = 0, have_pod = 0, replicas = 1, pvc_gb = 0, ncont = 0;
     char name[128] = "", ns[128] = "", image[256] = "", pvc[128] = "", secret[128] = "", var[128] = "", run[128] = "", svc_ports[128] = "", udp_ports[1024] = "", udp_ip[64] = "", tcp_ports[1024] = "", tcp_ip[64] = "", ing_rules[1024] = "", ing_name[128] = "", ing_ns[128] = "", gw_name[128] = "", gw_ns[128] = "", gw_certmap[128] = "", gw_ip[128] = "", gw_routes[1024] = "", gw_timeout[16] = "", ing_ip[128] = "", bc_name[128] = "", bc_timeout[16] = "", svc_bc[128] = "";
@@ -95,8 +109,10 @@ int main(int argc, char **argv) {
         } else if (!strcmp(kind, "gateway")) {
             snprintf(gw_name, sizeof gw_name, "%s", get(&kv, "name", NULL, lineno));
             snprintf(gw_ns, sizeof gw_ns, "%s", get(&kv, "namespace", NULL, lineno));
-            snprintf(gw_certmap, sizeof gw_certmap, "%s", get(&kv, "certmap", NULL, lineno));
-            snprintf(gw_ip, sizeof gw_ip, "%s", get(&kv, "ip-name", NULL, lineno));
+            snprintf(gw_certmap, sizeof gw_certmap, "%s", get(&kv, "certmap", vultr ? "" : NULL, lineno));
+            snprintf(gw_ip, sizeof gw_ip, "%s", get(&kv, "ip-name", vultr ? "" : NULL, lineno));
+            snprintf(gw_class, sizeof gw_class, "%s", get(&kv, "class", "eg", lineno));
+            snprintf(gw_tls, sizeof gw_tls, "%s", get(&kv, "tls-secret", "edge-tls", lineno));
             snprintf(gw_routes, sizeof gw_routes, "%s", get(&kv, "routes", NULL, lineno));
             snprintf(gw_timeout, sizeof gw_timeout, "%s", get(&kv, "timeout", "3600", lineno));
         } else if (!strcmp(kind, "ingress")) {
@@ -107,6 +123,11 @@ int main(int argc, char **argv) {
         } else { fprintf(stderr, "spec:%d: unknown directive '%s'\n", lineno, kind); return 2; }
     }
     fclose(f);
+    if (vultr && ing_rules[0]) { fprintf(stderr, "spec: ingress is GCE-only; use a gateway under PARENA_K8S_PROVIDER=vultr\n"); return 2; }
+    if (vultr && !have_pod && gw_name[0]) {
+        fputs(pod_gateway_vultr_yaml(gw_name, gw_ns, gw_class, gw_tls, gw_routes, gw_timeout, &a), stdout);
+        return 0;
+    }
     if (!have_pod && gw_name[0]) {   /* stand-alone Gateway */
         fputs(pod_gateway_yaml(gw_name, gw_ns, gw_certmap, gw_ip, gw_routes, gw_timeout, &a), stdout);
         return 0;
@@ -117,13 +138,24 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!have_pod || ncont == 0) { fprintf(stderr, "spec: need a pod and at least one container\n"); return 2; }
+    if (vultr) {
+        if (pvc_gb < 10) pvc_gb = 10;              /* Vultr block storage minimum */
+        svc_bc[0] = 0; bc_name[0] = 0;             /* BackendConfig is GKE-only */
+        if (udp_ports[0] || tcp_ports[0]) {
+            char *hp = pod_hostports_container_yaml(udp_ports, tcp_ports, &a);
+            containers = realloc(containers, strlen(containers) + strlen(hp) + 1);
+            strcat(containers, hp);
+        }
+    }
     char *out = pvc[0] ? pvc_yaml(PVCSpec_new(pvc, ns, pvc_gb), &a) : "";
     char *dep = pod_head_yaml(name, ns, replicas, &a);
     dep = concat(dep, containers, &a);
     dep = concat(dep, pod_tail_yaml(pvc, &a), &a);
+    if (vultr && (udp_ports[0] || tcp_ports[0])) dep = concat(dep, pod_node_selector_yaml((char *)pool, &a), &a);
     out = pvc[0] ? join_docs(out, dep, &a) : dep;
     if (svc_ports[0]) out = join_docs(out, pod_service_yaml(name, ns, svc_ports, svc_bc, &a), &a);
     if (bc_name[0]) out = join_docs(out, pod_backendconfig_yaml(bc_name, ns, bc_timeout, &a), &a);
+    if (vultr) udp_ports[0] = tcp_ports[0] = 0;   /* published as hostPorts above, no LB Service */
     if (udp_ports[0]) out = join_docs(out, pod_udp_service_yaml(name, ns, udp_ports, udp_ip, &a), &a);
     if (tcp_ports[0]) out = join_docs(out, pod_tcp_service_yaml(name, ns, tcp_ports, tcp_ip, &a), &a);
     if (ing_rules[0]) out = join_docs(out, pod_ingress_yaml(ing_name[0] ? ing_name : name, ing_ns[0] ? ing_ns : ns, ing_rules, "", ing_ip, &a), &a);

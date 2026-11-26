@@ -85,6 +85,29 @@ int main(void) {
         assert(n == 1);
     }
 
+    /* ---- Vultr provider (GCP shut off 2026-11-26) ---- */
+    {
+        char *hp = pod_hostports_container_yaml("8778,8300", "2323", &a);
+        assert(strstr(hp, "- name: hostports\n          image: registry.k8s.io/pause:3.10"));
+        assert(strstr(hp, "containerPort: 8778\n              hostPort: 8778\n              protocol: UDP"));
+        assert(strstr(hp, "containerPort: 8300\n              hostPort: 8300\n              protocol: UDP"));
+        assert(strstr(hp, "containerPort: 2323\n              hostPort: 2323\n              protocol: TCP"));
+        assert(!strstr(hp, "readinessProbe"));
+        char *u = pod_hostports_container_yaml("6969", "", &a);
+        assert(strstr(u, "protocol: UDP") && !strstr(u, "protocol: TCP"));
+        assert(strcmp(pod_node_selector_yaml("game", &a), "      nodeSelector:\n        emily/pool: game\n") == 0);
+        char *vg = pod_gateway_vultr_yaml("edge-gw", "emily", "eg", "edge-tls", "ws.x.io@relay@8081,g.x.io@coll@8087", "3600", &a);
+        assert(strstr(vg, "kind: Gateway") && strstr(vg, "gatewayClassName: eg"));
+        assert(strstr(vg, "certificateRefs:\n          - kind: Secret\n            name: edge-tls"));
+        assert(strstr(vg, "kind: BackendTrafficPolicy") && strstr(vg, "requestTimeout: 3600s"));
+        assert(strstr(vg, "kind: Gateway\n      name: edge-gw"));
+        assert(strstr(vg, "- ws.x.io") && strstr(vg, "name: relay\n          port: 8081"));
+        assert(strstr(vg, "- g.x.io") && strstr(vg, "name: coll\n          port: 8087"));
+        assert(!strstr(vg, "gke") && !strstr(vg, "GCP") && !strstr(vg, "certmap"));
+        int n = 0; for (const char *q = vg; (q = strstr(q, "\nkind: HTTPRoute")); q++) n++;
+        assert(n == 2);
+    }
+
     puts("test_k8s_pod: OK");
     return 0;
 }

@@ -17,7 +17,8 @@
 
 (module k8s/pod)
 (import string)
-(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-tcp-service-yaml pod-backendconfig-yaml pod-gateway-yaml pod-ingress-yaml)
+(export args-yaml pod-head-yaml pod-container-yaml pod-tail-yaml pod-service-yaml pod-udp-service-yaml pod-tcp-service-yaml pod-backendconfig-yaml pod-gateway-yaml pod-ingress-yaml
+        pod-hostports-container-yaml pod-node-selector-yaml pod-gateway-vultr-yaml)
 
 ;; args-yaml — "a,b" -> block list lines at `indent`, each arg double-quoted. "" -> "".
 (defn args-yaml [(csv : String @ Region) (indent : String @ Region) (dest : Arena @ Region)]
@@ -331,6 +332,125 @@
           dest)
         dest)
       dest)))
+
+;; ---- Vultr (VKE) provider -------------------------------------------------------------------------
+;; GCP was shut off 2026-11-26 (billing); the cluster moves to Vultr Kubernetes Engine. The host selects
+;; these with PARENA_K8S_PROVIDER=vultr; the GKE functions above stay the default and are unchanged.
+;; Why game traffic does NOT use LoadBalancer Services on Vultr: a Vultr LB holds at most 15 forwarding
+;; rules (redgarden-rnd alone publishes 43 UDP ports), its default health check is TCP on the first
+;; NodePort (always fails for a UDP-only Service), and the CCM ignores externalTrafficPolicy. Instead the
+;; game pods publish hostPorts on a dedicated node pool (label emily/pool=<pool>) that carries one Vultr
+;; Reserved IP — one IP for every game port, real client source addresses, no LB rule cap.
+
+;; hostport-entry-yaml — one container port published on the node at the same number; proto 1 = UDP, 2 = TCP.
+(defn hostport-entry-yaml [(p : String @ Region) (proto : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "            - containerPort: "
+    (string/concat p
+      (string/concat "\n              hostPort: "
+        (string/concat p (if (= proto 1) "\n              protocol: UDP\n" "\n              protocol: TCP\n") dest)
+        dest)
+      dest)
+    dest))
+
+(defn hostport-list-yaml [(csv : String @ Region) (proto : I32) (dest : Arena @ Region)]
+  : String @ Region
+  (if (= (string/length csv) 0)
+    ""
+    (let [parts (string/split csv "," dest)]
+      (loop [i 0 acc ""]
+        (if (>= i (vec/len &parts))
+          acc
+          (recur (+ i 1) (string/concat acc (hostport-entry-yaml (vec/get &parts i) proto dest) dest)))))))
+
+;; pod-hostports-container-yaml — a pause container whose only job is to declare the pod's hostPorts.
+;; Containers in a pod share one network namespace, so the node's portmap DNAT reaches whichever real
+;; container listens on that port; declaring them here keeps every app container's own spec untouched.
+(defn pod-hostports-container-yaml [(udp-csv : String @ Region) (tcp-csv : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "        - name: hostports\n          image: registry.k8s.io/pause:3.10\n          ports:\n"
+    (string/concat (hostport-list-yaml udp-csv 1 dest)
+      (string/concat (hostport-list-yaml tcp-csv 2 dest)
+        "          resources:\n            requests:\n              cpu: 1m\n              memory: 8Mi\n            limits:\n              memory: 16Mi\n"
+        dest)
+      dest)
+    dest))
+
+;; pod-node-selector-yaml — pin the pod to the node pool labelled emily/pool=<pool> (goes after pod-tail).
+(defn pod-node-selector-yaml [(pool : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (string/concat "      nodeSelector:\n        emily/pool: " (string/concat pool "\n" dest) dest))
+
+;; route-vultr-yaml — one HTTPRoute for "host@service@port" (timeouts come from the Gateway-wide policy).
+(defn route-vultr-yaml [(gw : String @ Region) (namespace : String @ Region) (rule : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [hp (string/split rule "@" dest)
+        host (vec/get &hp 0)
+        svc (vec/get &hp 1)
+        port (vec/get &hp 2)]
+    (string/concat "---\napiVersion: gateway.networking.k8s.io/v1\nkind: HTTPRoute\nmetadata:\n  name: "
+      (string/concat svc
+        (string/concat "\n  namespace: "
+          (string/concat namespace
+            (string/concat "\nspec:\n  parentRefs:\n    - name: "
+              (string/concat gw
+                (string/concat "\n  hostnames:\n    - "
+                  (string/concat host
+                    (string/concat "\n  rules:\n    - backendRefs:\n        - name: "
+                      (string/concat svc (string/concat "\n          port: " (string/concat port "\n" dest) dest) dest)
+                      dest)
+                    dest)
+                  dest)
+                dest)
+              dest)
+            dest)
+          dest)
+        dest)
+      dest)))
+
+;; pod-gateway-vultr-yaml — the edge Gateway on Envoy Gateway (gatewayClassName = class, normally "eg"):
+;; HTTPS :443 terminating with the cert-manager wildcard Secret tls-secret (gitops/platform/vultr), one
+;; BackendTrafficPolicy lifting the request timeout for every route on it (WebSockets; same role as the
+;; GKE GCPBackendPolicy timeoutSec), then an HTTPRoute per route. Vultr's CCM gives the Envoy Service its
+;; own LB and IP; there is no reserved-address field to fill.
+(defn pod-gateway-vultr-yaml [(name : String @ Region) (namespace : String @ Region) (class : String @ Region) (tls-secret : String @ Region) (routes-csv : String @ Region) (timeout : String @ Region) (dest : Arena @ Region)]
+  : String @ Region
+  (let [parts (string/split routes-csv "," dest)
+        routes (loop [i 0 acc ""]
+                 (if (>= i (vec/len &parts))
+                   acc
+                   (recur (+ i 1) (string/concat acc (route-vultr-yaml name namespace (vec/get &parts i) dest) dest))))
+        head (string/concat "apiVersion: gateway.networking.k8s.io/v1\nkind: Gateway\nmetadata:\n  name: "
+               (string/concat name
+                 (string/concat "\n  namespace: "
+                   (string/concat namespace
+                     (string/concat "\nspec:\n  gatewayClassName: "
+                       (string/concat class
+                         (string/concat "\n  listeners:\n    - name: https\n      protocol: HTTPS\n      port: 443\n      tls:\n        mode: Terminate\n        certificateRefs:\n          - kind: Secret\n            name: "
+                           (string/concat tls-secret "\n      allowedRoutes:\n        kinds:\n          - kind: HTTPRoute\n" dest)
+                           dest)
+                         dest)
+                       dest)
+                     dest)
+                   dest)
+                 dest)
+               dest)
+        policy (string/concat "---\napiVersion: gateway.envoyproxy.io/v1alpha1\nkind: BackendTrafficPolicy\nmetadata:\n  name: "
+                 (string/concat name
+                   (string/concat "-timeouts\n  namespace: "
+                     (string/concat namespace
+                       (string/concat "\nspec:\n  targetRefs:\n    - group: gateway.networking.k8s.io\n      kind: Gateway\n      name: "
+                         (string/concat name
+                           (string/concat "\n  timeout:\n    http:\n      requestTimeout: "
+                             (string/concat timeout "s\n" dest)
+                             dest)
+                           dest)
+                         dest)
+                       dest)
+                     dest)
+                   dest)
+                 dest)]
+    (string/concat head (string/concat policy routes dest) dest)))
 
 ;; rule-yaml — one Ingress host rule: "host@service@port".
 (defn rule-yaml [(rule : String @ Region) (dest : Arena @ Region)]
