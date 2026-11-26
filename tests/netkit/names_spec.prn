@@ -1,0 +1,274 @@
+;; tests/netkit/names_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_names.prn: the maker table, private MACs, name
+;; ranks and tidying, the user's labels, the Pi, and the two UDP name protocols (mDNS reverse lookup, NetBIOS node status).
+;; Replaces tests/netkit/test_names.py (founder, 2026-11-26: "convert the tests from node and python to SCARAB and LADYBUG").
+;;
+;; Every reply packet below is a hex fixture laid out the way a real responder sends it (RFC 1035/6762 for mDNS, RFC 1002 4.2.18
+;; for NBSTAT), written down from the RFCs -- not produced by nk_names.prn -- so the parser is checked against the protocol,
+;; not against itself. The comment above each one says what is in it.
+;;
+;; Run: scripts/scarab_wasm.sh tests/netkit/names_spec.prn --modules stdlib/netkit/MODULES --file <oui.bin> --file <oui_brands.tsv>
+;; (scripts/test_netkit.sh packs oui.bin with PARENA and passes both.)
+
+;; ---- spec helpers (ns- prefix: one namespace with the modules under test) ---------------------------------------------------------
+(defn ns-text! [(s : String)] : I32 (sc-put! (nk-txt-addr) s))
+(defn ns-fresh! [] : I32 (do (nk-scan-reset) (nk-scan-begin (ns-text! "192.168.4.0/24"))))
+;; the device found at 192.168.4.<host> on the port at index pi of the default list (22 80 443 445 3389 5900 5901 8080)
+(defn ns-found [(host : I32) (pi : I32)] : I32 (nk-scan-result (+ (* (- host 1) 8) pi) 0 3))
+(defn ns-arp! [(line : String)] : I32 (nk-scan-arp (ns-text! line)))
+(defn ns-pkt! [(hex : String)] : I32 (sc-hex! (nk-pkt-addr) hex))
+(defn ns-mdns! [(i : I32) (hex : String)] : I32 (nk-mdns-reply i (ns-pkt! hex)))
+(defn ns-nbns! [(i : I32) (hex : String)] : I32 (nk-nbns-reply i (ns-pkt! hex)))
+(defn ns-maker [(i : I32)] : I32 (nk-dev-maker-text-addr i))
+(defn ns-guess [(i : I32)] : I32 (nk-guess-label-addr (nk-dev-guess i)))
+;; n copies of byte b, NUL-terminated, in the scratch area: what a cut-down name should look like
+(defn ns-run-of [(b : I32) (n : I32)] : I32
+  (let [a (+ (sc-scratch) 4096)] (do (sc-fill! a b n) (store8! (+ a n) 0) a)))
+
+;; ---- the checked-in table, walked line by line ("aa:bb:cc<TAB>Maker") -----------------------------------------------------------
+(defn ns-eol [(a : I32) (i : I32) (n : I32)] : I32
+  (loop [j i] (if (or (>= j n) (= (load8 (+ a j)) 10)) j (recur (+ j 1)))))
+(defn ns-hex2 [(a : I32)] : I32 (+ (* 16 (sc-hexval (load8 a))) (sc-hexval (load8 (+ a 1)))))
+(defn ns-prefix [(a : I32)] : I32 (bit-or (shl (ns-hex2 a) 16) (bit-or (shl (ns-hex2 (+ a 3)) 8) (ns-hex2 (+ a 6)))))
+;; 1 when the line at a (ending at e) looks up to exactly its maker
+(defn ns-entry-ok [(a : I32) (e : I32)] : I32
+  (let [m (nk-maker-name-addr (nk-oui-lookup (ns-prefix a))) s (+ a 9) len (- e s)]
+    (if (and (= (lb-same? m s len) 1) (= (load8 (+ m len)) 0)) 1 0)))
+;; what = 0: how many entries the file lists; what = 1: how many of them do NOT look up to their maker
+(defn ns-tsv-walk [(a : I32) (n : I32) (what : I32)] : I32
+  (loop [i 0 entries 0 bad 0]
+    (if (>= i n) (if (= what 1) bad entries)
+        (let [e (ns-eol a i n)]
+          (if (or (= e i) (= (load8 (+ a i)) 35))
+              (recur (+ e 1) entries bad)
+              (recur (+ e 1) (+ entries 1) (+ bad (- 1 (ns-entry-ok (+ a i) (+ a e))))))))))
+
+(defn ns-table! [] : Unit
+  (do (sc-describe! "the maker table")
+        (sc-it! "an empty / garbage blob is refused") (lb-equal (nk-oui-load 16) 0)
+        (sc-it! "oui.bin fits the scanner's 64 KB region") (lb-be-<= (sc-file-len 0) (nk-oui-cap))
+        (dotimes [k (sc-file-len 0)] (store8! (+ (nk-oui-addr) k) (load8 (+ (sc-file-addr 0) k))))
+        (let [n (nk-oui-load (sc-file-len 0))]
+          (do (sc-it! "the table loads every prefix the TSV lists (over 10,000)")
+              (lb-equal n (ns-tsv-walk (sc-file-addr 1) (sc-file-len 1) 0))
+              (lb-be-> n 10000)))
+        (sc-it! "every single prefix looks up to its maker (exhaustive, not sampled)")
+        (lb-equal (ns-tsv-walk (sc-file-addr 1) (sc-file-len 1) 1) 0)
+        (sc-it! "prefixes the table does not list give maker 0 (shown as nothing)")
+        (lb-equal (nk-oui-lookup 0) 0) (lb-equal (nk-oui-lookup 16777215) 0) (lb-equal (nk-oui-lookup 1193046) 0) (lb-equal (nk-oui-lookup 11) 0)
+        (sc-it! "b8:27:eb -> Raspberry Pi")
+        (lb-not-equal (nk-oui-lookup 12068843) 0) (lb-str-equal (nk-maker-name-addr (nk-oui-lookup 12068843)) "Raspberry Pi")
+        (sc-it! "maker 0 and out-of-range makers are empty")
+        (lb-str-equal (nk-maker-name-addr 0) "") (lb-str-equal (nk-maker-name-addr 9999) "")
+        (sc-it! "an ARP-learned MAC shows its maker (f0:18:98 -> Apple)")
+        (ns-fresh!) (let [i (ns-found 12 0)] (do (ns-arp! "192.168.4.12 0x1 0x2 f0:18:98:aa:bb:cc * wlan0\n") (lb-str-equal (ns-maker i) "Apple")))
+        (sc-it! "a locally-administered MAC is called private, not unknown")
+        (ns-fresh!)
+        (let [i (ns-found 13 0)]
+          (do (ns-arp! "192.168.4.13 0x1 0x2 da:a1:19:00:00:01 * wlan0\n")
+              (lb-equal (nk-dev-mac-private i) 1) (lb-have-prefix (ns-maker i) "Private Wi-Fi address")))
+        (sc-it! "no MAC (Android 10+ hides ARP): no maker line")
+        (ns-fresh!) (let [i (ns-found 14 0)] (do (lb-str-equal (ns-maker i) "") (lb-equal (nk-dev-has-mac i) 0)))
+      (sc-end!)))
+
+(defn ns-before-table! [] : Unit
+  (do (sc-describe! "before the table is loaded")
+        (ns-fresh!)
+        (let [i (ns-found 10 0)]
+          (do (ns-arp! "192.168.4.10 0x1 0x2 b8:27:eb:01:02:03 * wlan0\n")
+              (sc-it! "no table loaded: no maker, never a wrong one") (lb-equal (nk-oui-count) 0) (lb-str-equal (ns-maker i) "")
+              (sc-it! "a Pi is still recognised from its prefix without the table")
+              (lb-str-equal (ns-guess i) "Raspberry Pi") (lb-equal (nk-dev-is-pi i) 1)))
+        (sc-it! "Raspberry Pi block 88:a2:9e is recognised")
+        (ns-fresh!) (let [i (ns-found 11 0)] (do (ns-arp! "192.168.4.11 0x1 0x2 88:a2:9e:00:00:01 * wlan0\n") (lb-equal (nk-dev-is-pi i) 1)))
+        (sc-it! "Raspberry Pi block 98:fe:54 is recognised")
+        (ns-fresh!) (let [i (ns-found 11 0)] (do (ns-arp! "192.168.4.11 0x1 0x2 98:fe:54:00:00:01 * wlan0\n") (lb-equal (nk-dev-is-pi i) 1)))
+        (sc-it! "Raspberry Pi block 3a:35:41 is recognised")
+        (ns-fresh!) (let [i (ns-found 11 0)] (do (ns-arp! "192.168.4.11 0x1 0x2 3a:35:41:00:00:01 * wlan0\n") (lb-equal (nk-dev-is-pi i) 1)))
+        (sc-it! "Raspberry Pi block 2c:cf:67 is recognised")
+        (ns-fresh!) (let [i (ns-found 11 0)] (do (ns-arp! "192.168.4.11 0x1 0x2 2c:cf:67:00:00:01 * wlan0\n") (lb-equal (nk-dev-is-pi i) 1)))
+      (sc-end!)))
+
+;; a name as reverse DNS gives it, and how the list shows it
+(defn ns-tidy [(raw : String) (shown : String)] : Unit
+  (do (ns-fresh!)
+      (let [i (ns-found 20 0)] (do (nk-dev-set-name i (ns-text! raw)) (lb-str-equal (nk-dev-name-addr i) shown)))))
+
+(defn ns-names! [] : Unit
+  (do (sc-describe! "names: tidying and ranks")
+        (sc-it! "raspberrypi.local. is shown as raspberrypi") (ns-tidy "raspberrypi.local." "raspberrypi")
+        (sc-it! "printer.home.arpa is shown as printer") (ns-tidy "printer.home.arpa" "printer")
+        (sc-it! "NAS.LAN is shown as NAS") (ns-tidy "NAS.LAN" "NAS")
+        (sc-it! "box.localdomain is shown as box") (ns-tidy "box.localdomain" "box")
+        (sc-it! "tv.fritz.box is shown as tv") (ns-tidy "tv.fritz.box" "tv")
+        (sc-it! "pi.example.com is kept whole") (ns-tidy "pi.example.com" "pi.example.com")
+        (sc-it! "a bare .local is kept, not emptied") (ns-tidy ".local" ".local")
+        (sc-it! "a long name is cut to 31 bytes")
+        (ns-fresh!)
+        (let [i (ns-found 20 0)]
+          (do (nk-dev-set-name i (sc-fill! (nk-txt-addr) 120 60)) (lb-str-equal-addr (nk-dev-name-addr i) (ns-run-of 120 31))))
+        (sc-it! "control bytes in a name become '?'")
+        (ns-fresh!) (let [i (ns-found 20 0)] (do (nk-dev-set-name i (sc-hex! (nk-txt-addr) "61 01 62 1b 63")) (lb-str-equal (nk-dev-name-addr i) "a?b?c")))
+        (sc-it! "reverse DNS is rank 1")
+        (ns-fresh!) (let [i (ns-found 20 0)] (do (nk-dev-set-name i (ns-text! "router-given")) (lb-equal (nk-dev-name-rank i) 1)))
+      (sc-end!)))
+
+;; mDNS fixtures. Header: id 0x0415 (192.168.4.21 & 0xffff | 1), flags 8400 (response, authoritative), then counts.
+;; Owner name 21.4.168.192.in-addr.arpa = 02"21" 01"4" 03"168" 03"192" 07"in-addr" 04"arpa" 00.
+;; PTR record: type 000c, class 8001 (cache-flush | IN), TTL 00000078 (120 s), rdlength, then the target name.
+(defn ns-mdns-specs! [] : Unit
+  (do (sc-describe! "mDNS (UDP 5353, unicast reverse lookup)")
+        (ns-fresh!)
+        (let [i (ns-found 21 0) n (nk-mdns-query -1062730731)]
+          (do (sc-it! "the query is a standard PTR question for 21.4.168.192.in-addr.arpa")
+              (lb-hex-equal (nk-pkt-addr) n "0415 0000 0001 0000 0000 0000  0232310134033136380331393207696e2d616464720461727061 00  000c 0001")
+              (sc-it! "the query id is derived from the address, never 0") (lb-equal (sc-be16 (nk-pkt-addr)) 1045)))
+        (sc-it! "one-digit octets encode too (5.0.0.10.in-addr.arpa)") (lb-equal (nk-mdns-query 167772165) 39)
+        (sc-it! "a plain answer -> raspberrypi, rank 3")
+        (ns-fresh!)
+        (let [i (ns-found 21 0)]
+          (do (lb-equal (ns-mdns! i "0415 8400 0000 0001 0000 0000  0232310134033136380331393207696e2d616464720461727061 00
+                                     000c 8001 00000078 0013  0b7261737062657272797069 056c6f63616c 00") 1)
+              (lb-str-equal (nk-dev-name-addr i) "raspberrypi") (lb-equal (nk-dev-name-rank i) 3)
+              (sc-it! "the name raspberrypi makes it the Pi even with no MAC (a modern tablet)")
+              (lb-equal (nk-dev-is-pi i) 1) (lb-str-equal (ns-guess i) "Raspberry Pi")))
+        (sc-it! "an answer after an echoed question, owner compressed (c00c) -> raspberrypi")
+        (ns-fresh!)
+        (let [i (ns-found 21 0)]
+          (do (lb-equal (ns-mdns! i "0415 8400 0001 0001 0000 0000  0232310134033136380331393207696e2d616464720461727061 00 000c 0001
+                                     c00c 000c 8001 00000078 0013  0b7261737062657272797069 056c6f63616c 00") 1)
+              (lb-str-equal (nk-dev-name-addr i) "raspberrypi") (lb-equal (nk-dev-name-rank i) 3)))
+        (sc-it! "a PTR after an unrelated A record -> kitchen-speaker, and it is not a Pi")
+        (ns-fresh!)
+        (let [i (ns-found 21 0)]
+          (do (lb-equal (ns-mdns! i "0415 8400 0000 0002 0000 0000
+                                     056f74686572 056c6f63616c 00  0001 8001 00000078 0004 c0a80415
+                                     0232310134033136380331393207696e2d616464720461727061 00
+                                     000c 8001 00000078 0017  0f6b69746368656e2d737065616b6572 056c6f63616c 00") 1)
+              (lb-str-equal (nk-dev-name-addr i) "kitchen-speaker") (lb-equal (nk-dev-name-rank i) 3) (lb-equal (nk-dev-is-pi i) 0)))
+        (sc-it! "PTR rdata with a compression pointer decodes (studio + pointer to 'local' at offset 0x3a)")
+        (ns-fresh!)
+        (let [i (ns-found 22 0)]
+          (do (lb-equal (ns-mdns! i "0415 8400 0000 0001 0000 0000  0232320134033136380331393207696e2d616464720461727061 00
+                                     000c 8001 00000078 0009  0673747564696f c03a  056c6f63616c 00") 1)
+              (lb-str-equal (nk-dev-name-addr i) "studio")))
+      (sc-end!)
+      (sc-describe! "mDNS refuses hostile or broken replies (never crashes, never stores)")
+        (sc-it! "a query, not a response (flags 0000)")
+        (ns-fresh!) (let [i (ns-found 23 0)]
+          (do (lb-equal (ns-mdns! i "0415 0000 0000 0001 0000 0000 0232310134033136380331393207696e2d616464720461727061 00 000c 8001 00000078 000c 046576696c 056c6f63616c 00") 0)
+              (lb-str-equal (nk-dev-name-addr i) "")))
+        (sc-it! "an error response (rcode 3)")
+        (ns-fresh!) (let [i (ns-found 23 0)]
+          (do (lb-equal (ns-mdns! i "0415 8403 0000 0001 0000 0000 0232310134033136380331393207696e2d616464720461727061 00 000c 8001 00000078 000c 046576696c 056c6f63616c 00") 0)
+              (lb-str-equal (nk-dev-name-addr i) "")))
+        (sc-it! "a truncated header")
+        (ns-fresh!) (let [i (ns-found 23 0)] (do (lb-equal (ns-mdns! i "000184") 0) (lb-str-equal (nk-dev-name-addr i) "")))
+        (sc-it! "an answer count larger than the packet")
+        (ns-fresh!) (let [i (ns-found 23 0)] (do (lb-equal (ns-mdns! i "0415 8400 0000 0032 0000 0000 00") 0) (lb-str-equal (nk-dev-name-addr i) "")))
+        (sc-it! "a pointer loop (rdata points at itself)")
+        (ns-fresh!) (let [i (ns-found 23 0)]
+          (do (lb-equal (ns-mdns! i "0415 8400 0000 0001 0000 0000 0232320134033136380331393207696e2d616464720461727061 00 000c 8001 00000078 0002 c031") 0)
+              (lb-str-equal (nk-dev-name-addr i) "")))
+        (sc-it! "an rdlength past the end")
+        (ns-fresh!) (let [i (ns-found 23 0)]
+          (do (lb-equal (ns-mdns! i "0415 8400 0000 0001 0000 0000 0232320134033136380331393207696e2d616464720461727061 00 000c 8001 00000078 0190 03616263") 0)
+              (lb-str-equal (nk-dev-name-addr i) "")))
+        (sc-it! "a reply for a device that does not exist is ignored")
+        (lb-equal (nk-mdns-reply 999 40) 0) (lb-equal (nk-mdns-reply -1 40) 0)
+      (sc-end!)))
+
+;; NetBIOS fixtures (RFC 1002 4.2.18 NODE STATUS RESPONSE). Header: id 1234, flags 8400, 1 answer. The wildcard name '*' is
+;; 20 "CK" + "AA" x 15 00; then type 0021 (NBSTAT), class 0001, TTL 0, rdlength, the name count, and per name 15 bytes padded with
+;; spaces + 1 suffix byte + 2 flag bytes (8000 = group), then the 6-byte MAC and 40 bytes of statistics.
+(defn ns-netbios-specs! [] : Unit
+  (do (sc-describe! "NetBIOS (UDP 137, node status)")
+        (ns-fresh!)
+        (let [i (ns-found 30 3) n (nk-nbns-query -1062730722)]
+          (do (sc-it! "the node-status query asks for '*' (RFC 1002 4.2.17)")
+              (lb-equal n 50)
+              (lb-hex-equal (+ (nk-pkt-addr) 2) 48 "0000 0001 0000 0000 0000  20434b414141414141414141414141414141414141414141414141414141414141 00  0021 0001")
+              (sc-it! "the unique workstation name wins, not the group (WORKGROUP)")
+              (lb-equal (ns-nbns! i "1234 8400 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0065
+                                     03  574f524b47524f5550202020202020 00 8400  4445534b544f502d37513220202020 00 0400  4445534b544f502d37513220202020 20 0400
+                                     f01898aabbcc  00000000000000000000000000000000000000000000000000000000000000000000000000000000") 1)
+              (lb-str-equal (nk-dev-name-addr i) "DESKTOP-7Q2")
+              (sc-it! "the MAC it reports gives the maker without ARP, at rank 2")
+              (lb-equal (nk-dev-has-mac i) 1) (lb-str-equal (ns-maker i) "Apple") (lb-equal (nk-dev-name-rank i) 2)))
+        (sc-it! "Samba's all-zero MAC is ignored; RASPBERRYPI is still the Pi")
+        (ns-fresh!)
+        (let [i (ns-found 31 3)]
+          (do (lb-equal (ns-nbns! i "1234 8400 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0041
+                                     01  524153504245525259504920202020 00 0400  000000000000
+                                     00000000000000000000000000000000000000000000000000000000000000000000000000000000") 1)
+              (lb-equal (nk-dev-has-mac i) 0) (lb-equal (nk-dev-is-pi i) 1)))
+        (sc-it! "a MAC already learned from ARP is not replaced by the NetBIOS one")
+        (ns-fresh!)
+        (let [i (ns-found 32 3)]
+          (do (ns-arp! "192.168.4.32 0x1 0x2 b8:27:eb:00:00:09 * wlan0\n")
+              (ns-nbns! i "1234 8400 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0041
+                           01  504320202020202020202020202020 00 0400  f01898aabbcc
+                           00000000000000000000000000000000000000000000000000000000000000000000000000000000")
+              (lb-str-equal (ns-maker i) "Raspberry Pi")))
+        (ns-fresh!)
+        (let [i (ns-found 33 3)]
+          (do (sc-it! "a truncated reply (60 of 157 bytes) is refused")
+              (sc-hex! (nk-pkt-addr) "1234 8400 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0065
+                                      03  574f524b47524f5550202020202020 00 8400  4445534b544f502d37513220202020 00 0400")
+              (lb-equal (nk-nbns-reply i 60) 0) (lb-str-equal (nk-dev-name-addr i) "")
+              (sc-it! "a NetBIOS query (flags 0000, not a response) is refused")
+              (lb-equal (ns-nbns! i "1234 0000 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0065
+                                     03  574f524b47524f5550202020202020 00 8400  4445534b544f502d37513220202020 00 0400  4445534b544f502d37513220202020 20 0400
+                                     f01898aabbcc  00000000000000000000000000000000000000000000000000000000000000000000000000000000") 0)))
+      (sc-end!)
+      (sc-describe! "ranks: mDNS beats NetBIOS beats reverse DNS, whatever order they arrive in")
+        (ns-fresh!)
+        (let [i (ns-found 40 3)]
+          (do (ns-nbns! i "1234 8400 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0041
+                           01  53545544494f2d5043202020202020 00 0400  000000000000
+                           00000000000000000000000000000000000000000000000000000000000000000000000000000000")
+              (nk-dev-set-name i (ns-text! "192-168-4-40.isp.example"))
+              (sc-it! "reverse DNS arriving later does not replace a NetBIOS name") (lb-str-equal (nk-dev-name-addr i) "STUDIO-PC")
+              (ns-mdns! i "0415 8400 0000 0001 0000 0000 0232310134033136380331393207696e2d616464720461727061 00 000c 8001 00000078 000e 0673747564696f 056c6f63616c 00")
+              (sc-it! "mDNS replaces a NetBIOS name") (lb-str-equal (nk-dev-name-addr i) "studio")
+              (ns-nbns! i "1234 8400 0000 0001 0000 0000 20434b41414141414141414141414141414141414141414141414141414141414100 0021 0001 00000000 0041
+                           01  4f5448455220202020202020202020 00 0400  000000000000
+                           00000000000000000000000000000000000000000000000000000000000000000000000000000000")
+              (sc-it! "...and a later NetBIOS reply does not take it back") (lb-str-equal (nk-dev-name-addr i) "studio")))
+      (sc-end!)))
+
+(defn ns-labels! [] : Unit
+  (do (sc-describe! "the user's label, the title, the Pi first")
+        (ns-fresh!)
+        (let [a (ns-found 50 0) b (ns-found 9 0) c (ns-found 70 0)]
+          (do (ns-mdns! c "0415 8400 0000 0001 0000 0000 0232310134033136380331393207696e2d616464720461727061 00 000c 8001 00000078 0013 0b7261737062657272797069 056c6f63616c 00")
+              (sc-it! "no name and no label: an empty title (the page shows the address)") (lb-str-equal (nk-dev-title-addr a) "")
+              (nk-dev-set-name a (ns-text! "tv.lan"))
+              (sc-it! "a discovered name is the title") (lb-str-equal (nk-dev-title-addr a) "tv")
+              (nk-dev-set-label a (ns-text! "Living room TV"))
+              (sc-it! "the user's label beats the discovered name")
+              (lb-str-equal (nk-dev-title-addr a) "Living room TV") (lb-equal (nk-dev-has-label a) 1)
+              (sc-it! "...and the discovered name is kept underneath it") (lb-str-equal (nk-dev-name-addr a) "tv")
+              (nk-dev-set-label a 0)
+              (sc-it! "an empty label clears it") (lb-str-equal (nk-dev-title-addr a) "tv") (lb-equal (nk-dev-has-label a) 0)
+              (nk-dev-set-label a (sc-fill! (nk-txt-addr) 121 50))
+              (sc-it! "a label is cut to 31 bytes") (lb-str-equal-addr (nk-dev-title-addr a) (ns-run-of 121 31))
+              (nk-dev-sort)
+              (sc-it! "the Raspberry Pi sorts to the top, the rest by address")
+              (lb-equal (nk-dev-count) 3)
+              (lb-equal (nk-dev-ip (nk-dev-order 0)) -1062730682) (lb-equal (nk-dev-ip (nk-dev-order 1)) -1062730743)
+              (lb-equal (nk-dev-ip (nk-dev-order 2)) -1062730702)
+              (nk-dev-set-pinned a 1) (nk-dev-sort)
+              (sc-it! "a pinned device still beats the Pi")
+              (lb-equal (nk-dev-ip (nk-dev-order 0)) -1062730702) (lb-equal (nk-dev-ip (nk-dev-order 1)) -1062730682)))
+      (sc-end!)))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_names")
+        (ns-before-table!)
+        (ns-table!)
+        (ns-names!)
+        (ns-mdns-specs!)
+        (ns-netbios-specs!)
+        (ns-labels!)
+      (sc-end!)
+      (sc-finish!)))

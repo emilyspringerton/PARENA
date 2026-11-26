@@ -1,0 +1,36 @@
+;; stdlib/scarab/host.prn -- the host for a SCARAB wasm suite: PARENA -> TypeScript -> JavaScript, run by node 24+.
+;; It decides nothing: loads the suite, asks the suite where each input file goes (sc_file_next) and copies it there, calls
+;; scarab_main, prints the report the suite wrote, and exits 1 when scarab_main says anything failed.
+;;   node scarab-host.mjs <suite.wasm> [<file> ...]          (scripts/scarab_wasm.sh builds both and runs this)
+
+(defn fs [] : Any (js/call (js/global "process") "getBuiltinModule" "node:fs"))
+(defn argv [] : Any (js/get (js/global "process") "argv"))
+(defn say! [(s : Any)] : Unit (js/call (js/get (js/global "process") "stdout") "write" s))
+(defn die! [(msg : String)] : Unit
+  (do (js/call (js/get (js/global "console") "error") "call" (js/global "console") msg)
+      (js/call (js/global "process") "exit" 2)))
+
+(defn load-files! [(x : Any) (u8 : Any) (i : I32)] : Unit
+  (when (< i (js/get (argv) "length"))
+    (let [path (js/aget (argv) i)
+          bytes (js/call (fs) "readFileSync" path)
+          at (js/call x "sc_file_next" (js/get bytes "length"))]
+      (if (< at 0)
+          (die! (str path ": does not fit the suite's file area"))
+          (do (js/call u8 "set" bytes at)
+              (load-files! x u8 (+ i 1)))))))
+
+(defn run [] : Unit
+  (let [m (js/new "WebAssembly.Module" (js/call (fs) "readFileSync" (js/aget (argv) 2)))]
+    (if (> (js/get (js/call (js/global "WebAssembly.Module") "imports" m) "length") 0)
+        (die! "the suite imports something (a libcall leaked in); a SCARAB wasm suite must import nothing")
+        (let [x (js/get (js/new "WebAssembly.Instance" m (js/obj)) "exports")
+              u8 (js/new "Uint8Array" (js/get (js/get x "memory") "buffer"))]
+          (do (load-files! x u8 3)
+              (let [failed (js/call x "scarab_main")
+                    a (js/call x "sc_report_addr")
+                    n (js/call x "sc_report_len")]
+                (do (say! (js/call (js/new "TextDecoder") "decode" (js/call u8 "slice" a (+ a n))))
+                    (when (> failed 0) (js/set! (js/global "process") "exitCode" 1)))))))))
+
+(start (run))

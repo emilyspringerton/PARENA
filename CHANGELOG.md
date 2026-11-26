@@ -1,5 +1,17 @@
 ## 2026-11-26
 
+- **feat(test): SCARAB and LADYBUG run on wasm, and the first Netkit tests are PARENA (founder: "can we convert the tests from node and
+  python to SCARAB and LADYBUG?").** The C-target `scarab`/`firefly/ladybug` need structs, enums, function values and arenas; the LLVM
+  emitter (which every Netkit module needs) has none of them, so this adds a wasm flavour with the same shape: `stdlib/scarab/wasm.prn`
+  (Describe/Context/It as straight-line markers, a nested path, PASS/FAIL report, totals, hex fixtures, host-loaded files),
+  `stdlib/firefly/ladybug_wasm.prn` (equal/not-equal/true/false/ordering/string/prefix/bytes/hex/text matchers, each failure saying
+  what was expected and what came), `stdlib/scarab/host.prn` (PARENA -> TS node host that only moves bytes) and
+  `scripts/scarab_wasm.sh` (spec + modules -> one zero-import wasm -> run). Converted: `test_names.py` -> `tests/netkit/names_spec.prn`
+  (59 specs; mDNS/NetBIOS replies are RFC-layout hex fixtures, the maker table is still checked exhaustively against the TSV),
+  `test_scan.py` -> `scan_spec.prn` (61), `test_oui_gen.py` -> `oui_gen_spec.prn` (18, plus a new check that the in-suite pack equals the
+  node-host `oui.bin` byte for byte). Each suite was mutation-checked (a broken rcode test, rank and /22 clamp were caught). New
+  `tests/scarab/run_self_test.sh` pins the framework's own failure report. `emit_llvm` now names the function and both types when a body's
+  type does not match its declared return type. README Testing table updated.
 - **feat(netkit): the maker-table generator is PARENA (founder: "ALL PARENA BASED MODS BASED DEVELOPMENT").** `tools/netkit_oui_gen.py` is
   gone. `stdlib/netkit/nk_oui_gen.prn` (wasm, zero imports, no malloc) holds the brand rules and both jobs -- curate (Wireshark `manuf` ->
   `oui_brands.tsv`) and pack (TSV -> `oui.bin`); `stdlib/netkit/tools/nk_oui_host.prn` (PARENA -> TS, run by node) only moves the file

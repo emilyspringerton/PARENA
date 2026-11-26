@@ -18,6 +18,16 @@ scripts/build_netkit_term_wasm.sh "$W/nkterm.wasm"
 # below (in the loop) on the linked wasm. test_garage_ir.py is therefore not part of the wasm loop.
 echo "== test_garage_ir.py (nk_garage.prn: parena's LLVM IR, interpreted)"
 python3 tests/netkit/test_garage_ir.py | tail -3
+# ---- SCARAB/LADYBUG suites (PARENA specs compiled INTO the module they test; stdlib/scarab/wasm.prn, scripts/scarab_wasm.sh) ----
+echo "== scarab/ladybug self-test"
+tests/scarab/run_self_test.sh | tail -1
+scripts/build_netkit_oui.sh "$W/oui.bin" >/dev/null
+echo "== names_spec.prn (nk_names.prn)"
+scripts/scarab_wasm.sh tests/netkit/names_spec.prn --modules stdlib/netkit/MODULES --file "$W/oui.bin" --file stdlib/netkit/data/oui_brands.tsv | tail -3
+echo "== scan_spec.prn (nk_scan.prn)"
+scripts/scarab_wasm.sh tests/netkit/scan_spec.prn --modules stdlib/netkit/MODULES | tail -3
+echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
+scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
 for t in tests/netkit/test_*.py; do
   case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py|*/test_browser_garage.py|*/test_garage_ir.py) continue;; esac
   echo "== $(basename "$t")"

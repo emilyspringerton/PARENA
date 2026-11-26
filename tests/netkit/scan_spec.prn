@@ -1,0 +1,205 @@
+;; tests/netkit/scan_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_scan.prn: sweep planning, job enumeration, result
+;; merging, ARP parsing, guesses, ordering, limits, and the error/service vocabulary. Replaces tests/netkit/test_scan.py.
+;; Run: scripts/scarab_wasm.sh tests/netkit/scan_spec.prn --modules stdlib/netkit/MODULES
+
+;; ---- helpers (sn- prefix) ------------------------------------------------------------------------------------------------------
+(defn sn-text! [(s : String)] : I32 (sc-put! (nk-txt-addr) s))
+(defn sn-begin! [(cidr : String)] : I32 (do (nk-scan-reset) (nk-scan-begin (sn-text! cidr))))
+(defn sn-ip [(a : I32) (b : I32) (c : I32) (d : I32)] : I32 (bit-or (shl a 24) (bit-or (shl b 16) (bit-or (shl c 8) d))))
+;; the default port list, in order
+(defn sn-port [(k : I32)] : I32
+  (cond (= k 0) 22 (= k 1) 80 (= k 2) 443 (= k 3) 445 (= k 4) 3389 (= k 5) 5900 (= k 6) 5901 :else 8080))
+;; a result for 192.168.4.<host> on the port at index k of the default list
+(defn sn-result [(host : I32) (k : I32) (code : I32) (ms : I32)] : I32 (nk-scan-result (+ (* (- host 1) 8) k) code ms))
+;; hand out every probe; job k's ip, port and job number are kept at JOBS + 12k (the scratch area); returns how many
+(defn sn-jobs [] : I32 (+ (sc-scratch) 65536))
+(defn sn-drain! [] : I32
+  (loop [n 0]
+    (let [j (nk-scan-next)]
+      (if (< j 0) n
+          (let [a (+ (sn-jobs) (* 12 n))]
+            (do (store32! a (nk-scan-job-ip j)) (store32! (+ a 4) (nk-scan-job-port j)) (store32! (+ a 8) j)
+                (recur (+ n 1))))))))
+(defn sn-job-ip [(k : I32)] : I32 (load32 (+ (sn-jobs) (* 12 k))))
+(defn sn-job-port [(k : I32)] : I32 (load32 (+ (sn-jobs) (+ 4 (* 12 k)))))
+(defn sn-job [(k : I32)] : I32 (load32 (+ (sn-jobs) (+ 8 (* 12 k)))))
+;; how many of the n drained probes are not (192.168.4.h, port) in host-major order from .1
+(defn sn-order-misses [(n : I32)] : I32
+  (loop [k 0 bad 0]
+    (if (>= k n) bad
+        (recur (+ k 1) (+ bad (if (and (= (sn-job-ip k) (sn-ip 192 168 4 (+ 1 (/ k 8)))) (= (sn-job-port k) (sn-port (mod k 8)))) 0 1))))))
+(defn sn-count-ip [(n : I32) (ip : I32)] : I32
+  (loop [k 0 c 0] (if (>= k n) c (recur (+ k 1) (+ c (if (= (sn-job-ip k) ip) 1 0))))))
+(defn sn-answer-all! [(n : I32)] : I32 (loop [k 0] (if (>= k n) n (do (nk-scan-result (sn-job k) 2 5) (recur (+ k 1))))))
+(defn sn-find [(ip : I32)] : I32
+  (loop [k 0] (cond (>= k (nk-dev-count)) -1 (= (nk-dev-ip k) ip) k :else (recur (+ k 1)))))
+(defn sn-refused [(bad : String)] : Unit (do (lb-equal (sn-begin! bad) 0) (lb-equal (nk-scan-next) -1)))
+
+;; the guess for 192.168.4.20 with up to two open ports (index into the default list, -1 = none; none at all = a refused
+;; connect), then an ARP line (or "")
+(defn sn-guess-for [(k1 : I32) (k2 : I32) (arp : String)] : I32
+  (do (sn-begin! "192.168.4.0/24")
+      (let [i (if (< k1 0) (sn-result 20 0 1 5) (do (sn-result 20 k1 0 5) (if (< k2 0) 0 (sn-result 20 k2 0 5))))]
+        (do (nk-scan-arp (sn-text! arp))
+            (nk-guess-label-addr (nk-dev-guess (sn-find (sn-ip 192 168 4 20))))))))
+
+(defn sn-planning! [] : Unit
+  (do (sc-describe! "planning")
+        (sc-it! "/24: 254 hosts x 8 default ports = 2032 probes")
+        (lb-equal (sn-begin! "192.168.4.0/24") 1) (lb-equal (nk-scan-hosts) 254) (lb-equal (nk-scan-total) 2032)
+        (let [n (sn-drain!)]
+          (do (sc-it! "enumeration is host-major (all ports of .1, then .2, ...), every (host, port) once, skipping .0 and .255")
+              (lb-equal n 2032) (lb-equal (sn-order-misses n) 0)))
+        (sc-it! "after the last probe next() keeps saying -1") (lb-equal (nk-scan-next) -1)
+        (sc-it! "a /24 is not truncated") (lb-equal (nk-scan-truncated) 0)
+        (sc-it! "an unaligned address is masked to its network")
+        (sn-begin! "192.168.4.77/24") (lb-equal (nk-scan-job-ip 0) (sn-ip 192 168 4 1)) (lb-equal (nk-scan-hosts) 254)
+        (sc-it! "/30: two usable hosts")
+        (sn-begin! "10.0.0.0/30") (lb-equal (nk-scan-hosts) 2)
+        (let [n (sn-drain!)] (do (lb-equal n 16) (lb-equal (sn-job-ip 0) (sn-ip 10 0 0 1)) (lb-equal (sn-job-ip 8) (sn-ip 10 0 0 2))))
+        (sc-it! "/31: two hosts, no network/broadcast carve-out")
+        (sn-begin! "10.0.0.4/31") (lb-equal (nk-scan-hosts) 2) (lb-equal (nk-scan-job-ip 0) (sn-ip 10 0 0 4))
+        (sc-it! "a bare address = one host") (sn-begin! "172.16.9.9") (lb-equal (nk-scan-hosts) 1) (lb-equal (nk-scan-job-ip 0) (sn-ip 172 16 9 9))
+        (sc-it! "/32 = one host") (sn-begin! "172.16.9.9/32") (lb-equal (nk-scan-hosts) 1)
+        (sc-it! "a /16 is clamped to /22 (1022 hosts) and says so")
+        (sn-begin! "10.1.0.0/16") (lb-equal (nk-scan-hosts) 1022) (lb-equal (nk-scan-truncated) 1) (lb-equal (nk-scan-prefix) 22)
+        (sc-it! "addresses above 128.x.x.x (negative as I32) enumerate correctly")
+        (sn-begin! "200.100.50.0/24") (lb-equal (nk-scan-job-ip 0) (sn-ip 200 100 50 1))
+      (sc-end!)
+      (sc-describe! "invalid ranges are refused and plan nothing")
+        (sc-it! "\"\"") (sn-refused "")
+        (sc-it! "abc") (sn-refused "abc")
+        (sc-it! "300.1.1.1/24") (sn-refused "300.1.1.1/24")
+        (sc-it! "1.2.3/24") (sn-refused "1.2.3/24")
+        (sc-it! "1.2.3.4/33") (sn-refused "1.2.3.4/33")
+        (sc-it! "1.2.3.4/") (sn-refused "1.2.3.4/")
+        (sc-it! "1.2.3.4.5") (sn-refused "1.2.3.4.5")
+        (sc-it! "1..3.4/24") (sn-refused "1..3.4/24")
+        (sc-it! "192.168.4.0/ 24") (sn-refused "192.168.4.0/ 24")
+      (sc-end!)))
+
+(defn sn-exclude! [] : Unit
+  (do (sc-describe! "exclusion and stop")
+        (sn-begin! "192.168.4.0/29") (nk-scan-exclude (sn-ip 192 168 4 3))
+        (let [n (sn-drain!)]
+          (do (sc-it! "the excluded host (this tablet) is skipped whole")
+              (lb-equal (sn-count-ip n (sn-ip 192 168 4 3)) 0) (lb-equal n 40)
+              (sc-it! "...its probes count as done, so the sweep's progress can reach its total")
+              (lb-equal (nk-scan-done) 8) (lb-equal (nk-scan-total) 48)
+              (sn-answer-all! n)
+              (sc-it! "after every handed-out probe is answered the sweep reads as finished (it used to hang at 40/48)")
+              (lb-equal (nk-scan-done) 48) (lb-equal (nk-scan-running) 0)))
+        (nk-scan-clear-exclude)
+        (sn-begin! "192.168.4.0/24") (nk-scan-next) (nk-scan-next) (nk-scan-stop)
+        (sc-it! "stop(): nothing more is handed out and the sweep reads as finished")
+        (lb-equal (nk-scan-next) -1) (lb-equal (nk-scan-running) 0)
+      (sc-end!)))
+
+(defn sn-merge! [] : Unit
+  (do (sc-describe! "merging results")
+        (sn-begin! "192.168.4.0/24")
+        (sc-it! "no devices before any result") (lb-equal (nk-dev-count) 0)
+        (sc-it! "a timeout reveals nothing") (lb-equal (sn-result 10 0 2 5) -1) (lb-equal (nk-dev-count) 0) (lb-equal (nk-scan-timeouts) 1)
+        (sc-it! "unreachable reveals nothing") (lb-equal (sn-result 10 0 3 5) -1) (lb-equal (nk-dev-count) 0)
+        (sc-it! "an OPEN port creates the device")
+        (lb-equal (sn-result 10 0 0 9) 0) (lb-equal (nk-dev-count) 1) (lb-equal (nk-dev-ip 0) (sn-ip 192 168 4 10))
+        (sc-it! "port bit and rtt recorded") (lb-equal (nk-dev-has-port 0 22) 1) (lb-equal (nk-dev-has-port 0 5900) 0) (lb-equal (nk-dev-rtt 0) 9)
+        (sn-result 10 5 0 4)
+        (sc-it! "a second open port sets its bit; rtt keeps the best") (lb-equal (nk-dev-has-port 0 5900) 1) (lb-equal (nk-dev-rtt 0) 4)
+        (sc-it! "a REFUSED connect (RST) proves the host is up, with no ports open")
+        (lb-equal (sn-result 11 1 1 5) 1) (lb-equal (nk-dev-count) 2) (lb-equal (nk-dev-ports 1) 0)
+        (sc-it! "a host that only refuses: 'Device (no open services)'")
+        (lb-equal (nk-dev-guess 1) 7) (lb-str-equal (nk-guess-label-addr 7) "Device (no open services)")
+        (sc-it! "done / open counters") (lb-equal (nk-scan-done) 5) (lb-equal (nk-scan-opens) 2)
+        (sc-it! "a result for a job that does not exist is ignored") (lb-equal (nk-scan-result 99999 0 1) -1)
+      (sc-end!)
+      (sc-describe! "guesses")
+        (sc-it! "22 + 5900 -> VNC host (labelled by what the tablet can do with it)") (lb-str-equal (sn-guess-for 0 5 "") "VNC host")
+        (sc-it! "445 + 5900 -> Windows PC (VNC ready)") (lb-str-equal (sn-guess-for 3 5 "") "Windows PC (VNC ready)")
+        (sc-it! "3389 -> Windows PC") (lb-str-equal (sn-guess-for 4 -1 "") "Windows PC")
+        (sc-it! "5900 alone -> VNC host") (lb-str-equal (sn-guess-for 5 -1 "") "VNC host")
+        (sc-it! "22 alone -> SSH device") (lb-str-equal (sn-guess-for 0 -1 "") "SSH device")
+        (sc-it! "22 + 80 -> Linux server") (lb-str-equal (sn-guess-for 0 1 "") "Linux server")
+        (sc-it! "80 alone -> Web device / router") (lb-str-equal (sn-guess-for 1 -1 "") "Web device / router")
+        (sc-it! "the Raspberry Pi OUI b8:27:eb wins over the port guess")
+        (lb-str-equal (sn-guess-for 0 -1 "192.168.4.20 0x1 0x2 b8:27:eb:12:34:56 * wlan0\n") "Raspberry Pi")
+        (sc-it! "the OUI match is case-insensitive (DC:A6:32)")
+        (lb-str-equal (sn-guess-for 0 -1 "192.168.4.20 0x1 0x2 DC:A6:32:AA:BB:CC * wlan0\n") "Raspberry Pi")
+        (sc-it! "an ordinary OUI does not make a Pi")
+        (lb-str-equal (sn-guess-for 0 -1 "192.168.4.20 0x1 0x2 00:11:22:33:44:55 * wlan0\n") "SSH device")
+      (sc-end!)))
+
+(defn sn-arp-table [] : String
+  "IP address       HW type     Flags       HW address            Mask     Device\n192.168.4.1      0x1         0x2         b8:27:eb:aa:bb:01     *        wlan0\n192.168.4.23     0x1         0x2         3C:22:FB:12:34:56     *        wlan0\n192.168.4.99     0x1         0x0         00:00:00:00:00:00     *        wlan0\ngarbage line here\n192.168.4.50     0x1         0x2         zz:22:FB:12:34:56     *        wlan0\n192.168.4.7      0x1         0x2         aa:bb:cc:dd:ee:0f     *        wlan0")
+
+(defn sn-arp! [] : Unit
+  (do (sc-describe! "the ARP table")
+        (sn-begin! "192.168.4.0/24")
+        (sc-it! "the header, an incomplete entry (zero MAC), garbage and a bad-hex MAC are skipped; 3 hosts (the last line has no newline)")
+        (lb-equal (nk-scan-arp (sn-text! (sn-arp-table))) 3) (lb-equal (nk-dev-count) 3)
+        (sc-it! "ARP-only hosts appear (they never answered a port)")
+        (lb-not-equal (sn-find (sn-ip 192 168 4 1)) -1) (lb-not-equal (sn-find (sn-ip 192 168 4 23)) -1) (lb-not-equal (sn-find (sn-ip 192 168 4 7)) -1)
+        (let [k1 (sn-find (sn-ip 192 168 4 1))]
+          (do (sc-it! "MAC bytes stored") (lb-equal (nk-dev-has-mac k1) 1) (lb-hex-equal (nk-dev-mac-addr k1) 6 "b827ebaabb01")
+              (sc-it! "an ARP-only Pi is recognised by its MAC alone") (lb-str-equal (nk-guess-label-addr (nk-dev-guess k1)) "Raspberry Pi")))
+        (sc-it! "re-reading the ARP table does not duplicate devices")
+        (lb-equal (nk-scan-arp (sn-text! (sn-arp-table))) 3) (lb-equal (nk-dev-count) 3)
+        (let [j (sn-result 23 3 0 5) k23 (sn-find (sn-ip 192 168 4 23))]
+          (do (sc-it! "a scan result merges into the ARP-known device (same record)")
+              (lb-equal j k23) (lb-equal (nk-dev-has-mac k23) 1) (lb-equal (nk-dev-has-port k23 445) 1)
+              (nk-dev-set-name k23 (sn-text! "imac.lan"))
+              (sc-it! "the device name is stored, the router's .lan suffix dropped") (lb-str-equal (nk-dev-name-addr k23) "imac")
+              (nk-dev-set-name k23 (sc-fill! (nk-txt-addr) 120 60))
+              (sc-it! "an over-long name is cut to 31 bytes, never overruns the record") (lb-equal (sc-strlen (nk-dev-name-addr k23)) 31)))
+      (sc-end!)))
+
+(defn sn-arp-host! [(line : String)] : I32 (nk-scan-arp (sn-text! line)))
+(defn sn-order! [] : Unit
+  (do (sc-describe! "ordering and pinning")
+        (nk-scan-reset) (nk-scan-begin (sn-text! "0.0.0.0/22"))
+        (sn-arp-host! "192.168.4.5 0x1 0x2 aa:bb:cc:00:00:01 * x\n") (sn-arp-host! "10.0.0.2 0x1 0x2 aa:bb:cc:00:00:01 * x\n")
+        (sn-arp-host! "200.1.1.1 0x1 0x2 aa:bb:cc:00:00:01 * x\n") (sn-arp-host! "128.0.0.9 0x1 0x2 aa:bb:cc:00:00:01 * x\n")
+        (sn-arp-host! "9.9.9.9 0x1 0x2 aa:bb:cc:00:00:01 * x\n")
+        (nk-dev-sort)
+        (sc-it! "display order is numeric by address, unsigned (9.x, 10.x, 128.x, 192.x, 200.x -- not sign-flipped)")
+        (lb-equal (nk-dev-ip (nk-dev-order 0)) (sn-ip 9 9 9 9)) (lb-equal (nk-dev-ip (nk-dev-order 1)) (sn-ip 10 0 0 2))
+        (lb-equal (nk-dev-ip (nk-dev-order 2)) (sn-ip 128 0 0 9)) (lb-equal (nk-dev-ip (nk-dev-order 3)) (sn-ip 192 168 4 5))
+        (lb-equal (nk-dev-ip (nk-dev-order 4)) (sn-ip 200 1 1 1))
+        (let [pin (sn-find (sn-ip 200 1 1 1))]
+          (do (nk-dev-set-pinned pin 1) (nk-dev-sort)
+              (sc-it! "a pinned device sorts first") (lb-equal (nk-dev-ip (nk-dev-order 0)) (sn-ip 200 1 1 1)) (lb-equal (nk-dev-pinned pin) 1)
+              (nk-dev-set-pinned pin 0) (nk-dev-sort)
+              (sc-it! "unpinning restores address order") (lb-equal (nk-dev-pinned pin) 0) (lb-equal (nk-dev-ip (nk-dev-order 0)) (sn-ip 9 9 9 9))))
+      (sc-end!)))
+
+;; open port 22 on every host of 10.0.0.0/22 (1022 of them) then 77 more results: how many created a device
+(defn sn-flood! [] : I32
+  (loop [h 1 made 0]
+    (if (> h 1022)
+        (do (dotimes [k 77] (nk-scan-result 0 0 1)) made)
+        (recur (+ h 1) (+ made (if (>= (nk-scan-result (* (- h 1) 8) 0 1) 0) 1 0))))))
+(defn sn-limits! [] : Unit
+  (do (sc-describe! "limits")
+        (nk-scan-reset) (nk-scan-begin (sn-text! "10.0.0.0/22"))
+        (let [made (sn-flood!)]
+          (do (sc-it! "the device table caps at 512 and then drops, not crashes") (lb-be-<= (nk-dev-count) 512) (lb-equal made 512)))
+        (nk-scan-reset) (nk-scan-begin (sn-text! "192.168.4.0/24"))
+        (store32! (nk-ports-addr) 22) (store32! (+ (nk-ports-addr) 4) 5900) (store32! (+ (nk-ports-addr) 8) 9999) (nk-ports-set 3)
+        (sc-it! "the port list can be replaced (22, 5900, 9999)") (lb-equal (nk-nports) 3) (lb-equal (nk-port-at 2) 9999)
+        (nk-scan-begin (sn-text! "192.168.4.0/30"))
+        (sc-it! "a new plan uses the replaced port list") (lb-equal (nk-scan-total) 6)
+      (sc-end!)
+      (sc-describe! "vocabulary")
+        (sc-it! "connect codes map to ErrorKind: open NONE, refused PORT_CLOSED, timeout TIMEOUT, unreachable UNREACHABLE, other UNKNOWN")
+        (lb-equal (nk-conn-kind 0) 0) (lb-equal (nk-conn-kind 1) 2) (lb-equal (nk-conn-kind 2) 3) (lb-equal (nk-conn-kind 3) 1) (lb-equal (nk-conn-kind 4) 6)
+        (sc-it! "ErrorKind names and the plain-words sentences come from PARENA")
+        (lb-str-equal (nk-err-name-addr 2) "PORT_CLOSED") (lb-str-equal (nk-err-text-addr 3) "No answer (asleep, or blocked?)")
+        (sc-it! "service names")
+        (lb-str-equal (nk-service-name-addr 22) "SSH") (lb-str-equal (nk-service-name-addr 5900) "VNC") (lb-str-equal (nk-service-name-addr 1234) "")
+      (sc-end!)))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_scan")
+        (sn-planning!) (sn-exclude!) (sn-merge!) (sn-arp!) (sn-order!) (sn-limits!)
+      (sc-end!)
+      (sc-finish!)))

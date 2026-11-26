@@ -1,0 +1,186 @@
+;; stdlib/scarab/wasm.prn -- SCARAB for the wasm32 target: the same Describe/Context/It runner as stdlib/scarab.prn, built for
+;; PARENA's LLVM emitter so a spec compiles INTO the very module it tests (netkit.wasm, nk_oui_gen.wasm, ...) and calls its
+;; functions directly. Matchers live in stdlib/firefly/ladybug_wasm.prn. Host: stdlib/scarab/host.prn. Runner script:
+;; scripts/scarab_wasm.sh. Founder, 2026-11-26: "can we convert the tests from node and python to SCARAB and LADYBUG?"
+;;
+;; Why a second flavour, not stdlib/scarab.prn itself: the C-target scarab builds a tree of SuiteNode values (defenum, Vec, Fn
+;; pointers, arenas). PARENA's LLVM emitter is scalar + linear memory only -- no structs, enums, function values or allocator --
+;; and the netkit modules are LLVM-only (load8/store8!). So here the tree is walked AS IT IS WRITTEN: a spec is straight-line
+;; PARENA code, and describe/it/end mark where each block starts and stops.
+;;
+;;   (sc-describe! "the maker table")      ; opens a block (nests; context! is the same thing, Ginkgo's convention)
+;;     (sc-it! "b8:27:eb is a Raspberry Pi")
+;;     (lb-str-equal (nk-maker-name-addr (nk-oui-lookup 12069867)) "Raspberry Pi")   ; any number of expectations per It
+;;   (sc-end!)                             ; closes the innermost block
+;;   (sc-finish!)                          ; prints the totals, returns the failure count
+;;
+;; A spec module defines (defn scarab-main [] : I32 ...) returning (sc-finish!); the host calls it and prints the report.
+;; Before/after hooks: there are no function values on this target, so a "before each" is a helper the spec calls at the top of
+;; each It (the netkit specs call (fresh!)). Real, named difference from Ginkgo, not hidden.
+;;
+;; Memory (linked at 96 MB by scripts/scarab_wasm.sh; every module under test lives below 64 MB):
+;;   0x4000000 SC      state words (64 x 4)        0x4000100 path length at each depth (32 x 4)
+;;   0x4001000 PATH    4 KB  "outer / inner"       0x4002000 SPEC 1 KB  the open It's name
+;;   0x4003000 MSG     48 KB the open It's failure lines
+;;   0x4010000 SCRATCH 1 MB  fixtures a spec builds (sc-hex!, sc-put!)
+;;   0x4200000 REPORT  4 MB  the text the host prints
+;;   0x4800000 FILES   input files the host loaded (dir: 64 x (addr, len) words, then data to the end of memory)
+
+(defn sc-base [] : I32 67108864)
+(defn sc-w [(k : I32)] : I32 (load32 (+ (sc-base) (* 4 k))))
+(defn sc-w! [(k : I32) (v : I32)] : Unit (store32! (+ (sc-base) (* 4 k)) v))
+;; word indices: 0 depth, 1 specs run, 2 passed, 3 failed, 4 an It is open, 5 failures in the open It, 6 report length,
+;; 7 path length, 8 message length, 9 expectation number in the open It, 10 spec name length, 11 files loaded, 12 next file byte,
+;; 13 expectations checked in total
+(defn sc-lens [] : I32 (+ (sc-base) 256))
+(defn sc-path [] : I32 (+ (sc-base) 4096))
+(defn sc-spec [] : I32 (+ (sc-base) 8192))
+(defn sc-msg [] : I32 (+ (sc-base) 12288))
+(defn sc-msg-cap [] : I32 49152)
+(defn sc-scratch [] : I32 (+ (sc-base) 65536))
+(defn sc-scratch-cap [] : I32 1048576)
+(defn sc-report-addr [] : I32 (+ (sc-base) 2097152))
+(defn sc-report-cap [] : I32 4194304)
+(defn sc-report-len [] : I32 (sc-w 6))
+(defn sc-files [] : I32 75497472)
+(defn sc-file-data [] : I32 (+ (sc-files) 4096))
+(defn sc-mem-end [] : I32 100663296)
+
+;; ---- text helpers (bounded; a full buffer drops bytes rather than overrun) -----------------------------------------------------
+(defn sc-strlen [(a : I32)] : I32
+  (loop [n 0] (if (= (load8 (+ a n)) 0) n (recur (+ n 1)))))
+(defn sc-lit-len [(s : String)] : I32 (sc-strlen (str-addr s)))
+
+;; append n bytes from src to the buffer at buf whose length lives in state word w, capped at cap
+(defn sc-cat! [(buf : I32) (w : I32) (cap : I32) (src : I32) (n : I32)] : Unit
+  (let [len (sc-w w) room (- cap len) k (if (< n room) n room)]
+    (do (dotimes [i k] (store8! (+ buf (+ len i)) (load8 (+ src i))))
+        (sc-w! w (+ len k)))))
+(defn sc-cat-byte! [(buf : I32) (w : I32) (cap : I32) (b : I32)] : Unit
+  (let [len (sc-w w)]
+    (when (< len cap) (do (store8! (+ buf len) b) (sc-w! w (+ len 1))))))
+(defn sc-cat-str! [(buf : I32) (w : I32) (cap : I32) (s : String)] : Unit
+  (let [a (str-addr s)] (sc-cat! buf w cap a (sc-strlen a))))
+;; decimal, signed (the most negative I32 included: digits are taken from the negative side)
+(defn sc-cat-int! [(buf : I32) (w : I32) (cap : I32) (v : I32)] : Unit
+  (let [neg (if (< v 0) v (- 0 v)) tmp (+ (sc-scratch) (- (sc-scratch-cap) 16))]
+    (do (when (< v 0) (sc-cat-byte! buf w cap 45))
+        (let [n (loop [x neg k 0]
+                  (do (store8! (+ tmp k) (- 48 (mod x 10)))
+                      (if (= (/ x 10) 0) (+ k 1) (recur (/ x 10) (+ k 1)))))]
+          (dotimes [i n] (sc-cat-byte! buf w cap (load8 (+ tmp (- (- n 1) i)))))))))
+;; a quoted, bounded copy of a NUL-terminated string (control bytes shown as \xNN so a failure line stays one line)
+(defn sc-hexdig [(d : I32)] : I32 (if (< d 10) (+ 48 d) (+ 87 d)))
+(defn sc-cat-quoted! [(buf : I32) (w : I32) (cap : I32) (a : I32) (n : I32)] : Unit
+  (do (sc-cat-byte! buf w cap 34)
+      (dotimes [i (if (< n 200) n 200)]
+        (let [b (load8 (+ a i))]
+          (if (or (< b 32) (or (= b 34) (= b 92)))
+              (do (sc-cat-byte! buf w cap 92) (sc-cat-byte! buf w cap 120)
+                  (sc-cat-byte! buf w cap (sc-hexdig (shr b 4))) (sc-cat-byte! buf w cap (sc-hexdig (bit-and b 15))))
+              (sc-cat-byte! buf w cap b))))
+      (when (> n 200) (sc-cat-str! buf w cap "..."))
+      (sc-cat-byte! buf w cap 34)))
+
+(defn sc-out! [(src : I32) (n : I32)] : Unit (sc-cat! (sc-report-addr) 6 (sc-report-cap) src n))
+(defn sc-out-str! [(s : String)] : Unit (sc-cat-str! (sc-report-addr) 6 (sc-report-cap) s))
+(defn sc-out-int! [(v : I32)] : Unit (sc-cat-int! (sc-report-addr) 6 (sc-report-cap) v))
+
+;; ---- the failure lines of the open It (ladybug writes these) -----------------------------------------------------------------------
+(defn sc-msg-str! [(s : String)] : Unit (sc-cat-str! (sc-msg) 8 (sc-msg-cap) s))
+(defn sc-msg-int! [(v : I32)] : Unit (sc-cat-int! (sc-msg) 8 (sc-msg-cap) v))
+(defn sc-msg-quoted! [(a : I32) (n : I32)] : Unit (sc-cat-quoted! (sc-msg) 8 (sc-msg-cap) a n))
+(defn sc-msg-byte! [(b : I32)] : Unit (sc-cat-byte! (sc-msg) 8 (sc-msg-cap) b))
+
+;; ---- the tree ------------------------------------------------------------------------------------------------------------------
+(defn sc-reset! [] : Unit (dotimes [k 14] (when (not (= k 11)) (when (not (= k 12)) (sc-w! k 0)))))
+
+(defn sc-close-it! [] : Unit
+  (when (= (sc-w 4) 1)
+    (do (sc-w! 4 0)
+        (sc-w! 1 (+ (sc-w 1) 1))
+        (if (= (sc-w 5) 0)
+            (do (sc-w! 2 (+ (sc-w 2) 1)) (sc-out-str! "PASS: "))
+            (do (sc-w! 3 (+ (sc-w 3) 1)) (sc-out-str! "FAIL: ")))
+        (sc-out! (sc-path) (sc-w 7))
+        (when (> (sc-w 7) 0) (sc-out-str! " / "))
+        (sc-out! (sc-spec) (sc-w 10))
+        (sc-out-str! "\n")
+        (sc-out! (sc-msg) (sc-w 8)))))
+
+(defn sc-describe! [(name : String)] : Unit
+  (do (sc-close-it!)
+      (let [d (sc-w 0)]
+        (when (< d 31)
+          (do (store32! (+ (sc-lens) (* 4 d)) (sc-w 7))
+              (when (> (sc-w 7) 0) (sc-cat-str! (sc-path) 7 4096 " / "))
+              (sc-cat-str! (sc-path) 7 4096 name)
+              (sc-w! 0 (+ d 1)))))))
+(defn sc-context! [(name : String)] : Unit (sc-describe! name))
+
+(defn sc-end! [] : Unit
+  (do (sc-close-it!)
+      (when (> (sc-w 0) 0)
+        (do (sc-w! 0 (- (sc-w 0) 1))
+            (sc-w! 7 (load32 (+ (sc-lens) (* 4 (sc-w 0)))))))))
+
+(defn sc-open-it! [(a : I32) (n : I32)] : Unit
+  (do (sc-close-it!)
+      (sc-w! 10 0) (sc-cat! (sc-spec) 10 1024 a n)
+      (sc-w! 4 1) (sc-w! 5 0) (sc-w! 8 0) (sc-w! 9 0)))
+(defn sc-it! [(name : String)] : Unit (let [a (str-addr name)] (sc-open-it! a (sc-strlen a))))
+;; an It whose name is built at run time (in the scratch area): "every prefix (...)" with a count in it
+(defn sc-it-addr! [(a : I32) (n : I32)] : Unit (sc-open-it! a n))
+
+;; ladybug calls this before every expectation: an expectation outside any It still counts (under "(no It)")
+(defn sc-expectation! [] : I32
+  (do (when (= (sc-w 4) 0) (sc-it! "(no It)"))
+      (sc-w! 9 (+ (sc-w 9) 1))
+      (sc-w! 13 (+ (sc-w 13) 1))
+      (sc-w 9)))
+(defn sc-failed! [(n : I32)] : Unit
+  (do (sc-w! 5 (+ (sc-w 5) 1))
+      (sc-msg-str! "      expectation ") (sc-msg-int! n) (sc-msg-str! ": ")))
+
+(defn sc-finish! [] : I32
+  (do (sc-close-it!)
+      (sc-out-str! "\n") (sc-out-int! (sc-w 13)) (sc-out-str! " expectations in ") (sc-out-int! (sc-w 1)) (sc-out-str! " specs\n")
+      (sc-out-int! (sc-w 2)) (sc-out-str! " passed, ") (sc-out-int! (sc-w 3)) (sc-out-str! " failed\n")
+      (sc-w 3)))
+
+;; ---- fixtures ----------------------------------------------------------------------------------------------------------------------
+;; write the bytes a hex string spells ("c00c 0001", spaces and newlines ignored) at addr; returns how many
+(defn sc-hexval [(c : I32)] : I32
+  (cond (and (>= c 48) (<= c 57)) (- c 48)
+        (and (>= c 97) (<= c 102)) (- c 87)
+        (and (>= c 65) (<= c 70)) (- c 55)
+        :else -1))
+(defn sc-hex-at! [(addr : I32) (src : I32)] : I32
+  (loop [i 0 n 0 hi -1]
+    (let [c (load8 (+ src i))]
+      (if (= c 0) n
+          (let [v (sc-hexval c)]
+            (cond (< v 0) (recur (+ i 1) n hi)
+                  (< hi 0) (recur (+ i 1) n v)
+                  :else (do (store8! (+ addr n) (+ (* hi 16) v)) (recur (+ i 1) (+ n 1) -1))))))))
+(defn sc-hex! [(addr : I32) (hex : String)] : I32 (sc-hex-at! addr (str-addr hex)))
+;; copy a literal's bytes (no NUL) to addr; returns the length
+(defn sc-put! [(addr : I32) (s : String)] : I32
+  (let [a (str-addr s) n (sc-strlen a)] (do (dotimes [i n] (store8! (+ addr i) (load8 (+ a i)))) n)))
+(defn sc-fill! [(addr : I32) (b : I32) (n : I32)] : I32 (do (dotimes [i n] (store8! (+ addr i) b)) n))
+(defn sc-be16! [(addr : I32) (v : I32)] : Unit (do (store8! addr (bit-and (shr v 8) 255)) (store8! (+ addr 1) (bit-and v 255))))
+(defn sc-be16 [(addr : I32)] : I32 (bit-or (shl (load8 addr) 8) (load8 (+ addr 1))))
+
+;; ---- files the host loaded (in command-line order) ----------------------------------------------------------------------------------
+;; the host asks where file i goes (it decides nothing: this says where, or -1 when it does not fit)
+(defn sc-file-next [(n : I32)] : I32
+  (let [k (sc-w 11) at (if (= k 0) (sc-file-data) (sc-w 12))]
+    (if (or (>= k 64) (> n (- (sc-mem-end) at))) -1
+        (do (store32! (+ (sc-files) (* 8 k)) at)
+            (store32! (+ (sc-files) (+ 4 (* 8 k))) n)
+            (sc-w! 11 (+ k 1))
+            (sc-w! 12 (bit-and (+ (+ at n) 15) -16))
+            at))))
+(defn sc-file-count [] : I32 (sc-w 11))
+(defn sc-file-addr [(i : I32)] : I32 (load32 (+ (sc-files) (* 8 i))))
+(defn sc-file-len [(i : I32)] : I32 (load32 (+ (sc-files) (+ 4 (* 8 i)))))

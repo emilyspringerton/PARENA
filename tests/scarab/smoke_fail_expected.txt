@@ -1,0 +1,19 @@
+PASS: ladybug / lb-equal / passes on equal
+FAIL: ladybug / lb-equal / fails on unequal
+      expectation 1: expected 42, got -2147483648
+PASS: ladybug / strings / str passes
+FAIL: ladybug / strings / str fails
+      expectation 1: expected "abd", got "ab\x22c"
+      expectation 2: expected a string starting "abc", got "ab"
+PASS: ladybug / bytes / hex passes
+FAIL: ladybug / bytes / hex fails
+      expectation 1: bytes differ at offset 3 of 4: expected 2, got 1
+      expectation 2: expected 4 bytes, got 3
+PASS: ladybug / bytes / bools and order
+FAIL: ladybug / bytes / order fails
+      expectation 1: expected 5 < 3
+      expectation 2: expected true, got false
+PASS: top level / after the nest
+
+17 expectations in 9 specs
+5 passed, 4 failed

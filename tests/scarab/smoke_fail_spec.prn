@@ -1,0 +1,22 @@
+;; tests/scarab/smoke_fail_spec.prn -- SCARAB/LADYBUG checking themselves: every matcher once passing and once failing.
+;; tests/scarab/run_self_test.sh runs it and checks the report line by line (a passing matcher must say PASS, a failing one FAIL
+;; with the right message, the totals must count both, the exit status must be 1).
+(defn scarab-main [] : I32
+  (do (sc-describe! "ladybug")
+        (sc-context! "lb-equal")
+          (sc-it! "passes on equal") (lb-equal 7 7)
+          (sc-it! "fails on unequal") (lb-equal -2147483648 42)
+        (sc-end!)
+        (sc-context! "strings")
+          (sc-it! "str passes") (lb-str-equal (str-addr "abc") "abc") (lb-have-prefix (str-addr "abcdef") "abc")
+          (sc-it! "str fails") (lb-str-equal (str-addr "ab\"c") "abd") (lb-have-prefix (str-addr "ab") "abc")
+        (sc-end!)
+        (sc-context! "bytes")
+          (sc-it! "hex passes") (lb-hex-equal (sc-scratch) (sc-hex! (sc-scratch) "c0 0c 00 01") "c00c0001")
+          (sc-it! "hex fails") (lb-hex-equal (sc-scratch) 4 "c00c0002") (lb-hex-equal (sc-scratch) 3 "c00c0001")
+          (sc-it! "bools and order") (lb-be-true (> 2 1)) (lb-be-false (> 1 2)) (lb-be-> 2 1) (lb-be-<= 2 2) (lb-not-equal 1 2)
+          (sc-it! "order fails") (lb-be-< 5 3) (lb-be-true (= 1 2))
+        (sc-end!)
+      (sc-end!)
+      (sc-describe! "top level") (sc-it! "after the nest") (lb-equal 1 1) (sc-end!)
+      (sc-finish!)))

@@ -1467,7 +1467,12 @@ static int emit_llvm_defn(Arena *arena, LlvmBuf *out, Node *defn, LlvmModule *mo
         return 0;
     }
     if (strcmp(body_val.type, ret_type) != 0) {
-        *out_error = "emit_llvm: defn: body's own real, inferred type does not match the declared return type";
+        /* name the function and both types: a multi-module wasm build (netkit, SCARAB suites) otherwise gives no clue where */
+        const char *dn = defn->children[1]->text;
+        char *msg = arena_alloc(arena, strlen(dn) + strlen(body_val.type) + strlen(ret_type) + 128);
+        sprintf(msg, "emit_llvm: defn: body's own real, inferred type does not match the declared return type (in defn %s: body is %s, declared %s)",
+                dn, body_val.type, ret_type);
+        *out_error = msg;
         lb_free(&param_list);
         lb_free(&fn.body);
         return 0;

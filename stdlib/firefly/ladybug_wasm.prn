@@ -1,0 +1,78 @@
+;; stdlib/firefly/ladybug_wasm.prn -- LADYBUG's matchers for the wasm32 target (PARENA's LLVM emitter), used with
+;; stdlib/scarab/wasm.prn. Same idea as stdlib/firefly/ladybug.prn's Expect(x).To(Equal(y)) -- a failed expectation is recorded
+;; against the open It and the run continues (Go's t.Error, not t.Fatal) -- but flattened to one call per matcher, because this
+;; target has no structs or function values to build a matcher chain from. Each failure prints what was expected and what came.
+;;
+;;   (lb-equal actual expected)            I32s are equal                (lb-not-equal a b)
+;;   (lb-be-true c) (lb-be-false c)        a Bool
+;;   (lb-be-> a b) (lb-be-< a b) (lb-be->= a b) (lb-be-<= a b)
+;;   (lb-str-equal addr "text")            the NUL-terminated string at addr is exactly "text"
+;;   (lb-have-prefix addr "text")          ...starts with "text"
+;;   (lb-str-equal-addr a b)               two NUL-terminated strings in memory are equal
+;;   (lb-bytes-equal a b n)                n bytes at a and b are equal (names the first difference)
+;;   (lb-hex-equal addr n "c00c0001")      the n bytes at addr are exactly the ones the hex spells (n must match too)
+;;   (lb-text-equal addr n "text")         n bytes at addr (not NUL-terminated: a file, a generator's output) are exactly "text"
+;;   (lb-text-have-prefix addr n "text")   ...start with "text"
+
+(defn lb-equal [(actual : I32) (expected : I32)] : Unit
+  (let [k (sc-expectation!)]
+    (when (not (= actual expected))
+      (do (sc-failed! k) (sc-msg-str! "expected ") (sc-msg-int! expected) (sc-msg-str! ", got ") (sc-msg-int! actual) (sc-msg-str! "\n")))))
+(defn lb-not-equal [(actual : I32) (other : I32)] : Unit
+  (let [k (sc-expectation!)]
+    (when (= actual other)
+      (do (sc-failed! k) (sc-msg-str! "expected anything but ") (sc-msg-int! other) (sc-msg-str! "\n")))))
+(defn lb-be-true [(c : Bool)] : Unit
+  (let [k (sc-expectation!)] (when (not c) (do (sc-failed! k) (sc-msg-str! "expected true, got false\n")))))
+(defn lb-be-false [(c : Bool)] : Unit
+  (let [k (sc-expectation!)] (when c (do (sc-failed! k) (sc-msg-str! "expected false, got true\n")))))
+
+(defn lb-cmp-fail! [(k : I32) (a : I32) (op : String) (b : I32)] : Unit
+  (do (sc-failed! k) (sc-msg-str! "expected ") (sc-msg-int! a) (sc-msg-str! op) (sc-msg-int! b) (sc-msg-str! "\n")))
+(defn lb-be-> [(a : I32) (b : I32)] : Unit (let [k (sc-expectation!)] (when (not (> a b)) (lb-cmp-fail! k a " > " b))))
+(defn lb-be-< [(a : I32) (b : I32)] : Unit (let [k (sc-expectation!)] (when (not (< a b)) (lb-cmp-fail! k a " < " b))))
+(defn lb-be->= [(a : I32) (b : I32)] : Unit (let [k (sc-expectation!)] (when (not (>= a b)) (lb-cmp-fail! k a " >= " b))))
+(defn lb-be-<= [(a : I32) (b : I32)] : Unit (let [k (sc-expectation!)] (when (not (<= a b)) (lb-cmp-fail! k a " <= " b))))
+
+;; 1 when the n bytes at a and b match
+(defn lb-same? [(a : I32) (b : I32) (n : I32)] : I32
+  (loop [i 0] (cond (>= i n) 1 (= (load8 (+ a i)) (load8 (+ b i))) (recur (+ i 1)) :else 0)))
+(defn lb-first-diff [(a : I32) (b : I32) (n : I32)] : I32
+  (loop [i 0] (cond (>= i n) -1 (= (load8 (+ a i)) (load8 (+ b i))) (recur (+ i 1)) :else i)))
+
+(defn lb-str-equal-addr [(a : I32) (b : I32)] : Unit
+  (let [k (sc-expectation!) na (sc-strlen a) nb (sc-strlen b)]
+    (when (or (not (= na nb)) (= (lb-same? a b na) 0))
+      (do (sc-failed! k) (sc-msg-str! "expected ") (sc-msg-quoted! b nb) (sc-msg-str! ", got ") (sc-msg-quoted! a na) (sc-msg-str! "\n")))))
+(defn lb-str-equal [(addr : I32) (expected : String)] : Unit (lb-str-equal-addr addr (str-addr expected)))
+
+(defn lb-have-prefix [(addr : I32) (prefix : String)] : Unit
+  (let [k (sc-expectation!) p (str-addr prefix) np (sc-strlen p) na (sc-strlen addr)]
+    (when (or (< na np) (= (lb-same? addr p np) 0))
+      (do (sc-failed! k) (sc-msg-str! "expected a string starting ") (sc-msg-quoted! p np) (sc-msg-str! ", got ")
+          (sc-msg-quoted! addr na) (sc-msg-str! "\n")))))
+
+(defn lb-bytes-fail! [(k : I32) (a : I32) (b : I32) (n : I32) (at : I32)] : Unit
+  (do (sc-failed! k) (sc-msg-str! "bytes differ at offset ") (sc-msg-int! at) (sc-msg-str! " of ") (sc-msg-int! n)
+      (sc-msg-str! ": expected ") (sc-msg-int! (load8 (+ b at))) (sc-msg-str! ", got ") (sc-msg-int! (load8 (+ a at))) (sc-msg-str! "\n")))
+(defn lb-bytes-equal [(a : I32) (b : I32) (n : I32)] : Unit
+  (let [k (sc-expectation!) at (lb-first-diff a b n)]
+    (when (>= at 0) (lb-bytes-fail! k a b n at))))
+
+;; the hex is decoded into the top of the scratch area (specs build their own fixtures lower down)
+(defn lb-hex-equal [(addr : I32) (n : I32) (hex : String)] : Unit
+  (let [k (sc-expectation!) want (+ (sc-scratch) 786432) m (sc-hex! want hex)]
+    (if (not (= m n))
+        (do (sc-failed! k) (sc-msg-str! "expected ") (sc-msg-int! m) (sc-msg-str! " bytes, got ") (sc-msg-int! n) (sc-msg-str! "\n"))
+        (let [at (lb-first-diff addr want n)] (when (>= at 0) (lb-bytes-fail! k addr want n at))))))
+
+;; text that is not NUL-terminated (a file, a generator's output): n bytes at addr
+(defn lb-text-equal [(addr : I32) (n : I32) (expected : String)] : Unit
+  (let [k (sc-expectation!) e (str-addr expected) ne (sc-strlen e)]
+    (when (or (not (= n ne)) (= (lb-same? addr e n) 0))
+      (do (sc-failed! k) (sc-msg-str! "expected ") (sc-msg-quoted! e ne) (sc-msg-str! ", got ") (sc-msg-quoted! addr n) (sc-msg-str! "\n")))))
+(defn lb-text-have-prefix [(addr : I32) (n : I32) (prefix : String)] : Unit
+  (let [k (sc-expectation!) p (str-addr prefix) np (sc-strlen p)]
+    (when (or (< n np) (= (lb-same? addr p np) 0))
+      (do (sc-failed! k) (sc-msg-str! "expected text starting ") (sc-msg-quoted! p np) (sc-msg-str! ", got ")
+          (sc-msg-quoted! addr (if (< n np) n np)) (sc-msg-str! "\n")))))
