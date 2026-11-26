@@ -1,0 +1,29 @@
+;; tests/netkit/des_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_des.prn (the DES block VNC authentication needs).
+;; Replaces tests/netkit/test_des.py. The NIST vector is a literal; the other answers are pycryptodome's, frozen in
+;; tests/netkit/vectors/des.vec (key8 block8 encrypt8 decrypt8; see vectors/make_vectors.py for where they came from).
+;; Run: scripts/scarab_wasm.sh tests/netkit/des_spec.prn --modules stdlib/netkit/MODULES --file tests/netkit/vectors/des.vec
+
+(defn dx-buf [] : I32 1048576)                       ; inside IN (this suite never uses RFB)
+(defn dx-run [(key : I32) (block : I32) (enc : I32)] : I32 (do (nk-des-test key block (dx-buf) enc) (dx-buf)))
+;; how many records in [from, to) of des.vec do not match in both directions
+(defn dx-bad [(from : I32) (to : I32)] : I32
+  (loop [r from bad 0]
+    (if (>= r to) bad
+        (let [a (+ (sc-file-addr 0) (* 32 r))
+              e (lb-same? (dx-run a (+ a 8) 1) (+ a 16) 8)
+              d (lb-same? (dx-run a (+ a 8) 0) (+ a 24) 8)]
+          (recur (+ r 1) (+ bad (if (and (= e 1) (= d 1)) 0 1)))))))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_des")
+        (let [k (sc-scratch) p (+ (sc-scratch) 16) c (+ (sc-scratch) 32)]
+          (do (sc-hex! k "133457799BBCDFF1") (sc-hex! p "0123456789ABCDEF") (sc-hex! c "85E813540F0AB405")
+              (sc-it! "encrypt: NIST vector 133457799BBCDFF1 / 0123456789ABCDEF -> 85E813540F0AB405")
+              (lb-hex-equal (dx-run k p 1) 8 "85E813540F0AB405")
+              (sc-it! "decrypt: the NIST vector round-trips") (lb-hex-equal (dx-run k c 0) 8 "0123456789ABCDEF")
+              (sc-it! "works in place (out == in)") (nk-des-test k p p 1) (lb-hex-equal p 8 "85E813540F0AB405")))
+        (sc-it! "the vector file holds 8 weak/edge cases + 500 random ones") (lb-equal (/ (sc-file-len 0) 32) 508)
+        (sc-it! "weak and odd keys (00.., ff.., 01.., fe..) on all-zero and all-one blocks match pycryptodome") (lb-equal (dx-bad 0 8) 0)
+        (sc-it! "500 random key/block pairs match pycryptodome, both directions") (lb-equal (dx-bad 8 508) 0)
+      (sc-end!)
+      (sc-finish!)))

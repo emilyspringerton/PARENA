@@ -1,5 +1,11 @@
 ## 2026-11-26
 
+- **feat(test): the Netkit crypto tests are SCARAB/LADYBUG specs.** `test_des.py`, `test_crypto.py`, `test_x25519.py` and `test_ed25519.py` ->
+  `tests/netkit/{des,crypto,x25519,ed25519}_spec.prn` (6 + 16 + 11 + 8 specs). Published vectors (NIST, FIPS 180-4, RFC 7748/8032/8439) are
+  literals in the specs; the random-input comparisons against independent implementations (pycryptodome, hashlib, pyca/cryptography,
+  Python big integers) became frozen answers in `tests/netkit/vectors/*.vec` (336 KB, same seeds as the old tests, regenerated
+  byte-identical; `vectors/make_vectors.py` is the record of where they came from and is not run by any test). Every walk also checks
+  its record count, so a broken walker cannot pass on zero records; flipping one byte in each vector file turns its suite red.
 - **feat(test): SCARAB and LADYBUG run on wasm, and the first Netkit tests are PARENA (founder: "can we convert the tests from node and
   python to SCARAB and LADYBUG?").** The C-target `scarab`/`firefly/ladybug` need structs, enums, function values and arenas; the LLVM
   emitter (which every Netkit module needs) has none of them, so this adds a wasm flavour with the same shape: `stdlib/scarab/wasm.prn`

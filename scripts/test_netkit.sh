@@ -6,7 +6,7 @@
 #   - SSH          a PARENA SSH client vs asyncssh, and vs the real OpenSSH sshd (unprivileged, libnss_wrapper)
 #   - interop      a REAL VNC server (libvncserver, TightVNC's lineage; tests/netkit/vncd.c): real auth, real encoders,
 #                  final screen compared byte for byte. Skipped (loudly) if libvncserver headers are not installed.
-# Needs: the LLVM toolchain (see build_netkit_wasm.sh), python3 with wasmtime, pycryptodome, cryptography, asyncssh, pyte;
+# Needs: the LLVM toolchain (see build_netkit_wasm.sh), node 24+ (SCARAB suites), python3 with wasmtime, asyncssh, pyte (the rest);
 #        openssh-server + libnss-wrapper for the real-OpenSSH leg (skipped, loudly, without them).
 #   VNC_ROOT=<dir>   an extracted libvncserver1+libvncserver-dev (dpkg -x) when it is not installed system-wide
 set -euo pipefail
@@ -26,6 +26,15 @@ echo "== names_spec.prn (nk_names.prn)"
 scripts/scarab_wasm.sh tests/netkit/names_spec.prn --modules stdlib/netkit/MODULES --file "$W/oui.bin" --file stdlib/netkit/data/oui_brands.tsv | tail -3
 echo "== scan_spec.prn (nk_scan.prn)"
 scripts/scarab_wasm.sh tests/netkit/scan_spec.prn --modules stdlib/netkit/MODULES | tail -3
+V=tests/netkit/vectors   # frozen answers from independent implementations (vectors/make_vectors.py records where they came from)
+echo "== des_spec.prn (nk_des.prn)"
+scripts/scarab_wasm.sh tests/netkit/des_spec.prn --modules stdlib/netkit/MODULES --file $V/des.vec | tail -3
+echo "== crypto_spec.prn (nk_crypto.prn: SHA-256, ChaCha20, Poly1305)"
+scripts/scarab_wasm.sh tests/netkit/crypto_spec.prn --modules stdlib/netkit/MODULES --file $V/sha256.vec --file $V/chacha.vec --file $V/poly.vec | tail -3
+echo "== x25519_spec.prn (nk_x25519.prn)"
+scripts/scarab_wasm.sh tests/netkit/x25519_spec.prn --modules stdlib/netkit/MODULES --file $V/x25519.vec | tail -3
+echo "== ed25519_spec.prn (nk_sha512.prn + nk_ed25519.prn)"
+scripts/scarab_wasm.sh tests/netkit/ed25519_spec.prn --modules stdlib/netkit/MODULES --file $V/sha512.vec --file $V/modl.vec --file $V/ed25519.vec | tail -3
 echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
 scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
 for t in tests/netkit/test_*.py; do

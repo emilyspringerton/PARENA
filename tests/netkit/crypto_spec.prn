@@ -1,0 +1,86 @@
+;; tests/netkit/crypto_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_crypto.prn: SHA-256, ChaCha20 (OpenSSH's 64-bit
+;; counter layout) and Poly1305. Replaces tests/netkit/test_crypto.py. Published vectors (FIPS 180-4, RFC 8439) are literals;
+;; the random cases are hashlib / pyca/cryptography answers frozen in tests/netkit/vectors/{sha256,chacha,poly}.vec.
+;; Run: scripts/scarab_wasm.sh tests/netkit/crypto_spec.prn --modules stdlib/netkit/MODULES
+;;        --file tests/netkit/vectors/sha256.vec --file tests/netkit/vectors/chacha.vec --file tests/netkit/vectors/poly.vec
+
+(defn cx-a [] : I32 1048576)
+(defn cx-b [] : I32 1310720)
+(defn cx-sha [(s : String)] : I32 (do (nk-sha256 (cx-a) (sc-put! (cx-a) s) (cx-b)) (cx-b)))
+
+;; sha256.vec: n data digest32. how many records hash wrong; also how many there are (what = 0)
+(defn cx-sha-walk [(what : I32)] : I32
+  (loop [p (sc-file-addr 0) r 0 bad 0]
+    (if (>= p (+ (sc-file-addr 0) (sc-file-len 0))) (if (= what 0) r bad)
+        (let [n (load32 p)]
+          (do (nk-sha256 (+ p 4) n (cx-b))
+              (recur (+ p (+ 36 n)) (+ r 1) (+ bad (- 1 (lb-same? (cx-b) (+ (+ p 4) n) 32)))))))))
+
+;; chacha.vec: key32 nonce8 lo hi n data out. record start of record k
+(defn cx-cc-at [(k : I32)] : I32
+  (loop [p (sc-file-addr 1) i 0] (if (= i k) p (recur (+ p (+ 52 (* 2 (load32 (+ p 48))))) (+ i 1)))))
+(defn cx-cc-ok [(p : I32)] : I32
+  (let [n (load32 (+ p 48))]
+    (do (nk-chacha20-xor p (+ p 32) (load32 (+ p 40)) (+ p 52) (cx-b) n)
+        (lb-same? (cx-b) (+ (+ p 52) n) n))))
+(defn cx-cc-bad [(from : I32) (to : I32)] : I32
+  (loop [k from bad 0] (if (>= k to) bad (recur (+ k 1) (+ bad (- 1 (cx-cc-ok (cx-cc-at k))))))))
+
+;; poly.vec: key32 n msg tag16
+(defn cx-pl-at [(k : I32)] : I32
+  (loop [p (sc-file-addr 2) i 0] (if (= i k) p (recur (+ p (+ 52 (load32 (+ p 32)))) (+ i 1)))))
+(defn cx-pl-bad [(from : I32) (to : I32)] : I32
+  (loop [k from bad 0]
+    (if (>= k to) bad
+        (let [p (cx-pl-at k) n (load32 (+ p 32))]
+          (do (nk-poly1305 (cx-b) (+ p 36) n p)
+              (recur (+ k 1) (+ bad (- 1 (lb-same? (cx-b) (+ (+ p 36) n) 16)))))))))
+
+(defn cx-sha256! [] : Unit
+  (do (sc-describe! "SHA-256")
+        (sc-it! "the empty message (FIPS 180-4)") (lb-hex-equal (cx-sha "") 32 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        (sc-it! "'abc' (FIPS 180-4)") (lb-hex-equal (cx-sha "abc") 32 "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        (sc-it! "the 448-bit message (FIPS 180-4)")
+        (lb-hex-equal (cx-sha "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") 32 "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+        (sc-it! "matches hashlib for every length 0..259 and 511/512/513/1000/4096/9999")
+        (lb-equal (cx-sha-walk 0) 266) (lb-equal (cx-sha-walk 1) 0)
+        (sc-it! "one million 'a' (FIPS 180-4)")
+        (sc-fill! 16777216 97 1000000) (nk-sha256 16777216 1000000 (cx-b))
+        (lb-hex-equal (cx-b) 32 "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+      (sc-end!)))
+
+(defn cx-chacha! [] : Unit
+  (do (sc-describe! "ChaCha20")
+        (let [k (sc-scratch) n (+ (sc-scratch) 64) m (+ (sc-scratch) 128)]
+          (do (sc-hex! k "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f") (sc-hex! n "0000004a00000000")
+              (nk-chacha20-xor k n 1 m (cx-b) (sc-put! m "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it."))
+              (sc-it! "the RFC 8439 s2.4.2 'sunscreen' vector (IETF counter 1 = our counter_lo 1, nonce word 0 = counter_hi)")
+              (lb-hex-equal (cx-b) 114 "6e2e359a2568f98041ba0728dd0d6981e97e7aec1d4360c20a27afccfd9fae0bf91b65c5524733ab8f593dabcd62b3571639d624e65152ab8f530c359f0861d807ca0dbf500d6a6156a38e088a22b65e52bc514d16ccf806818ce91ab77937365af90bbf74a35be6b40b8eedf2785e42874d")))
+        (sc-it! "chacha.vec holds exactly 123 records (120 random, the carry, the poly key, in place)")
+        (lb-equal (cx-cc-at 123) (+ (sc-file-addr 1) (sc-file-len 1)))
+        (sc-it! "matches pyca/cryptography on 120 random key/nonce/counter/length cases") (lb-equal (cx-cc-bad 0 120) 0)
+        (sc-it! "the block counter carries into the high word within one message (64-bit counter, as OpenSSH)") (lb-equal (cx-cc-bad 120 121) 0)
+        (let [p (cx-cc-at 121)]
+          (do (nk-chacha20-polykey p (+ p 32) (cx-b))
+              (sc-it! "the Poly1305 one-time key = the first 32 bytes of keystream block 0") (lb-bytes-equal (cx-b) (+ p 84) 32)))
+        (let [p (cx-cc-at 122) n (load32 (+ p 48)) m (+ (sc-scratch) 4096)]
+          (do (dotimes [i n] (store8! (+ m i) (load8 (+ (+ p 52) i))))
+              (nk-chacha20-xor p (+ p 32) 5 m m n)
+              (sc-it! "works in place (out == in)") (lb-bytes-equal m (+ (+ p 52) n) n)))
+      (sc-end!)))
+
+(defn cx-poly! [] : Unit
+  (do (sc-describe! "Poly1305")
+        (let [k (sc-scratch) m (+ (sc-scratch) 64)]
+          (do (sc-hex! k "85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
+              (nk-poly1305 (cx-b) m (sc-put! m "Cryptographic Forum Research Group") k)
+              (sc-it! "the RFC 8439 s2.5.2 vector") (lb-hex-equal (cx-b) 16 "a8061dc1305136c6c22b8baf0c0127a9")))
+        (sc-it! "poly.vec holds exactly 536 records (300 random, 36 extremes, 200 structured)")
+        (lb-equal (cx-pl-at 536) (+ (sc-file-addr 2) (sc-file-len 2)))
+        (sc-it! "matches pyca/cryptography on 300 random key/message pairs, lengths 0..69, 127..129, 1000") (lb-equal (cx-pl-bad 0 300) 0)
+        (sc-it! "carry extremes (all-0x00 / all-0xFF keys and messages) match") (lb-equal (cx-pl-bad 300 336) 0)
+        (sc-it! "the structured 0x00/0xFF stress (final-reduction edge cases) matches") (lb-equal (cx-pl-bad 336 536) 0)
+      (sc-end!)))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_crypto") (cx-sha256!) (cx-chacha!) (cx-poly!) (sc-end!) (sc-finish!)))

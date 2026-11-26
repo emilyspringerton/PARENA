@@ -1,0 +1,62 @@
+;; tests/netkit/ed25519_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_sha512.prn + nk_ed25519.prn: SHA-512, the mod-L
+;; reduction, and Ed25519 verification (valid signatures accepted, every tampering rejected). Replaces tests/netkit/test_ed25519.py.
+;; RFC 8032 / FIPS vectors are literals; hashlib, Python big-integer and pyca/cryptography answers are frozen in
+;; tests/netkit/vectors/{sha512,modl,ed25519}.vec (see vectors/make_vectors.py).
+;; Run: scripts/scarab_wasm.sh tests/netkit/ed25519_spec.prn --modules stdlib/netkit/MODULES
+;;        --file tests/netkit/vectors/sha512.vec --file tests/netkit/vectors/modl.vec --file tests/netkit/vectors/ed25519.vec
+
+(defn ex-out [] : I32 1048576)
+;; sha512.vec: n data digest64. what 0 = records, 1 = mismatches
+(defn ex-sha-walk [(what : I32)] : I32
+  (loop [p (sc-file-addr 0) r 0 bad 0]
+    (if (>= p (+ (sc-file-addr 0) (sc-file-len 0))) (if (= what 0) r bad)
+        (let [n (load32 p)]
+          (do (nk-sha512 (+ p 4) n (ex-out))
+              (recur (+ p (+ 68 n)) (+ r 1) (+ bad (- 1 (lb-same? (ex-out) (+ (+ p 4) n) 64)))))))))
+;; modl.vec: x64 r32
+(defn ex-modl-bad [] : I32
+  (loop [r 0 bad 0]
+    (if (>= r (/ (sc-file-len 1) 96)) bad
+        (let [a (+ (sc-file-addr 1) (* 96 r))]
+          (do (nk-ed25519-modl (ex-out) a) (recur (+ r 1) (+ bad (- 1 (lb-same? (ex-out) (+ a 64) 32)))))))))
+;; ed25519.vec: pk32 n msg sig64 expect. want = 1: count records that should verify / that did not; want = 0: should be rejected / were not
+(defn ex-ed-walk [(want : I32) (what : I32)] : I32
+  (loop [p (sc-file-addr 2) seen 0 bad 0]
+    (if (>= p (+ (sc-file-addr 2) (sc-file-len 2))) (if (= what 0) seen bad)
+        (let [n (load32 (+ p 32)) m (+ p 36) sig (+ m n) expect (load32 (+ sig 64))]
+          (if (= expect want)
+              (recur (+ sig 68) (+ seen 1) (+ bad (if (= (nk-ed25519-verify p m n sig) want) 0 1)))
+              (recur (+ sig 68) seen bad))))))
+(defn ex-verify [(pk : String) (msg : String) (sig : String)] : I32
+  (let [a (sc-scratch) b (+ (sc-scratch) 64) c (+ (sc-scratch) 1024)]
+    (do (sc-hex! a pk) (sc-hex! c sig) (nk-ed25519-verify a b (sc-hex! b msg) c))))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_sha512 + nk_ed25519")
+        (sc-describe! "SHA-512")
+          (sc-it! "matches hashlib for every length 0..299 and 511/512/1000/4095") (lb-equal (ex-sha-walk 0) 304) (lb-equal (ex-sha-walk 1) 0)
+          (sc-it! "'abc' (FIPS 180-4)")
+          (nk-sha512 (sc-scratch) (sc-put! (sc-scratch) "abc") (ex-out))
+          (lb-hex-equal (ex-out) 64 "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f")
+        (sc-end!)
+        (sc-describe! "mod L")
+          (sc-it! "matches Python big integers on 406 inputs (0, all-ones, multiples of L, L-1, random, 0x00/0xFF mixes)")
+          (lb-equal (/ (sc-file-len 1) 96) 406) (lb-equal (ex-modl-bad) 0)
+        (sc-end!)
+        (sc-describe! "Ed25519 verification")
+          (sc-it! "RFC 8032 test vector 1 (empty message) verifies")
+          (lb-equal (ex-verify "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" ""
+                               "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b") 1)
+          (sc-it! "RFC 8032 test vector 2 (one-byte message) verifies")
+          (lb-equal (ex-verify "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c" "72"
+                               "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00") 1)
+          (sc-it! "RFC 8032 vector 1 with one bit of S flipped is rejected")
+          (lb-equal (ex-verify "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" ""
+                               "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100a") 0)
+          (sc-it! "25 valid signatures (random keys, messages 0..200 bytes, and the malleability base) verify")
+          (lb-equal (ex-ed-walk 1 0) 25) (lb-equal (ex-ed-walk 1 1) 0)
+          (sc-it! "149 forgeries are rejected: single-bit tamperings of R, S, the message and the key; S + L; S = L; y = p; y >= p; y off the curve; x = 0 with the sign bit; the all-zero key; a different key")
+          (lb-equal (ex-ed-walk 0 0) 149) (lb-equal (ex-ed-walk 0 1) 0)
+        (sc-end!)
+      (sc-end!)
+      (sc-finish!)))

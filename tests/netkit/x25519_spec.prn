@@ -1,0 +1,55 @@
+;; tests/netkit/x25519_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_x25519.prn. Replaces tests/netkit/test_x25519.py.
+;; RFC 7748 vectors are literals; random/basepoint/extreme cases are pyca/cryptography answers and the 7 low-order points are
+;; RFC 7748 ladder answers (all-zero), frozen in tests/netkit/vectors/x25519.vec (k32 u32 out32; vectors/make_vectors.py).
+;; Run: scripts/scarab_wasm.sh tests/netkit/x25519_spec.prn --modules stdlib/netkit/MODULES --file tests/netkit/vectors/x25519.vec
+
+(defn xx-k [] : I32 1048576)
+(defn xx-u [] : I32 1048640)
+(defn xx-o [] : I32 1048704)
+(defn xx-run [(k : String) (u : String)] : I32 (do (sc-hex! (xx-k) k) (sc-hex! (xx-u) u) (nk-x25519 (xx-o) (xx-k) (xx-u)) (xx-o)))
+(defn xx-base! [(a : I32)] : I32 (do (sc-fill! a 0 32) (store8! a 9) a))
+(defn xx-bad [(from : I32) (to : I32)] : I32
+  (loop [r from bad 0]
+    (if (>= r to) bad
+        (let [a (+ (sc-file-addr 0) (* 96 r))]
+          (do (nk-x25519 (xx-o) a (+ a 32)) (recur (+ r 1) (+ bad (- 1 (lb-same? (xx-o) (+ a 64) 32)))))))))
+;; the RFC 7748 s5.2 iteration: k, u <- X25519(k, u), k; starting from k = u = 9
+(defn xx-iterate [(times : I32)] : I32
+  (let [k (+ (sc-scratch) 8192) u (+ (sc-scratch) 8256) t (+ (sc-scratch) 8320)]
+    (do (xx-base! k) (xx-base! u)
+        (dotimes [i times]
+          (do (nk-x25519 t k u)
+              (dotimes [j 32] (store8! (+ u j) (load8 (+ k j))))
+              (dotimes [j 32] (store8! (+ k j) (load8 (+ t j))))))
+        k)))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_x25519")
+        (sc-it! "RFC 7748 s5.2 vector 1")
+        (lb-hex-equal (xx-run "a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4" "e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c") 32
+                      "c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552")
+        (sc-it! "RFC 7748 s5.2 vector 2 (u has its top bit set: it must be masked)")
+        (lb-hex-equal (xx-run "4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d" "e5210f12786811d3f4b7959d0538ae2c31dbe7106fc03c3efc4cd549c715a493") 32
+                      "95cbde9476e8907d7aade45cb4b873f88b595a68799fa152e6f8f7647aac7957")
+        (sc-it! "RFC 7748 s6.1 Alice's public key")
+        (lb-hex-equal (xx-run "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a" "0900000000000000000000000000000000000000000000000000000000000000") 32
+                      "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a")
+        (sc-it! "RFC 7748 s6.1 Bob's public key")
+        (lb-hex-equal (xx-run "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb" "0900000000000000000000000000000000000000000000000000000000000000") 32
+                      "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f")
+        (sc-it! "RFC 7748 s6.1 shared secret, both directions")
+        (lb-hex-equal (xx-run "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a" "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f") 32
+                      "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742")
+        (lb-hex-equal (xx-run "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb" "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a") 32
+                      "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742")
+        (sc-it! "x25519.vec holds 116 records") (lb-equal (sc-file-len 0) (* 96 116))
+        (sc-it! "random scalars x random points, random public keys and the extreme scalars/points match pyca/cryptography (109)")
+        (lb-equal (xx-bad 0 109) 0)
+        (sc-it! "low-order points give the all-zero output (the SSH layer must reject it; RFC 8731)") (lb-equal (xx-bad 109 116) 0)
+        (sc-it! "out may alias the scalar input")
+        (sc-hex! (xx-k) "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a") (xx-base! (xx-u)) (nk-x25519 (xx-k) (xx-k) (xx-u))
+        (lb-hex-equal (xx-k) 32 "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a")
+        (sc-it! "RFC 7748 s5.2 iterated, 1 iteration") (lb-hex-equal (xx-iterate 1) 32 "422c8e7a6227d7bca1350b3e2bb7279f7897b87bb6854b783c60e80311ae3079")
+        (sc-it! "RFC 7748 s5.2 iterated, 1000 iterations") (lb-hex-equal (xx-iterate 1000) 32 "684cf59ba83309552800ef566f2f4d3c1c3887c49360e3875f2eb94d99532c51")
+      (sc-end!)
+      (sc-finish!)))
