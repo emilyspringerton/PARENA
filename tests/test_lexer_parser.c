@@ -157,6 +157,16 @@ int main(void) {
     expect_parse_error(")", "a stray closing paren with nothing open is a parse error");
     expect_parse_error("(foo \"unterminated string", "unterminated string literal is a parse error");
     expect_parse_error("[1 2 (3 4]", "mismatched nested bracket is a parse error");
+    {   /* string literals of any length are kept whole (a fixed 4096-byte buffer used to cut longer ones off silently) */
+        static char src[100100];
+        memcpy(src, "(f \"", 4); memset(src + 4, 'a', 100000); memcpy(src + 4 + 100000, "\")", 3);
+        Arena arena; arena_init(&arena); const char *err = NULL;
+        Node *p = parse_program(&arena, src, strlen(src), &err);
+        CHECK(p != NULL && p->child_count == 1 && p->children[0]->child_count == 2 &&
+              p->children[0]->children[1]->type == NODE_STRING && p->children[0]->children[1]->text_len == 100000,
+              "a 100000-byte string literal parses whole, every byte kept");
+        arena_free_all(&arena);
+    }
 
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

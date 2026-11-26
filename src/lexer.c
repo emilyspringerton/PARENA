@@ -1,6 +1,7 @@
 #include "lexer.h"
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 void lexer_init(Lexer *lx, const char *src, size_t len, Arena *arena) {
@@ -89,8 +90,12 @@ static int utf8_encode_cp(unsigned int cp, unsigned char *out) {
 static Token lex_string(Lexer *lx, const char **out_error) {
     int start_line = lx->line;
     advance(lx); /* opening quote */
-    char buf[4096];
-    size_t n = 0;
+    /* growable: a literal of any length (a font table, a fixture) is kept whole. It used to be a fixed 4096-byte buffer that cut
+       longer literals off silently -- stdlib/gfd/term_font.prn's 8160-byte font lost half its glyphs that way. */
+    size_t cap = 256, n = 0;
+    char *buf = malloc(cap);
+    if (!buf) { if (out_error) *out_error = "out of memory reading a string literal"; return make_punct(TOK_EOF, lx->line); }
+#define LEX_PUT(ch) do { if (n + 1 >= cap) { char *nb = realloc(buf, cap * 2); if (!nb) { free(buf); if (out_error) *out_error = "out of memory reading a string literal"; return make_punct(TOK_EOF, lx->line); } buf = nb; cap *= 2; } buf[n++] = (char)(ch); } while (0)
     for (;;) {
         if (at_end(lx)) {
             /* No "at line N" suffix here -- the parser's fail() wrapper
@@ -104,6 +109,7 @@ static Token lex_string(Lexer *lx, const char **out_error) {
                 snprintf(msg, sizeof(msg), "unterminated string literal (opened at line %d)", start_line);
                 *out_error = arena_strdup(lx->arena, msg, strlen(msg));
             }
+            free(buf);
             Token t = make_punct(TOK_EOF, lx->line);
             return t;
         }
@@ -150,12 +156,12 @@ static Token lex_string(Lexer *lx, const char **out_error) {
                             const char *m = "invalid \\u{...} escape (need 1-6 hex digits, a nonzero Unicode scalar value: not a surrogate, at most 10FFFF)";
                             *out_error = arena_strdup(lx->arena, m, strlen(m));
                         }
+                        free(buf);
                         return make_punct(TOK_EOF, lx->line);
                     }
                     unsigned char enc[4];
                     int el = utf8_encode_cp((unsigned int)cp, enc);
-                    for (int k = 0; k < el; k++)
-                        if (n < sizeof(buf) - 1) buf[n++] = (char)enc[k];
+                    for (int k = 0; k < el; k++) LEX_PUT(enc[k]);
                     continue;
                 }
                 case 'x': {
@@ -170,6 +176,7 @@ static Token lex_string(Lexer *lx, const char **out_error) {
                             const char *m = "invalid \\xHH escape (need exactly two hex digits, not 00: a String cannot hold NUL)";
                             *out_error = arena_strdup(lx->arena, m, strlen(m));
                         }
+                        free(buf);
                         return make_punct(TOK_EOF, lx->line);
                     }
                     advance(lx);
@@ -179,12 +186,14 @@ static Token lex_string(Lexer *lx, const char **out_error) {
                 default: c = e; break;
             }
         }
-        if (n < sizeof(buf) - 1) buf[n++] = c;
+        LEX_PUT(c);
     }
+#undef LEX_PUT
     Token t;
     t.type = TOK_STRING;
     t.text = arena_strdup(lx->arena, buf, n);
     t.text_len = n;
+    free(buf);
     t.line = start_line;
     return t;
 }
