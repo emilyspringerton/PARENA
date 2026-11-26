@@ -1,7 +1,7 @@
 """A same-origin web server for the real-browser test: serves the page (markup from SHANKPIT/apps/netkit, generated JS + wasm from the
 PARENA build) with the SAME Content-Security-Policy the Android shell sets, plus the stand-in for the Android shell's sockets: a
 WebSocket-to-TCP bridge (/tcp), one-shot connect probes (/probe) and the in-page NetkitNative shim (/shim.js). Test-only code."""
-import asyncio, json, os, socket, threading, time
+import asyncio, base64, struct, json, os, socket, threading, time
 from aiohttp import web, WSMsgType
 
 CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
@@ -30,6 +30,7 @@ SHIM = r"""
     probe(job, ip, port, timeout) { fetch(`/probe?host=${ip}&port=${port}&timeout=${timeout}`).then(r => r.json()).then(j => emit({ t: 'probe', job, code: j.code, ms: j.ms })); },
     ping(job, host, timeout) { fetch(`/probe?host=${host}&port=7&timeout=${timeout}&alive=1`).then(r => r.json()).then(j => emit({ t: 'probe', job, code: j.code, ms: j.ms })); },
     resolve(ip) { if (ip === '127.0.0.4') emit({ t: 'name', ip, name: 'imac.lan' }); },
+    udpQuery(id, host, port, b, timeout) { fetch(`/udp?host=${host}&port=${port}&timeout=${timeout}&b=${encodeURIComponent(b)}`).then(r => r.json()).then(j => emit(j.b ? { t: 'udp', id, e: 'data', b: j.b } : { t: 'udp', id, e: 'none' })); },
     arpText() { return ''; },
     localNets() { return JSON.stringify({ cidrs: ['127.0.0.0/29'], ips: ['127.0.0.1'] }); },
     storeGet(k) { return store.has(k) ? store.get(k) : ''; }, storeSet(k, v) { store.set(k, v); }, storeDel(k) { store.delete(k); },
@@ -75,6 +76,19 @@ def make_app(html_dir, web_dir):
         except Exception as e:
             code = 0 if (request.query.get("alive") and code_of(e) == 1) else code_of(e)
         return web.json_response({"code": code, "ms": int((time.time() - t0) * 1000)})
+    async def udp(request):      # one real UDP question, as Udp.java (NetBIOS's privileged 137 is served on 10137 in tests)
+        host, port, tmo = request.query["host"], int(request.query["port"]), int(request.query.get("timeout", 1500))
+        pkt = base64.b64decode(request.query["b"])
+        def ask():
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(tmo / 1000)
+            try:
+                s.sendto(pkt, (host, 10137 if port == 137 else port))
+                while True:
+                    d, a = s.recvfrom(1536)
+                    if a[0] == host: return base64.b64encode(d).decode()
+            except OSError: return None
+            finally: s.close()
+        return web.json_response({"b": await asyncio.get_running_loop().run_in_executor(None, ask)})
     async def shim(request): return web.Response(text=SHIM, content_type="text/javascript")
     async def static(request):
         name = request.match_info.get("name") or "index.html"
@@ -87,9 +101,34 @@ def make_app(html_dir, web_dir):
             body = body.replace(b"<script type=\"module\" src=\"nk-host.js\">", b"<script src=\"/shim.js\"></script>\n<script type=\"module\" src=\"nk-host.js\">")
         return web.Response(body=body, content_type=ctype, headers={"Content-Security-Policy": CSP, "Cache-Control": "no-store"})
     app = web.Application()
-    app.router.add_get("/tcp", tcp); app.router.add_get("/probe", probe); app.router.add_get("/shim.js", shim)
+    app.router.add_get("/tcp", tcp); app.router.add_get("/probe", probe); app.router.add_get("/udp", udp); app.router.add_get("/shim.js", shim)
     app.router.add_get("/", static); app.router.add_get("/{name}", static)
     return app
+
+def udp_responders():
+    """Real UDP name responders written from the RFCs (independent of the PARENA parser): 127.0.0.5 is a Raspberry Pi whose avahi answers
+    a reverse lookup with raspberrypi.local (RFC 6762 6.7); 127.0.0.6 is a PC answering NetBIOS node status (RFC 1002) as DESKTOP-7Q2 with
+    an Apple-made card. Returns the sockets (daemon threads serve them)."""
+    def mdns(q):
+        rd = bytes([11]) + b"raspberrypi" + bytes([5]) + b"local\0"
+        return (q[:2] + b"\x84\x00" + q[4:6] + b"\x00\x01\x00\x00\x00\x00" + q[12:] + b"\xc0\x0c"
+                + struct.pack(">HHIH", 12, 0x8001, 120, len(rd)) + rd)
+    def nbns(q):
+        ent = lambda n, suf, fl: n.ljust(15, b" ") + bytes([suf]) + struct.pack(">H", fl)
+        names = [ent(b"WORKGROUP", 0, 0x8400), ent(b"DESKTOP-7Q2", 0, 0x0400)]
+        rd = bytes([len(names)]) + b"".join(names) + bytes.fromhex("f01898aabbcc") + bytes(40)
+        return q[:2] + b"\x84\x00\x00\x00\x00\x01\x00\x00\x00\x00" + q[12:46] + struct.pack(">HHIH", 0x21, 1, 0, len(rd)) + rd
+    socks = []
+    for host, port, fn in (("127.0.0.5", 5353, mdns), ("127.0.0.6", 10137, nbns)):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try: s.bind((host, port))
+        except OSError: continue
+        def serve(s=s, fn=fn):
+            while True:
+                try: q, a = s.recvfrom(1536); s.sendto(fn(q), a)
+                except OSError: return
+        threading.Thread(target=serve, daemon=True).start(); socks.append(s)
+    return socks
 
 class Site:
     def __init__(self, html_dir, web_dir):

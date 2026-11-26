@@ -13,7 +13,7 @@ import base64, ctypes, os, socket, sys, tempfile, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from nkharness import check, done
 from nkservers import Srv, start_vncd
-from browser_bridge import Site
+from browser_bridge import Site, udp_responders
 
 web_dir, html_dir, vncd = sys.argv[1], sys.argv[2], sys.argv[3]
 libdir = sys.argv[4] if len(sys.argv) > 4 else ""
@@ -38,6 +38,7 @@ def listener(host, port):
     except OSError: return None
     threading.Thread(target=lambda: [c.close() for c in iter(lambda: s.accept()[0], None)], daemon=True).start(); return s
 ls = [listener("127.0.0.3", 5900), listener("127.0.0.4", 5901)]
+udps = udp_responders()
 site = Site(html_dir, web_dir)
 
 # ---- an independent terminal to compare pixels with --------------------------------------------------------------------------------------------------
@@ -87,9 +88,22 @@ with sync_playwright() as p:
     n = page.locator("#device-list li.dev").count()
     check(n >= 5, f"the scan lists {n} devices as real DOM cards")
     check(page.locator('li[data-ip="127.0.0.3"] .chip', has_text="VNC 5900").count() == 1 and page.locator('li[data-ip="127.0.0.4"] .chip', has_text="VNC 5901").count() == 1, "the open ports show as chips on the right devices")
-    wait(lambda: page.inner_text('li[data-ip="127.0.0.4"] .dev-name') == 'imac.lan', 5, 'the resolved name')
-    check(True, "a resolved name replaces the address as the card title")
+    wait(lambda: page.inner_text('li[data-ip="127.0.0.4"] .dev-name') == 'imac', 5, 'the resolved name')
+    check(True, "a resolved name replaces the address as the card title (the router's .lan dropped)")
+    # Drop One: names over mDNS/NetBIOS, makers, the Pi
+    wait(lambda: page.locator('li.dev.pi[data-ip="127.0.0.5"] .pi-badge').count() == 1, 8, 'the Pi badge')
+    check(page.locator("#device-list li.dev").first.get_attribute("data-ip") == "127.0.0.5", "the Raspberry Pi (named over mDNS) is highlighted and first in the list")
+    wait(lambda: 'Apple' in page.inner_text('li[data-ip="127.0.0.6"] .dev-maker'), 8, 'the NetBIOS maker')
+    check(page.inner_text('li[data-ip="127.0.0.6"] .dev-name') == 'DESKTOP-7Q2', "NetBIOS names the PC and its MAC gives the maker line (Apple)")
+    page.click('li[data-ip="127.0.0.5"] [data-act=name]')
+    check(page.is_visible("#dlg-name"), "Name opens the dialog in the real layout")
+    page.fill("#n-label", "Garage Pi"); page.screenshot(path=os.path.join(shots, "00-name-dialog.png")); page.click("#n-save")
+    wait(lambda: 'Garage Pi' in page.inner_text('li[data-ip="127.0.0.5"] .dev-name'), 5, 'the label')
+    check(not page.is_visible("#dlg-name"), "Save closes the dialog and the card is called Garage Pi")
     page.screenshot(path=os.path.join(shots, "01-devices-tablet.png"))
+    page.set_viewport_size({"width": 412, "height": 915}); time.sleep(0.3)
+    page.screenshot(path=os.path.join(shots, "01b-devices-phone.png"))
+    page.set_viewport_size({"width": 1280, "height": 800})
     page.click('li[data-ip="127.0.0.4"] [data-act=pin]')
     check(page.locator("#device-list li.dev").first.get_attribute("data-ip") == "127.0.0.4" and "pinned" in page.locator("#device-list li.dev").first.get_attribute("class"), "a real click on the star pins a device and it sorts first")
     # touch targets: every button in the list is at least 40px high (a tablet, a finger)

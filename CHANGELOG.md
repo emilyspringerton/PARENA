@@ -9,6 +9,10 @@
   `raspberrypi`, and sorted first. Page host: `udpQuery` native call, Name dialog, Pi badge, maker line, labels in the encrypted store.
   Tests: `test_names.py` 60 (every table prefix round-trips; hostile packets refused), `test_scan.py` 62, page e2e 108 (was 94; real Node UDP
   responders). `make test` 374/374. Not tested against a real avahi/Windows responder (avahi could not run in this sandbox).
+- **test(netkit): both headless-Chromium legs run for the first time** (playwright + Chromium 159 fetched locally, four missing GTK/X libs extracted
+  without root): `test_browser_garage.py` 18/18, `test_browser_e2e.py` 25/25 under the Android CSP. `browser_bridge.py` gained a real UDP
+  `/udp` endpoint and RFC-built mDNS/NetBIOS responders; the browser leg now checks the Pi badge and ordering, the NetBIOS maker line and the
+  Name dialog, and screenshots tablet and phone widths.
 - **test(netkit): the garage/arcade page verified end to end; two harness bugs fixed.** With LLVM 18.1.3 + node 24 the web build ran (`build_netkit_web.sh`) and `scripts/test_netkit.sh` passes every leg it can run here: garage IR 45, garage on the linked wasm 45, rfb 97, scan 62, ssh interop 61, term 82, x25519 31, crypto 14, des 12, ed25519 16, rfb vs libvncserver 13, and the generated page in Node vs a real SSH + VNC server 94/94 (stable over 3 runs). Fixes were in `tests/netkit/host_e2e.mjs` only, not the product: the mock DOM had no `setAttribute` (the garage sets `aria-label`); the BRAWLPIT instrumentation wrapped the frozen wasm `exports` in a Proxy that broke the proxy invariant (now wraps a copy); and the "no password sent to the impostor" check could snapshot the SSH counters before the previous wrong-password rejection reached the 20 ms counter files (now waits for it). Still unrun: both Chromium legs (no playwright), the OpenSSH leg (no libnss_wrapper). `make test`: 374 passed.
 
 ## 2026-11-24
