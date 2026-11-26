@@ -1,0 +1,116 @@
+;; stdlib/shankpit_survival/sv_city.prn -- the SURVIVAL level: SHANKPIT's CITY, rebuilt as engine boxes.
+;;
+;; Founder: "survival map should use shankpit CITY map". This is init_city_geo (SHANKPIT packages/common/physics.h) run
+;; on the same seed with the same district / height / footprint formulas, over the 7 x 7 blocks around the hero's spawn
+;; instead of the C client's 25 x 25 (the wasm engine holds 128 boxes and draws every one of them in software at 640x360).
+;; The empty cross at the centre (|gx| <= 1 on gz = 0 and the reverse) is the plaza the hero drops into, as in the C city.
+;;
+;; Not ported (named, not forgotten): the elevated ring highway and its guardrails at r 520, hydrants, props and the soft
+;; city edge. A low wall at the edge of the 7 x 7 stands in for the city's hard edge so nobody walks off the floor.
+
+(defn sv-city-seed [] : I32 1337)
+(defn sv-city-block [] : F32 230.0)
+(defn sv-city-road [] : F32 54.0)
+(defn sv-city-pitch [] : F32 284.0)       ; block + road
+(defn sv-city-radius [] : I32 3)          ; grid cells either side of the origin (the C city: 12)
+(defn sv-city-edge [] : F32 994.0)        ; (radius + 0.5) * pitch: the road ring outside the last blocks
+(defn sv-city-max-boxes [] : I32 127)
+
+;; per-box colour table, filled while the city is built (mod-box-color reads it)
+(defn sv-color-addr [(i : I32)] : I32 (+ (sv-base) (shl (clamp-i i 0 127) 2)))
+(defn sv-box-color [(i : I32)] : I32 (load32 (sv-color-addr i)))
+
+(defn sv-push-box! [(x : F32) (y : F32) (z : F32) (w : F32) (h : F32) (d : F32) (c : I32)] : Unit
+  (let [n (gi (g-box-n))]
+    (when (< n (sv-city-max-boxes))
+      (map-set-box! n x y z w h d)
+      (store32! (sv-color-addr n) c)
+      (gi! (g-box-n) (+ n 1)))))
+
+;; district palettes: 0 downtown towers, 1 midtown, 2 market, 3 old town, 4 the heights
+(defn sv-district-color [(district : I32) (h : F32)] : I32
+  (let [k (clamp-i (i32 (* h 0.6)) 0 60)]
+    (case district
+      0 (rgb (- 176 (/ k 3)) (- 180 (/ k 3)) (- 194 (/ k 4)))
+      1 (rgb (- 196 (/ k 3)) (- 178 (/ k 3)) 160)
+      2 (rgb 204 (- 172 (/ k 4)) 132)
+      3 (rgb (- 168 (/ k 4)) 150 (- 140 (/ k 4)))
+      (rgb (- 186 (/ k 3)) (- 190 (/ k 3)) (- 206 (/ k 3))))))
+
+(defn sv-city-block! [(gx : I32) (gz : I32)] : Unit
+  (let [seed (sv-city-seed)
+        (block : F32) (sv-city-block)
+        (cx : F32) (* (f32 gx) (sv-city-pitch))
+        (cz : F32) (* (f32 gz) (sv-city-pitch))
+        district (mod (abs-i (bit-xor (+ (+ (* gx 131) (* gz 197)) (* seed 17)) (- (* gx 53) (* gz 61)))) 5)
+        (hmin : F32) (case district 0 42.0 1 18.0 2 12.0 3 14.0 36.0)
+        (hvar : F32) (case district 0 95.0 1 42.0 2 28.0 3 36.0 70.0)
+        (dens : F32) (case district 0 1.2 1 1.0 2 0.75 3 0.65 0.9)
+        (alley : F32) (case district 0 0.0 1 0.07 2 0.18 3 0.26 0.09)
+        (landmark : F32) (case district 0 0.11 1 0.04 2 0.06 3 0.03 0.12)
+        (n1 : F32) (sinf (* (f32 (+ (+ (* gx 17) (* gz 31)) seed)) 0.13))
+        (n2 : F32) (cosf (* (f32 (+ (- (* gx 11) (* gz 23)) seed)) 0.19))
+        (n3 : F32) (sinf (* (f32 (+ (+ (* gx 37) (* gz 13)) seed)) 0.29))
+        (h : F32) (+ (+ hmin (* (+ n1 1.0) (* hvar 0.6))) (* (+ n2 1.0) (* hvar 0.4)))
+        (w : F32) (+ 34.0 (* (fabs n1) 54.0))
+        (d : F32) (+ 34.0 (* (fabs n2) 54.0))
+        col (sv-district-color district h)]
+    (when (not (or (> n3 (- 0.58 alley))
+                   (or (and (< dens 1.0) (> n1 dens))
+                       (and (= district 2) (> (fabs n2) 0.82)))))
+      (sv-push-box! cx (* h 0.5) cz w h d col)
+      (when (= (mod (+ gx gz) 3) 0)
+        (sv-push-box! (+ cx (* 0.35 block)) (* h 0.35) (- cz (* 0.3 block)) (* w 0.55) (* h 0.7) (* d 0.55) (shade col 220)))
+      (when (and (= district 0) (< n3 -0.72))
+        (sv-push-box! (- cx (* 0.26 block)) (+ h 26.0) (+ cz (* 0.22 block)) 24.0 (* h 0.9) 24.0 (shade col 235)))
+      (when (and (= district 1) (= (mod (+ gx gz) 4) 0))   ; ramps
+        (sv-push-box! (+ cx (* 0.44 block)) 4.0 cz 32.0 8.0 72.0 (rgb 150 146 140)))
+      (when (and (= district 3) (= (mod (* gx gz) 5) 0))   ; tunnels / ruins
+        (sv-push-box! cx 5.0 (- cz (* 0.45 block)) 120.0 10.0 20.0 (rgb 140 132 120)))
+      (when (< (fabs n2) landmark)
+        (let [(th : F32) (+ (+ h 80.0) (* (fabs n1) 120.0))]
+          (sv-push-box! cx (* th 0.5) cz 22.0 th 22.0 (rgb 210 200 184)))))))
+
+(defn sv-city-init! [] : Unit
+  (let [(e : F32) (sv-city-edge)
+        r (sv-city-radius)]
+    (gi! (g-box-n) 0)
+    (sv-push-box! 0.0 -2.0 0.0 (* e 4.0) 4.0 (* e 4.0) (floor-color))   ; slot 0: the floor slab (never drawn, never traced)
+    ;; the hard edge: four low walls on the outer road ring
+    (sv-push-box! 0.0 5.0 (- 0.0 e) (* e 2.0) 10.0 4.0 (wall-color))
+    (sv-push-box! 0.0 5.0 e (* e 2.0) 10.0 4.0 (wall-color))
+    (sv-push-box! (- 0.0 e) 5.0 0.0 4.0 10.0 (* e 2.0) (wall-color))
+    (sv-push-box! e 5.0 0.0 4.0 10.0 (* e 2.0) (wall-color))
+    (loop [gx (- 0 r)]
+      (when (<= gx r)
+        (loop [gz (- 0 r)]
+          (when (<= gz r)
+            (when (not (or (and (<= (abs-i gx) 1) (= gz 0)) (and (<= (abs-i gz) 1) (= gx 0))))
+              (sv-city-block! gx gz))
+            (recur (+ gz 1))))
+        (recur (+ gx 1))))
+    ;; spawns: the C city's anchors that fall inside this 7 x 7 (scene_spawn_point, SCENE_CITY), on the road lines
+    (map-set-spawn! 0 0.0 6.0 0.0)
+    (map-set-spawn! 1 (* 2.0 (sv-city-pitch)) 6.0 (* -0.5 (sv-city-pitch)))
+    (map-set-spawn! 2 (* -1.5 (sv-city-pitch)) 6.0 (* 2.0 (sv-city-pitch)))
+    (map-set-spawn! 3 (* 1.0 (sv-city-pitch)) 6.0 (* 1.5 (sv-city-pitch)))
+    (gi! (g-spawn-n) 4)
+    (map-set-crown! 0.0 0.0 0.0)
+    (gi! (g-rock-lo) 5)
+    (gi! (g-rock-hi) (gi (g-box-n)))
+    (gi! (g-map-id) 3)))
+
+;; is (x, z) inside a building's footprint (anything standing lower than 8 units off the street)?
+(defn sv-point-blocked? [(x : F32) (z : F32) (pad : F32)] : Bool
+  (let [hit false]
+    (loop [i 1]
+      (when (and (< i (map-count)) (not hit))
+        (when (< (- (by i) (/ (bh i) 2.0)) 8.0)
+          (when (and (< (fabs (- x (bx i))) (+ (/ (bw i) 2.0) pad)) (< (fabs (- z (bz i))) (+ (/ (bd i) 2.0) pad)))
+            (set! hit true)))
+        (recur (+ i 1))))
+    hit))
+
+;; road snapping (gun_items_seed_roads): pull whichever axis is nearer a road centre line onto it
+(defn sv-road-snap [(v : F32)] : F32
+  (* (+ (floor (/ v (sv-city-pitch))) 0.5) (sv-city-pitch)))

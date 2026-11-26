@@ -1,0 +1,63 @@
+;; stdlib/shankpit/survival_rules.prn -- SURVIVAL (cards #482/#487/#488/#526/#528): every number that decides what the mode IS.
+;;
+;; Ported from the OG C client, where these lived as literals and #defines:
+;;   packages/simulation/witness_ai.c   witness_ai_survival_quota / _maxalive, SURV_INTERMISSION_MS, SURV_SPAWN_GAP_MS,
+;;                                      the 60..130 hidden ring spawn (zombies_ring_spot_ex)
+;;   packages/simulation/witness_ai.h   WITNESS_AI_ZOMBIE_MELEE_RANGE / _ATTACK_COOLDOWN_MS / _MELEE_DAMAGE
+;;   packages/simulation/gun_items.[ch] GUN_DROP_PERCENT, GUN_PICKUP_RADIUS / _HEIGHT, gun_loot_pick, the seed bands
+;;   apps/lobby/src/main.c              lobby_start_survival_mode: 12 guns + 10 chests on the road ring at r 140 + 120 k
+;; The PARENA survival build (stdlib/shankpit_survival/) runs these directly; the C client can generate C from the same
+;; file the way it already does for chest_rules.prn. Distances are in thousandths of a unit, times in ms, so the module
+;; stays scalar I32 and every target (C, LLVM/wasm, TS, Java) emits it.
+;;
+;; Weapon ids are SHANKPIT's WPN_*: 0 knife, 1 magnum, 2 AR, 3 shotgun, 4 sniper, 5 katana, 6 missile launcher.
+;; Scalar-only, pure, total: out-of-range inputs clamp, never trap.
+(module shankpit/survival-rules)
+(export sv-quota sv-max-alive sv-intermission-ms sv-spawn-gap-ms sv-first-spawn-ms sv-ring-min-milli sv-ring-max-milli
+        sv-zombie-hp sv-zombie-melee-range-milli sv-zombie-cooldown-ms sv-zombie-damage sv-gun-drop-percent
+        sv-gun-loot-pick sv-seed-band sv-pickup-radius-milli sv-pickup-height-milli sv-seed-guns sv-seed-chests
+        sv-seed-r0-milli sv-seed-rstep-milli sv-chest-seed-roll)
+
+;; Wave n wants 4 + 3n bodies in total (wave 1: 7) ...
+(defn sv-quota [(wave : I32)] : I32 (+ 4 (* 3 (if (< wave 1) 1 wave))))
+;; ... with at most 5 + n on the street at once (the C client caps that at 16 managed zombies; a host caps it lower if it
+;; has fewer bodies, and a capped wave simply waits -- it is never skipped).
+(defn sv-max-alive [(wave : I32)] : I32 (+ 5 (if (< wave 1) 1 wave)))
+
+;; A cleared wave rests 6 s; the first zombie of a session comes half an intermission in.
+(defn sv-intermission-ms [] : I32 6000)
+(defn sv-first-spawn-ms [] : I32 3000)
+;; Founder 2026-10-04: "one new zombie every 15 s" (was 1100 ms).
+(defn sv-spawn-gap-ms [] : I32 15000)
+
+;; Spawns land on a ring 60..130 units from the hero, out of their sight when the city allows it.
+(defn sv-ring-min-milli [] : I32 60000)
+(defn sv-ring-max-milli [] : I32 130000)
+
+;; The base zombie (zombie_taxonomy.c, the walker at level 0): 100 hp, claws for 14 inside 3 units, once per 1.1 s.
+(defn sv-zombie-hp [(wave : I32)] : I32 100)
+(defn sv-zombie-melee-range-milli [] : I32 3000)
+(defn sv-zombie-cooldown-ms [] : I32 1100)
+(defn sv-zombie-damage [(wave : I32)] : I32 14)
+
+;; A killed zombie leaves a gun 35% of the time; the gun is drawn from the loot table with a 0..99 roll.
+(defn sv-gun-drop-percent [] : I32 35)
+(defn sv-gun-loot-pick [(roll0 : I32)] : I32
+  (let [roll (mod (+ (mod roll0 100) 100) 100)]
+    (cond (< roll 30) 1 (< roll 55) 2 (< roll 75) 3 (< roll 85) 5 (< roll 95) 4 :else 6)))
+;; one representative roll per loot band, so a seeded ring of six always carries every weapon
+(defn sv-seed-band [(i : I32)] : I32
+  (case (mod (+ (mod i 6) 6) 6) 0 10 1 40 2 60 3 80 4 90 97))
+;; the chest ring's tier rolls (chest-tier-for-roll): wooden x3, reinforced, rare
+(defn sv-chest-seed-roll [(i : I32)] : I32
+  (case (mod (+ (mod i 5) 5) 5) 0 6 1 29 2 52 3 75 98))
+
+;; Walk within 2.2 units (and 2.5 vertically) of a gun to take it.
+(defn sv-pickup-radius-milli [] : I32 2200)
+(defn sv-pickup-height-milli [] : I32 2500)
+
+;; The opening loadout of the street: 12 guns and 10 chests on the road ring at radius 140 + 120 k (k = i mod 3).
+(defn sv-seed-guns [] : I32 12)
+(defn sv-seed-chests [] : I32 10)
+(defn sv-seed-r0-milli [] : I32 140000)
+(defn sv-seed-rstep-milli [] : I32 120000)

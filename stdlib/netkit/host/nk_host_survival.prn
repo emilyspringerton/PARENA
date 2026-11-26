@@ -1,0 +1,256 @@
+;; stdlib/netkit/host/nk_host_survival.prn -- the SHANKPHONE's SURVIVAL button: SHANKPIT SURVIVAL running INSIDE the page.
+;;
+;; Founder real-time 2026-11-26: "the shankpit net kit can be the shankphone and the shankphone itself can have a button for survival
+;; that launches OG shankpit as a level and collection of mods". survival.wasm is the shankpit-460 PARENA engine with the CITY level and the
+;; survival mods (stdlib/shankpit_survival/, scripts/build_shankpit_survival_wasm.sh): no imports, no allocator, fixed 8 MB, so it runs
+;; under this page's CSP exactly like BRAWLPIT does (nk_host_arcade.prn is the pattern; names here are sv-/surv- because every host file
+;; shares one namespace).
+;;
+;; What this file does, and only this: load the module lazily, run its frame loop while the view is up, blit its 640x360 framebuffer, and
+;; turn fingers into the engine's own inputs --
+;;   the stick (bottom left)       -> gamepad slot 0's left stick (sp_pad), analog, so a half push walks
+;;   a drag on the picture         -> mouse look (sp_mouse), at nk-survival-look-per-100px degrees per 100 CSS pixels
+;;   the buttons (bottom right)    -> the keys / wheel / left mouse nk-survival-touch-key names
+;;   a tap on the picture in a menu-> a click at that framebuffer pixel (sp_pointer + sp_button)
+;; Every held key, the stick and the fire button are released on leaving, on blur and when the page is hidden.
+;; NOT here (named): sound (the engine fills its sound ring; nothing plays it in the SHANKPHONE yet -- BRAWLPIT has no sound here either),
+;; and any network: SURVIVAL is offline by design, as the OG mode is.
+
+(def surv-state 0)          ; 0 not loaded, 1 loading, 2 ready, 3 could not load (nk_garage.prn's codes)
+(def surv-x null)
+(def surv-mem null)
+(def surv-canvas null)
+(def surv-ctx null)
+(def surv-img null)
+(def surv-run false)
+(def surv-looping false)
+(def surv-held null)        ; pointerId -> code held by that finger (buttons)
+(def surv-listening false)
+(def surv-stick-id -1)      ; pointerId on the stick, -1 none
+(def surv-lx 0.0)
+(def surv-ly 0.0)
+(def surv-look-id -1)       ; pointerId dragging the picture to look, -1 none
+(def surv-look-x 0.0)
+(def surv-look-y 0.0)
+(def surv-menu-down false)  ; a menu tap is pressed on the picture
+
+(defn surv-say! [(text : Any)] : Unit
+  (do (set-text! "survival-msg" text)
+      (set-hidden! "survival-msg" (= text ""))))
+
+;; ---- load ---------------------------------------------------------------------------------------------------------------------------------
+(defn surv-on-response [(r : Any)] : Any
+  (if (js/get r "ok")
+      (js/call r "arrayBuffer")
+      (js/call (js/global "Promise") "reject" (str "survival.wasm: HTTP " (js/get r "status")))))
+(defn surv-on-bytes [(bytes : Any)] : Any
+  (js/call (js/global "WebAssembly") "instantiate" bytes (js/obj)))
+(defn surv-fail! [(err : Any)] : Unit
+  (do (set! surv-state 3)
+      (surv-say! (str "SURVIVAL could not load: " err))
+      (js/call (js/get (js/global "console") "error") "call" (js/global "console") err)))
+
+(defn survival-load! [] : Unit
+  (do (set! surv-state 1)
+      (surv-say! "Loading SURVIVAL...")
+      (set! surv-held (js/obj))
+      (set! surv-canvas (el "sv-canvas"))
+      (set! surv-ctx (js/call surv-canvas "getContext" "2d"))
+      (js/call
+        (js/call
+          (js/call
+            (js/call
+              (js/call-fn (js/global "fetch") "survival.wasm")
+              "then" (callback surv-on-response))
+            "then" (callback surv-on-bytes))
+          "then" (callback surv-on-instance))
+        "catch" (callback surv-fail!))))
+
+(defn surv-on-instance [(result : Any)] : Unit
+  (do
+    (set! surv-x (js/get (js/get result "instance") "exports"))
+    (set! surv-mem (js/get surv-x "memory"))
+    (js/call surv-x "sp_init")
+    (set! surv-img
+          (js/new "ImageData"
+                  (js/new "Uint8ClampedArray" (js/get surv-mem "buffer") (js/call surv-x "sp_fb_addr")
+                          (* (* (js/call surv-x "sp_fb_w") (js/call surv-x "sp_fb_h")) 4))
+                  (js/call surv-x "sp_fb_w") (js/call surv-x "sp_fb_h")))
+    (surv-install!)
+    (set! surv-state 2)
+    (surv-say! "")
+    (when surv-run (do (js/call surv-x "sp_lock" 1) (surv-start-loop!)))))
+
+;; ---- the frame loop (only while the view is up) ------------------------------------------------------------------------------------
+(defn surv-tick [(t : F64)] : Unit
+  (do (set! surv-looping false)
+      (when (and surv-run (= surv-state 2))
+        (do (js/call surv-x "sp_pad" 0 surv-lx surv-ly 0.0 0.0 0.0 0.0 0)
+            (js/call surv-x "sp_frame" t)
+            (js/call surv-ctx "putImageData" surv-img 0 0)
+            (surv-start-loop!)))))
+
+(defn surv-start-loop! [] : Unit
+  (when (not surv-looping)
+    (do (set! surv-looping true)
+        (js/call (win) "requestAnimationFrame" (callback surv-tick)))))
+
+;; ---- entering and leaving ---------------------------------------------------------------------------------------------------------
+(defn survival-enter! [] : Unit
+  (do (set! surv-run true)
+      (when (or (= surv-state 0) (= surv-state 3)) (survival-load!))
+      (when (= surv-state 2) (do (js/call surv-x "sp_lock" 1) (surv-start-loop!)))))
+
+(defn survival-leave! [] : Unit
+  (when surv-run
+    (do (set! surv-run false)
+        (surv-release-all!)
+        (when (not (js/null? surv-x)) (js/call surv-x "sp_lock" 0)))))
+
+(defn surv-unpress! [(b : Any)] : Unit (js/call (js/get b "classList") "remove" "down"))
+
+(defn surv-release-all! [] : Unit
+  (when (not (js/null? surv-held))
+    (let [ids (js/call (js/global "Object") "keys" surv-held)]
+      (do (dotimes [i (js/get ids "length")]
+            (surv-code-up! (js/aget surv-held (js/aget ids i))))
+          (set! surv-held (js/obj))
+          (js/call (js/call (doc) "querySelectorAll" "#sv-pad .down") "forEach" (callback surv-unpress!))
+          (set! surv-stick-id -1) (set! surv-lx 0.0) (set! surv-ly 0.0) (surv-knob! 0.0 0.0)
+          (set! surv-look-id -1)
+          (when (not (js/null? surv-x))
+            (do (when surv-menu-down (js/call surv-x "sp_button" 0 0))
+                (set! surv-menu-down false)
+                (js/call surv-x "sp_pad_gone" 0)
+                (js/call surv-x "sp_blur")))))))
+
+;; a touch-button code -> the engine (nk-survival-touch-key: key codes, 1000 = next weapon, 1001 = fire)
+(defn surv-code-down! [(code : I32)] : Unit
+  (when (and (not (js/null? surv-x)) (> code 0))
+    (cond (= code 1000) (js/call surv-x "sp_wheel" 1)
+          (= code 1001) (js/call surv-x "sp_button" 0 1)
+          :else (js/call surv-x "sp_key" code 1))))
+(defn surv-code-up! [(code : I32)] : Unit
+  (when (and (not (js/null? surv-x)) (> code 0))
+    (cond (= code 1000) unit
+          (= code 1001) (js/call surv-x "sp_button" 0 0)
+          :else (js/call surv-x "sp_key" code 0))))
+
+;; ---- the buttons --------------------------------------------------------------------------------------------------------------------
+(defn surv-pad-down [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-sv]")]
+    (when (and (not (js/null? b)) (and surv-run (= surv-state 2)))
+      (let [code (js/call scan-x "nk_survival_touch_key" (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "sv") 10))
+            pid (js/get e "pointerId")]
+        (do (js/call e "preventDefault")
+            (js/call b "setPointerCapture" pid)
+            (js/call (js/get b "classList") "add" "down")
+            (js/aset! surv-held (str pid) code)
+            (surv-code-down! code))))))
+
+(defn surv-pad-up [(e : Any)] : Unit
+  (let [pid (str (js/get e "pointerId"))]
+    (when (not (js/null? surv-held))
+      (let [code (js/aget surv-held pid)]
+        (when (= (js/typeof code) "number")
+          (do (surv-code-up! code)
+              (js/aset! surv-held pid 0)
+              (let [b (js/call (js/get e "target") "closest" "[data-sv]")]
+                (when (not (js/null? b)) (js/call (js/get b "classList") "remove" "down")))))))))
+
+;; ---- the stick ------------------------------------------------------------------------------------------------------------------------
+(defn surv-knob! [(lx : F64) (ly : F64)] : Unit
+  (let [k (el "sv-knob")
+        r (js/call scan-x "nk_survival_stick_radius")]
+    (when (not (js/null? k))
+      (js/set! (js/get k "style") "transform" (str "translate(" (* lx r) "px," (* ly r) "px)")))))
+
+(defn surv-stick-set! [(e : Any)] : Unit
+  (let [s (el "sv-stick")
+        rect (js/call s "getBoundingClientRect")
+        r (js/call scan-x "nk_survival_stick_radius")
+        dx (/ (- (js/get e "clientX") (+ (js/get rect "left") (/ (js/get rect "width") 2.0))) r)
+        dy (/ (- (js/get e "clientY") (+ (js/get rect "top") (/ (js/get rect "height") 2.0))) r)
+        len (math/sqrt (+ (* dx dx) (* dy dy)))
+        k (if (> len 1.0) (/ 1.0 len) 1.0)]
+    (do (set! surv-lx (* dx k))
+        (set! surv-ly (* dy k))
+        (surv-knob! surv-lx surv-ly))))
+
+(defn surv-stick-down [(e : Any)] : Unit
+  (when (and surv-run (= surv-state 2))
+    (do (js/call e "preventDefault")
+        (set! surv-stick-id (js/get e "pointerId"))
+        (js/call (el "sv-stick") "setPointerCapture" surv-stick-id)
+        (surv-stick-set! e))))
+(defn surv-stick-move [(e : Any)] : Unit
+  (when (= (js/get e "pointerId") surv-stick-id) (surv-stick-set! e)))
+(defn surv-stick-up [(e : Any)] : Unit
+  (when (= (js/get e "pointerId") surv-stick-id)
+    (do (set! surv-stick-id -1) (set! surv-lx 0.0) (set! surv-ly 0.0) (surv-knob! 0.0 0.0))))
+
+;; ---- the picture: look while playing, click in the menus -------------------------------------------------------------------------------
+(defn surv-fb-x [(e : Any)] : I32
+  (let [rect (js/call surv-canvas "getBoundingClientRect")]
+    (math/floor (/ (* (- (js/get e "clientX") (js/get rect "left")) (js/call surv-x "sp_fb_w")) (js/get rect "width")))))
+(defn surv-fb-y [(e : Any)] : I32
+  (let [rect (js/call surv-canvas "getBoundingClientRect")]
+    (math/floor (/ (* (- (js/get e "clientY") (js/get rect "top")) (js/call surv-x "sp_fb_h")) (js/get rect "height")))))
+
+(defn surv-canvas-down [(e : Any)] : Unit
+  (when (= surv-state 2)
+    (do (js/call e "preventDefault")
+        (if (= (js/call surv-x "sp_phase") 1)
+            (when (< surv-look-id 0)
+              (do (set! surv-look-id (js/get e "pointerId"))
+                  (set! surv-look-x (js/get e "clientX"))
+                  (set! surv-look-y (js/get e "clientY"))
+                  (js/call surv-canvas "setPointerCapture" surv-look-id)))
+            (do (js/call surv-x "sp_pointer" (surv-fb-x e) (surv-fb-y e))
+                (set! surv-menu-down true)
+                (js/call surv-x "sp_button" 0 1))))))
+
+(defn surv-canvas-move [(e : Any)] : Unit
+  (when (= surv-state 2)
+    (if (= (js/get e "pointerId") surv-look-id)
+        ;; the engine turns by 0.15 degrees per mouse unit (sp_input look-sens); the wasm says how many degrees a 100 px drag is
+        (let [per (/ (js/call scan-x "nk_survival_look_per_100px") 15.0)
+              dx (* (- (js/get e "clientX") surv-look-x) per)
+              dy (* (- (js/get e "clientY") surv-look-y) per)]
+          (do (set! surv-look-x (js/get e "clientX"))
+              (set! surv-look-y (js/get e "clientY"))
+              (js/call surv-x "sp_mouse" dx dy)))
+        (js/call surv-x "sp_pointer" (surv-fb-x e) (surv-fb-y e)))))
+
+(defn surv-canvas-up [(e : Any)] : Unit
+  (when (= surv-state 2)
+    (do (when (= (js/get e "pointerId") surv-look-id) (set! surv-look-id -1))
+        (when surv-menu-down
+          (do (set! surv-menu-down false)
+              (js/call surv-x "sp_button" 0 0)
+              ;; a menu tap that started the run: hold the "pointer" so the engine plays (it pauses its own HUD when unlocked)
+              (js/call surv-x "sp_lock" 1))))))
+
+;; hardware keyboard (Bluetooth, ChromeOS, a desktop browser): forwarded while the view is up and no text field has focus
+(defn surv-on-keydown [(e : Any)] : Unit
+  (when (and surv-run (and (= surv-state 2) (not (arc-typing?))))
+    (do (js/call surv-x "sp_key" (js/get e "keyCode") 1)
+        (when (arc-game-key? e) (js/call e "preventDefault")))))
+(defn surv-on-keyup [(e : Any)] : Unit
+  (when (and surv-run (= surv-state 2)) (js/call surv-x "sp_key" (js/get e "keyCode") 0)))
+(defn surv-on-blur [(e : Any)] : Unit (surv-release-all!))
+(defn surv-on-visibility [(e : Any)] : Unit (when (js/get (doc) "hidden") (surv-release-all!)))
+
+(defn surv-install! [] : Unit
+  (when (not surv-listening)
+    (do (set! surv-listening true)
+        (let [w (win)]
+          (do (js/call w "addEventListener" "keydown" (callback surv-on-keydown))
+              (js/call w "addEventListener" "keyup" (callback surv-on-keyup))
+              (js/call w "addEventListener" "blur" (callback surv-on-blur))
+              (js/call (doc) "addEventListener" "visibilitychange" (callback surv-on-visibility))))
+        (js/call surv-canvas "addEventListener" "pointerdown" (callback surv-canvas-down))
+        (js/call surv-canvas "addEventListener" "pointermove" (callback surv-canvas-move))
+        (js/call surv-canvas "addEventListener" "pointerup" (callback surv-canvas-up))
+        (js/call surv-canvas "addEventListener" "pointercancel" (callback surv-canvas-up))
+        (js/call surv-canvas "addEventListener" "contextmenu" (callback arc-no-menu)))))

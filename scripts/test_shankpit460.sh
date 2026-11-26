@@ -15,3 +15,6 @@ gcc -O2 -ffp-contract=off -w -I"$SP/packages" -o "$W/parity_ref" tests/shankpit4
 echo "== parity (wasm vs the C engine)";  node tests/shankpit460_parity_test.mjs "$W/shankpit460.wasm" "$W/parity_ref" "$SP/maps/v0_shankpit.map" | tail -2
 echo "== engine";                          node tests/shankpit460_engine_test.mjs "$W/shankpit460.wasm" | tail -1
 echo "== bot soak";                        node tests/shankpit460_bot_soak.mjs "$W/shankpit460.wasm" 12000 | tail -1
+# SURVIVAL (the SHANKPHONE's survival button): the same engine with the CITY level and the survival mods (stdlib/shankpit_survival/)
+scripts/build_shankpit_survival_wasm.sh "$W/survival.wasm" | grep -E "^built|FAIL"
+echo "== survival";                        node tests/shankpit_survival_test.mjs "$W/survival.wasm" | tail -1

@@ -32,7 +32,7 @@
 
 ;; ---- the stadium envelope (physics.h STADIUM_*) --------------------------------------------
 (defn stadium-kill-y [] : F32 -80.0)
-(defn stadium-bounds [] : F32 420.0)
+(defn stadium-bounds [] : F32 (mod-bounds))   ; 420 in the arena (sp_mods.prn)
 
 ;; ---- ray vs. axis-aligned box (slab method) ----------------------------------------------------
 ;; The tnear / tfar of the slab walk live in two scratch globals; a ray parallel to a slab and outside it

@@ -20,7 +20,8 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 
 # Source order is irrelevant to the compiler (two-pass, forward references resolve) but fixed here so the
 # generated IR is reproducible. Optional files are listed in stdlib/shankpit460/MODULES.
-mapfile -t SRC < <(grep -v '^#' stdlib/shankpit460/MODULES | grep -v '^$')
+# SP_MODULES picks the mod set (default: the arena with no mods; stdlib/shankpit_survival/MODULES is SURVIVAL)
+mapfile -t SRC < <(grep -v '^#' "${SP_MODULES:-stdlib/shankpit460/MODULES}" | grep -v '^$')
 SRC+=(stdlib/gfd/term_font.prn)   # the 8x16 bitmap font (font-hex), shared with the GFD terminal
 
 cat "${SRC[@]}" > "$W/shankpit460_all.prn"

@@ -1,0 +1,448 @@
+;; stdlib/shankpit_survival/sv_mod.prn -- SURVIVAL as a collection of mods on the shankpit-460 engine.
+;;
+;; Founder real-time 2026-11-26: the SHANKPHONE gets "a button for survival that launches OG shankpit as a level and
+;; collection of mods", PARENA rewrite (not a port of the C client's GL). The level is sv_city.prn; the mods below fill
+;; the engine's hook surface (stdlib/shankpit460/sp_mods.prn -- read that file for the contract):
+;;
+;;   waves      wave n wants sv-quota(n) zombies, at most sv-max-alive(n) on the street, one every sv-spawn-gap-ms, on a
+;;              hidden ring around the hero; a cleared wave rests sv-intermission-ms     (witness_ai_survival_tick)
+;;   zombies    walk at the hero around buildings (the bots' own steering), claw inside 3 units once per 1.1 s
+;;   arsenal    the hero starts with the knife only; guns lie on the roads and drop from 35% of kills; walking over
+;;              one takes it, refills it and equips it; unowned slots refuse                (lobby_survival_guns_tick)
+;;   chests     destructible loot chests on the road ring; tiers, toughness and loot from chest_rules.prn  (card #528)
+;;   game over  the hero does not respawn: death ends the run on a wave / kills / time screen
+;;
+;; Every number that decides what the mode IS comes from PARENA rule files the C client shares:
+;; stdlib/shankpit/survival_rules.prn and stdlib/shankpit/chest_rules.prn. This file is the host side: bodies, timers,
+;; drawing. Engine slots: 0 is the hero, 1..9 are the zombie pool (the C client has 16; a capped wave waits, it is never
+;; skipped).
+;;
+;; Memory: the SV region at 0x80000 (unused by the engine): box colours, then guns, chests and per-slot words. State
+;; words live in G at 600..639.
+
+(defn sv-base [] : I32 524288)
+(defn sv-gun-addr [(i : I32)] : I32 (+ (sv-base) (+ 1024 (* i 16))))     ; 64 x {active, weapon, x, z}
+(defn sv-chest-addr [(i : I32)] : I32 (+ (sv-base) (+ 2048 (* i 32))))   ; 16 x {active, tier, hp, x, z}
+(defn sv-slot-addr [(p : I32) (k : I32)] : I32 (+ (sv-base) (+ 4096 (+ (* p 32) (shl k 2)))))
+(defn sv-max-guns [] : I32 64)
+(defn sv-max-chests [] : I32 16)
+(defn sv-pool [] : I32 9)
+
+;; state words
+(defn g-sv-on [] : I32 600)
+(defn g-sv-wave [] : I32 601)
+(defn g-sv-spawned [] : I32 602)
+(defn g-sv-next-ms [] : I32 603)
+(defn g-sv-owned [] : I32 604)        ; bit w = the hero owns weapon w
+(defn g-sv-dead-t [] : I32 605)
+(defn g-sv-best [] : I32 606)         ; best wave this session
+(defn g-sv-note-t [] : I32 607)
+(defn g-sv-note-w [] : I32 608)       ; weapon just picked up
+(defn g-sv-wave-t [] : I32 609)       ; ticks of the WAVE banner
+(defn g-sv-resting [] : I32 610)      ; 1 between a cleared wave and the next spawn
+(defn g-sv-ticks [] : I32 611)        ; ticks survived this run
+(defn g-sv-chests-broken [] : I32 612)
+(defn g-sv-guns-taken [] : I32 613)
+(defn g-sv-runs [] : I32 614)
+
+;; per-slot words
+(defn sv-cd [(p : I32)] : I32 (load32 (sv-slot-addr p 0)))          ; ticks until this zombie may claw again
+(defn sv-cd! [(p : I32) (v : I32)] : Unit (store32! (sv-slot-addr p 0) v))
+(defn sv-corpse [(p : I32)] : I32 (load32 (sv-slot-addr p 1)))      ; ticks since it died
+(defn sv-corpse! [(p : I32) (v : I32)] : Unit (store32! (sv-slot-addr p 1) v))
+(defn sv-stuck [(p : I32)] : I32 (load32 (sv-slot-addr p 2)))
+(defn sv-stuck! [(p : I32) (v : I32)] : Unit (store32! (sv-slot-addr p 2) v))
+
+(defn milli [(v : I32)] : F32 (/ (f32 v) 1000.0))
+(defn ms-ticks [(ms : I32)] : I32 (/ (+ ms 15) 16))
+(defn sv-now [] : I32 (* (gi (g-tick)) 16))
+
+;; the C client's missile launcher (6) has no shankpit-460 counterpart: it comes out of a chest as the sniper
+(defn sv-weapon [(w : I32)] : I32 (if (= w 6) 4 (clamp-i w 0 5)))
+
+;; ---- guns on the street ---------------------------------------------------------------------------------------------------
+(defn sv-gun-drop! [(w : I32) (x : F32) (z : F32)] : Unit
+  (let [done false]
+    (dotimes [i (sv-max-guns)]
+      (when (and (not done) (= (load32 (sv-gun-addr i)) 0))
+        (store32! (sv-gun-addr i) 1)
+        (store32! (+ (sv-gun-addr i) 4) (sv-weapon w))
+        (storef32! (+ (sv-gun-addr i) 8) x)
+        (storef32! (+ (sv-gun-addr i) 12) z)
+        (set! done true)))))
+
+;; a point on the road ring (gun_items_seed_roads / chests_seed_roads): angle a, radius r around the hero
+(defn g-sv-rx [] : I32 620) (defn g-sv-rz [] : I32 621)
+(defn sv-road-point! [(a : F32) (r : F32)] : Unit
+  (let [(x : F32) (* r (cosf a))
+        (z : F32) (* r (sinf a))
+        (rx : F32) (sv-road-snap x)
+        (rz : F32) (sv-road-snap z)]
+    (if (<= (fabs (- x rx)) (fabs (- z rz))) (set! x rx) (set! z rz))
+    (gf! (g-sv-rx) x) (gf! (g-sv-rz) z)))
+
+(defn sv-seed-street! [] : Unit
+  (do
+    (dotimes [i (* (sv-max-guns) 4)] (store32! (+ (sv-gun-addr 0) (shl i 2)) 0))
+    (dotimes [i (* (sv-max-chests) 8)] (store32! (+ (sv-chest-addr 0) (shl i 2)) 0))
+    (let [ng (sv-seed-guns)
+          nc (sv-seed-chests)]
+      (dotimes [i ng]
+        (sv-road-point! (/ (* 6.2831853 (f32 i)) (f32 ng)) (+ (milli (sv-seed-r0-milli)) (* (milli (sv-seed-rstep-milli)) (f32 (mod i 3)))))
+        (sv-gun-drop! (sv-gun-loot-pick (sv-seed-band i)) (gf (g-sv-rx)) (gf (g-sv-rz))))
+      (dotimes [i (min-i nc (sv-max-chests))]
+        (sv-road-point! (/ (* 6.2831853 (+ (f32 i) 0.5)) (f32 nc)) (+ (milli (sv-seed-r0-milli)) (* (milli (sv-seed-rstep-milli)) (f32 (mod i 3)))))
+        (let [a (sv-chest-addr i)
+              tier (chest-tier-for-roll (sv-chest-seed-roll i))]
+          (store32! a 1) (store32! (+ a 4) tier) (store32! (+ a 8) (chest-max-hp tier))
+          (storef32! (+ a 12) (gf (g-sv-rx))) (storef32! (+ a 16) (gf (g-sv-rz))))))))
+
+(defn sv-take! [(w : I32)] : Unit
+  (let [me 0]
+    (gi! (g-sv-owned) (bit-or (gi (g-sv-owned)) (shl 1 w)))
+    (set-ammo! me w (wpn-ammo-max w))
+    (set-p-weapon! me w)
+    (set-p-reload-timer! me 0)
+    (gi! (want-weapon) w)
+    (gi! (g-sv-note-w) w)
+    (gi! (g-sv-note-t) 120)
+    (gi! (g-sv-guns-taken) (+ (gi (g-sv-guns-taken)) 1))
+    (snd! 14 0.7 0.0 1.4)))
+
+(defn sv-pickups! [] : Unit
+  (let [(r : F32) (milli (sv-pickup-radius-milli))
+        (hy : F32) (milli (sv-pickup-height-milli))]
+    (when (alive? 0)
+      (dotimes [i (sv-max-guns)]
+        (let [a (sv-gun-addr i)]
+          (when (!= (load32 a) 0)
+            (let [(dx : F32) (- (loadf32 (+ a 8)) (p-x 0))
+                  (dz : F32) (- (loadf32 (+ a 12)) (p-z 0))]
+              (when (and (<= (+ (* dx dx) (* dz dz)) (* r r)) (<= (p-y 0) hy))
+                (store32! a 0)
+                (sv-take! (load32 (+ a 4)))))))))))
+
+;; ---- chests: the shot ray (mod-hitscan!) ------------------------------------------------------------------------------------
+(defn sv-chest-w [] : F32 2.0) (defn sv-chest-h [] : F32 1.6) (defn sv-chest-d [] : F32 1.4)
+(defn sv-ray-chest [(i : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32) (maxt : F32)] : F32
+  (let [a (sv-chest-addr i)
+        (cx : F32) (loadf32 (+ a 12))
+        (cz : F32) (loadf32 (+ a 16))]
+    (gf! (g-sl-n) 0.0001)
+    (gf! (g-sl-f) maxt)
+    (slab! ox dx (- cx (/ (sv-chest-w) 2.0)) (+ cx (/ (sv-chest-w) 2.0)))
+    (slab! oy dy 0.0 (sv-chest-h))
+    (slab! oz dz (- cz (/ (sv-chest-d) 2.0)) (+ cz (/ (sv-chest-d) 2.0)))
+    (if (<= (gf (g-sl-n)) (gf (g-sl-f))) (gf (g-sl-n)) 1000000000.0)))
+
+(defn sv-hitscan! [(p : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit
+  (let [w (p-weapon p)
+        (reach : F32) (if (wpn-melee? w) 4.5 600.0)
+        (wall : F32) (ray-world ox oy oz dx dy dz reach)
+        best -1
+        (bt : F32) wall]
+    (when (= p 0)
+      (dotimes [i (sv-max-chests)]
+        (when (!= (load32 (sv-chest-addr i)) 0)
+          (let [(t : F32) (sv-ray-chest i ox oy oz dx dy dz bt)]
+            (when (< t bt) (set! bt t) (set! best i)))))
+      (when (>= best 0)
+        (let [a (sv-chest-addr best)
+              dmg (/ (* (wpn-dmg w) (chest-damage-permille w)) 1000)
+              hp (- (load32 (+ a 8)) dmg)
+              (cx : F32) (loadf32 (+ a 12))
+              (cz : F32) (loadf32 (+ a 16))]
+          (fx-sparks! (+ ox (* dx bt)) (+ oy (* dy bt)) (+ oz (* dz bt)) 2 5)
+          (gi! (g-hitmark) 8)
+          (if (> hp 0)
+              (store32! (+ a 8) hp)
+              (do (store32! a 0)
+                  (gi! (g-sv-chests-broken) (+ (gi (g-sv-chests-broken)) 1))
+                  (fx-sparks! cx 1.0 cz 4 18)
+                  (snd-at! 13 cx 1.0 cz)
+                  (sv-gun-drop! (chest-loot-weapon (load32 (+ a 4)) (rnd 100)) cx cz))))))))
+
+;; ---- zombies -------------------------------------------------------------------------------------------------------------------------
+(defn sv-alive-zombies [] : I32
+  (let [n 0]
+    (loop [p 1] (when (<= p (sv-pool)) (when (alive? p) (set! n (+ n 1))) (recur (+ p 1))))
+    n))
+
+(defn sv-free-slot [] : I32
+  (let [s -1]
+    (loop [p 1] (when (and (<= p (sv-pool)) (< s 0)) (when (= (p-active p) 0) (set! s p)) (recur (+ p 1))))
+    s))
+
+;; zombies_ring_spot_ex: a clear street point on the ring, hidden from the hero if one can be found in 40 tries
+(defn sv-ring-spot! [(hide : Bool)] : Bool
+  (let [found false
+        tries (if hide 40 12)
+        (r0 : F32) (milli (sv-ring-min-milli))
+        (r1 : F32) (milli (sv-ring-max-milli))
+        (lim : F32) (- (sv-city-edge) 8.0)]
+    (loop [t 0]
+      (when (and (< t tries) (not found))
+        (let [(a : F32) (* (f32 (rnd 3600)) (/ 6.2831853 3600.0))
+              (r : F32) (+ r0 (* (f32 (rnd 1000)) (* 0.001 (- r1 r0))))
+              (x : F32) (+ (p-x 0) (* (sinf a) r))
+              (z : F32) (+ (p-z 0) (* (cosf a) r))]
+          (when (and (and (< (fabs x) lim) (< (fabs z) lim)) (not (sv-point-blocked? x z 2.0)))
+            (when (or (not hide) (not (line-clear? (p-x 0) (eye-y 0) (p-z 0) x 4.0 z)))
+              (gf! (g-sv-rx) x) (gf! (g-sv-rz) z) (set! found true))))
+        (recur (+ t 1))))
+    (if (or found (not hide)) found (sv-ring-spot! false))))
+
+(defn sv-spawn-zombie! [] : Bool
+  (let [s (sv-free-slot)]
+    (if (and (> s 0) (sv-ring-spot! true))
+        (do
+          (respawn-at! s (gf (g-sv-rx)) 8.0 (gf (g-sv-rz)))
+          (set-p-is-bot! s 1)
+          (set-p-net-slot! s 0)
+          (set-p-shield! s 0)
+          (set-p-health! s (sv-zombie-hp (gi (g-sv-wave))))
+          (set-p-weapon! s (w-knife))
+          (set-p-color! s 2)
+          (set-p-yaw! s (yaw-to (- (p-x 0) (p-x s)) (- (p-z 0) (p-z s))))
+          (bot-init! s 2)
+          (sv-cd! s 30) (sv-corpse! s 0) (sv-stuck! s 0)
+          (put-name! s "Zombie")
+          (snd-at! 13 (p-x s) 2.0 (p-z s))
+          true)
+        false)))
+
+;; the zombie brain: face the hero, walk at it around buildings, claw when close
+(defn sv-zombie-think! [(p : I32)] : Unit
+  (let [(dx : F32) (- (p-x 0) (p-x p))
+        (dz : F32) (- (p-z 0) (p-z p))
+        (dy : F32) (- (p-y 0) (p-y p))
+        (dist : F32) (len2 dx dz)
+        (fwd : F32) 0.0
+        (str : F32) 0.0
+        jump false]
+    (set-p-yaw! p (yaw-to dx dz))
+    (when (> (sv-cd p) 0) (sv-cd! p (- (sv-cd p) 1)))
+    (when (and (alive? 0) (> dist 2.0))
+      (steer! p dx dz)
+      (move-world! p (gf (g-bs-x)) (gf (g-bs-z)) 0.78)
+      (set! fwd (gf (g-bm-f)))
+      (set! str (gf (g-bm-s)))
+      (set! jump (!= (gi (g-bs-jump)) 0)))
+    ;; unstick: no progress for half a second is a hop
+    (if (< (len2 (- (p-x p) (p-bot-last-x p)) (- (p-z p) (p-bot-last-z p))) 0.05)
+        (sv-stuck! p (+ (sv-stuck p) 1))
+        (sv-stuck! p 0))
+    (set-p-bot-last-x! p (p-x p)) (set-p-bot-last-z! p (p-z p))
+    (when (> (sv-stuck p) 30) (set! jump true) (when (> (sv-stuck p) 60) (sv-stuck! p 0)))
+    (when (and (alive? 0) (and (<= dist (milli (sv-zombie-melee-range-milli))) (and (< (fabs dy) 3.0) (= (sv-cd p) 0))))
+      (sv-cd! p (ms-ticks (sv-zombie-cooldown-ms)))
+      (set-p-is-shooting! p 5)
+      (apply-damage! p 0 (sv-zombie-damage (gi (g-sv-wave))) 10 (w-knife))
+      (snd-at! 6 (p-x p) (p-y p) (p-z p)))
+    (apply-usercmd! p fwd str (p-yaw p) 0.0 jump false false false false)))
+
+;; a dead zombie: roll its gun once, then free the body for the pool after 3 s
+(defn sv-corpses! [] : Unit
+  (loop [p 1]
+    (when (<= p (sv-pool))
+      (when (and (!= (p-active p) 0) (= (p-state p) (state-dead)))
+        (sv-corpse! p (+ (sv-corpse p) 1))
+        (when (= (sv-corpse p) 1)
+          (when (< (rnd 100) (sv-gun-drop-percent))
+            (sv-gun-drop! (sv-gun-loot-pick (rnd 100)) (p-x p) (p-z p))))
+        (when (> (sv-corpse p) 180) (set-p-active! p 0)))
+      (recur (+ p 1)))))
+
+;; witness_ai_survival_tick
+(defn sv-waves! [] : Unit
+  (let [now (sv-now)
+        wave (gi (g-sv-wave))
+        alive (sv-alive-zombies)
+        quota (sv-quota wave)
+        cap (min-i (sv-max-alive wave) (sv-pool))]
+    (cond
+      (and (>= (gi (g-sv-spawned)) quota) (= alive 0))
+        (do (loop [p 1] (when (<= p (sv-pool)) (set-p-active! p 0) (recur (+ p 1))))
+            (gi! (g-sv-wave) (+ wave 1))
+            (gi! (g-sv-spawned) 0)
+            (gi! (g-sv-resting) 1)
+            (gi! (g-sv-wave-t) 150)
+            (gi! (g-sv-best) (max-i (gi (g-sv-best)) (+ wave 1)))
+            (gi! (g-sv-next-ms) (+ now (sv-intermission-ms)))
+            (snd-ui! 19))
+      (and (< (gi (g-sv-spawned)) quota) (and (< alive cap) (>= now (gi (g-sv-next-ms)))))
+        (do (when (sv-spawn-zombie!)
+              (gi! (g-sv-spawned) (+ (gi (g-sv-spawned)) 1))
+              (gi! (g-sv-resting) 0))
+            (gi! (g-sv-next-ms) (+ now (sv-spawn-gap-ms))))
+      :else unit)))
+
+(defn sv-left [] : I32
+  (+ (sv-alive-zombies) (max-i 0 (- (sv-quota (gi (g-sv-wave))) (gi (g-sv-spawned))))))
+
+;; ---- the session ---------------------------------------------------------------------------------------------------------------------
+(defn sv-start! [] : Unit
+  (do
+    (sv-city-init!)
+    (clear-world!)
+    (gi! (g-mode) 2)
+    (gi! (g-me) 0)
+    (gi! (g-view-slot) 0)
+    (gi! (g-tick) 0)
+    (gi! (g-kill-limit) 1000000)
+    (gi! (g-match-total) 1000000000)
+    (gi! (g-match-left) 1000000000)
+    (gi! (g-winner) -1)
+    (gi! (g-end-reason) 0)
+    (gi! (g-countdown) 130)
+    (gi! (g-death-cam) 0)
+    (gi! (g-streak) 0)
+    (gi! (g-feed-head) 0)
+    (zero-words! (feed-base) 32)
+    (gi! (g-match-no) (+ (gi (g-match-no)) 1))
+    (respawn-at! 0 0.0 6.0 0.0)
+    (set-p-yaw! 0 0.0)
+    (name-local! 0)
+    (set-p-weapon! 0 (w-knife))
+    (gf! (g-cam-yaw) 0.0)
+    (gf! (g-cam-pitch) 0.0)
+    ;; card #487: melee only, arm yourself from the street
+    (gi! (g-sv-owned) (shl 1 (w-knife)))
+    (gi! (want-weapon) (w-knife))
+    (gi! (g-sv-on) 1)
+    (gi! (g-sv-wave) 1)
+    (gi! (g-sv-spawned) 0)
+    (gi! (g-sv-next-ms) (sv-first-spawn-ms))
+    (gi! (g-sv-dead-t) 0)
+    (gi! (g-sv-note-t) 0)
+    (gi! (g-sv-wave-t) 150)
+    (gi! (g-sv-resting) 0)
+    (gi! (g-sv-ticks) 0)
+    (gi! (g-sv-chests-broken) 0)
+    (gi! (g-sv-guns-taken) 0)
+    (gi! (g-sv-best) (max-i 1 (gi (g-sv-best))))
+    (gi! (g-sv-runs) (+ (gi (g-sv-runs)) 1))
+    (zero-words! (sv-slot-addr 0 0) 80)
+    (sv-seed-street!)
+    (gi! (g-phase) 1)
+    (gi! (g-ui-t) 0)
+    (gi! (g-paused) 0)
+    (gi! (g-q-state) 0)
+    (gi! (g-want-queue) 0)
+    (snd-ui! 15)))
+
+;; ======================= the hooks (contract: stdlib/shankpit460/sp_mods.prn) =======================
+(defn mod-init! [] : Unit (do (sv-city-init!) (sv-seed-street!)))
+(defn mod-active? [] : Bool (and (!= (gi (g-sv-on)) 0) (= (gi (g-mode)) 2)))
+(defn mod-begin! [] : Bool (do (sv-start!) true))
+(defn mod-bounds [] : F32 (+ (sv-city-edge) 10.0))
+(defn mod-bot-think! [(p : I32)] : Bool (do (when (mod-active?) (sv-zombie-think! p)) (mod-active?)))
+(defn mod-respawn? [(p : I32)] : Bool (not (mod-active?)))
+(defn mod-weapon-ok? [(p : I32) (w : I32)] : Bool
+  (or (not (mod-active?)) (!= (bit-and (gi (g-sv-owned)) (shl 1 (clamp-i w 0 7))) 0)))
+(defn mod-hitscan! [(p : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit
+  (when (mod-active?) (sv-hitscan! p ox oy oz dx dy dz)))
+(defn mod-box-color [(i : I32)] : I32 (if (= (gi (g-map-id)) 3) (sv-box-color i) -1))
+
+(defn mod-tick! [] : Unit
+  (when (mod-active?)
+    (gi! (g-sv-ticks) (+ (gi (g-sv-ticks)) 1))
+    (when (> (gi (g-sv-note-t)) 0) (gi! (g-sv-note-t) (- (gi (g-sv-note-t)) 1)))
+    (when (> (gi (g-sv-wave-t)) 0) (gi! (g-sv-wave-t) (- (gi (g-sv-wave-t)) 1)))
+    (sv-corpses!)
+    (sv-pickups!)
+    (if (alive? 0)
+        (sv-waves!)
+        (do (gi! (g-sv-dead-t) (+ (gi (g-sv-dead-t)) 1))
+            (when (= (gi (g-sv-dead-t)) 110)
+              (gi! (g-sv-best) (max-i (gi (g-sv-best)) (gi (g-sv-wave))))
+              (end-match! -1 4))))))
+
+;; ---- drawing ------------------------------------------------------------------------------------------------------------------------------
+(defn sv-near? [(x : F32) (z : F32)] : Bool
+  (let [(dx : F32) (- x (gf (g-cam-x)))
+        (dz : F32) (- z (gf (g-cam-z)))]
+    (and (< (+ (* dx dx) (* dz dz)) 160000.0)
+         (> (+ (+ (* dx (* (gf (g-cam-sy)) (gf (g-cam-cp)))) (* (- 0.0 (gf (g-cam-y))) (gf (g-cam-sp))))
+               (* dz (* (- 0.0 (gf (g-cam-cy))) (gf (g-cam-cp))))) -4.0))))
+
+(defn sv-chest-color [(tier : I32)] : I32
+  (case tier 0 (rgb 150 104 64) 1 (rgb 128 136 150) (rgb 226 186 92)))
+
+(defn mod-draw-world! [] : Unit
+  (when (= (gi (g-map-id)) 3)
+    (let [(bob : F32) (* 0.25 (sinf (* (f32 (gi (g-ticker))) 0.004)))]
+      (dotimes [i (sv-max-guns)]
+        (let [a (sv-gun-addr i)]
+          (when (!= (load32 a) 0)
+            (let [(x : F32) (loadf32 (+ a 8))
+                  (z : F32) (loadf32 (+ a 12))]
+              (when (sv-near? x z)
+                (draw-aabb! x (+ 0.9 bob) z 1.6 0.45 0.45 (weapon-color (load32 (+ a 4))) 1)
+                (draw-aabb! x 3.5 z 0.18 7.0 0.18 (rgb 246 214 140) 2)))))))
+    (dotimes [i (sv-max-chests)]
+      (let [a (sv-chest-addr i)]
+        (when (!= (load32 a) 0)
+          (let [(x : F32) (loadf32 (+ a 12))
+                (z : F32) (loadf32 (+ a 16))
+                tier (load32 (+ a 4))]
+            (when (sv-near? x z)
+              (draw-aabb! x (/ (sv-chest-h) 2.0) z (sv-chest-w) (sv-chest-h) (sv-chest-d) (sv-chest-color tier) 1)
+              (draw-aabb! x (+ (sv-chest-h) 0.08) z (+ (sv-chest-w) 0.1) 0.16 (+ (sv-chest-d) 0.1) (shade (sv-chest-color tier) 200) 1))))))))
+
+(defn mod-hud! [(me : I32)] : Unit
+  (do
+    (panel 238 6 164 34)
+    (draw-text "WAVE" 248 9 1 (ink-faint))
+    (draw-int (gi (g-sv-wave)) 248 19 2 (amber))
+    (draw-text-r "LEFT" 392 9 1 (ink-faint))
+    (draw-int-r (sv-left) 392 19 2 (ink))
+    (draw-text-c "KILLS" 320 9 1 (ink-faint))
+    (draw-int-c (p-kills me) 320 19 2 (ink))
+    (when (> (gi (g-sv-wave-t)) 0)
+      (let [a (min-i 255 (* (gi (g-sv-wave-t)) 6))]
+        (fill-rect-a 220 96 200 40 (slate) (/ (* a 150) 255))
+        (if (and (> (gi (g-sv-wave)) 1) (!= (gi (g-sv-resting)) 0))
+            (draw-text-c "WAVE CLEARED" 320 102 1 (amber))
+            (draw-text-c "SURVIVE" 320 102 1 (amber)))
+        (draw-text-c "WAVE" 304 116 1 (ink))
+        (draw-int (gi (g-sv-wave)) 338 116 1 (ink))))
+    (when (> (gi (g-sv-note-t)) 0)
+      (panel 250 270 140 22)
+      (draw-text-c (wpn-name (gi (g-sv-note-w))) 320 276 1 (weapon-color (gi (g-sv-note-w)))))
+    ;; the arsenal: which of the six slots the street has given you
+    (dotimes [i 6]
+      (when (!= (bit-and (gi (g-sv-owned)) (shl 1 i)) 0)
+        (fill-rect (+ 266 (* i 18)) 353 14 2 (amber))))))
+
+(defn mod-title! [] : Bool
+  (do
+    (orbit-camera!)
+    (render-world! 1.0)
+    (fill-rect-a 0 0 640 360 (rgb 38 40 58) 120)
+    (draw-text-c "SURVIVAL" 320 64 4 (ink))
+    (draw-text-c "the city, wave after wave" 320 140 1 (ink-dim))
+    (button (play-x) (play-y) (play-w) (play-h) "PLAY" true false)
+    (draw-text-c "you start with a knife -- guns lie on the roads, chests break open" 320 236 1 (ink-faint))
+    (when (> (gi (g-sv-runs)) 0)
+      (draw-text "best wave" 278 258 1 (ink-faint))
+      (draw-int (gi (g-sv-best)) 350 258 1 (amber)))
+    (draw-text-c "SHANKPIT  /  a level and a set of PARENA mods" 320 328 1 (ink-faint))
+    true))
+
+(defn mod-end! [(alpha : F32)] : Bool
+  (do
+    (orbit-camera!)
+    (render-world! alpha)
+    (fill-rect-a 0 0 640 360 (rgb 24 22 32) 150)
+    (panel 190 40 260 196)
+    (draw-text-c "YOU DIED" 320 50 2 (coral))
+    (draw-text "wave" 214 92 1 (ink-faint))         (draw-int-r (gi (g-sv-wave)) 426 90 2 (amber))
+    (draw-text "zombies killed" 214 118 1 (ink-faint)) (draw-int-r (p-kills 0) 426 116 2 (ink))
+    (draw-text "time" 214 144 1 (ink-faint))         (draw-clock-c (/ (gi (g-sv-ticks)) 62) 396 142 1 (ink))
+    (draw-text "guns taken" 214 166 1 (ink-faint))   (draw-int-r (gi (g-sv-guns-taken)) 426 166 1 (ink))
+    (draw-text "chests broken" 214 182 1 (ink-faint)) (draw-int-r (gi (g-sv-chests-broken)) 426 182 1 (ink))
+    (draw-text "best wave" 214 206 1 (ink-faint))    (draw-int-r (gi (g-sv-best)) 426 206 1 (amber))
+    (button (rq-x) (rq-y) (rq-w) (rq-h) "AGAIN" true (> (gi (g-end-t)) 20))
+    (draw-text-c "Enter to go again   Esc for the title" 320 (+ (rq-y) 36) 1 (ink-faint))
+    true))

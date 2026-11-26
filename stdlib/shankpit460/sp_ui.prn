@@ -36,14 +36,14 @@
 
 ;; PLAY: a bot match now, and into the queue for a human one
 (defn begin-session! [] : Unit
-  (do
+  (when (not (mod-begin!))
     (gi! (g-want-queue) 1)
     (net-want-queue!)
     (start-bot-match!)))
 
 ;; REQUEUE from the end screen
 (defn requeue! [] : Unit
-  (do
+  (when (not (mod-begin!))
     (net-leave-room!)
     (gi! (g-want-queue) 1)
     (net-want-queue!)
@@ -167,7 +167,7 @@
 
 ;; ---- title -----------------------------------------------------------------------------------------------------------------------
 (defn render-title! [] : Unit
-  (do
+  (when (not (mod-title!))
     (orbit-camera!)
     (render-world! 1.0)
     (fill-rect-a 0 0 640 360 (rgb 38 40 58) 128)
@@ -197,6 +197,7 @@
 (defn render-end! [(alpha : F32)] : Unit
   (let [me (gi (g-me))
         w (gi (g-winner))]
+   (when (not (mod-end! alpha))
     (game-camera! alpha)
     (render-world! alpha)
     (fill-rect-a 0 0 640 360 (rgb 24 22 32) 150)
@@ -216,7 +217,7 @@
     (button (rq-x) (rq-y) (rq-w) (rq-h) "REQUEUE" true (> (gi (g-end-t)) 20))
     (draw-text-c "Enter to requeue   Esc for the title" 320 (+ (rq-y) 36) 1 (ink-faint))
     (when (!= (gi (g-want-queue)) 0)
-      (draw-text-c "still searching for a human match" 320 (+ (rq-y) 52) 1 (ink-faint)))))
+      (draw-text-c "still searching for a human match" 320 (+ (rq-y) 52) 1 (ink-faint))))))
 
 ;; ---- frame --------------------------------------------------------------------------------------------------------------------------
 (defn alpha-now [] : F32 (clamp-f (/ (gf (g-clock-acc)) (tick-ms)) 0.0 1.0))

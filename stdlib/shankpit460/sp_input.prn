@@ -120,7 +120,13 @@
 ;; wheel / bumpers cycle the weapon
 (defn want-weapon [] : I32 245)    ; G index: the weapon the player wants
 (defn cycle-weapon! [(dir : I32)] : Unit
-  (gi! (want-weapon) (mod (+ (+ (gi (want-weapon)) dir) 6) 6)))
+  ;; step to the next slot the mode allows (every slot in the arena; only owned ones in SURVIVAL -- sp_mods.prn)
+  (loop [i 0 w (gi (want-weapon))]
+    (when (< i 6)
+      (let [n (mod (+ (+ w dir) 6) 6)]
+        (if (mod-weapon-ok? (gi (g-me)) n)
+            (gi! (want-weapon) n)
+            (recur (+ i 1) n))))))
 
 ;; ---- the command for the next tick -------------------------------------------------------------------------------
 (defn bool-f [(c : Bool)] : F32 (if c 1.0 0.0))

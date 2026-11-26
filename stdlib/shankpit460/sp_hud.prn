@@ -183,7 +183,7 @@
       (draw-text-at-c (name-addr v) 320 (+ y 14) 1 (ink)))))
 
 (defn draw-death! [(me : I32)] : Unit
-  (when (not (alive? me))
+  (when (and (not (alive? me)) (mod-respawn? me))
     (let [k (p-last-damager me)
           secs (max-i 1 (/ (+ (p-respawn-ticks me) 61) 62))]
       (fill-rect-a 0 0 640 360 (rgb 24 22 30) 90)
@@ -198,7 +198,7 @@
     (let [s (countdown-secs)]
       (fill-rect-a 0 0 640 360 (rgb 24 22 30) 70)
       (draw-text-c "GET READY" 320 148 2 (ink-dim))
-      (if (<= s 3)
+      (if (or (<= s 3) (mod-active?))
           (draw-int-c s 320 176 5 (ink))
           (draw-text-c (if (= (gi (g-mode)) 1) "first to 16 - or six minutes" "first to 13 - or five minutes") 320 186 1 (ink-faint))))))
 
@@ -264,9 +264,10 @@
         (draw-scope!)
         (when (alive? me) (draw-crosshair! me)))
     (draw-damage!)
-    (draw-scorebar! me)
+    (if (mod-active?)
+        (mod-hud! me)
+        (do (draw-scorebar! me) (draw-queue-pill!)))
     (draw-feed! me)
-    (draw-queue-pill!)
     (when (alive? me)
       (draw-vitals! me)
       (draw-ammo! me))

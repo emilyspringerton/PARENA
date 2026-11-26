@@ -524,7 +524,8 @@
                       dmg (* (wpn-dmg w) (if head 3 1))
                       fb (if head 20 10)]
                   (deal-hit! p i dmg fb w head)
-                  (fx-sparks! (p-x i) (+ (p-y i) (if (= hit 2) (c-head-offset) 2.0)) (p-z i) (if head 1 2) (if head 8 5)))))))))))
+                  (fx-sparks! (p-x i) (+ (p-y i) (if (= hit 2) (c-head-offset) 2.0)) (p-z i) (if head 1 2) (if head 8 5)))))))))
+    (mod-hitscan! p ox oy oz dx dy dz)))
 
 (defn update-weapons! [(p : I32) (shoot : Bool) (reload : Bool) (ability : Bool)] : Unit
   (do
@@ -585,7 +586,7 @@
         (when (> (p-respawn-ticks p) 0)
           (set-p-respawn-ticks! p (- (p-respawn-ticks p) 1))
           ;; in a human match the server decides when a player comes back; here the engine does
-          (when (and (<= (p-respawn-ticks p) 0) (not (net-match?)))
+          (when (and (<= (p-respawn-ticks p) 0) (and (not (net-match?)) (mod-respawn? p)))
             (phys-respawn! p)))
         (do
           (when (< (now-ms) (p-stunned-until p))

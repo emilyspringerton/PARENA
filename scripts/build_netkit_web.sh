@@ -4,6 +4,8 @@
 #   <outdir>/netkit-lite.wasm   the same code with 8 MB memory (the scanner, and one instance per SSH session)
 #   <outdir>/nkterm.wasm        the SSH terminal emulator
 #   <outdir>/brawlpit.wasm      the arcade cabinet's game: WOTAN's zero-import BRAWLPIT web build (scripts/build_brawlpit_wasm.sh)
+#   <outdir>/survival.wasm      the SHANKPHONE's SURVIVAL button: the shankpit-460 engine + the CITY level + the survival mods
+#                               (scripts/build_shankpit_survival_wasm.sh, stdlib/shankpit_survival/)
 #   <outdir>/duck.png, sprites.png   BRAWLPIT's art atlases (copied from ../WOTAN/BRAWLPIT: committed art, not build products)
 #   <outdir>/kit/setup.bat      the Windows VNC setup script the Drive screen writes onto a USB drive (copied from
 #                               ../SHANKPIT/ops/netkit/windows, CRLF kept; a labelled stopgap around the TightVNC installer)
@@ -23,6 +25,7 @@ scripts/build_netkit_wasm.sh "$OUT/netkit.wasm"
 NETKIT_MEM=8388608 scripts/build_netkit_wasm.sh "$OUT/netkit-lite.wasm"
 scripts/build_netkit_term_wasm.sh "$OUT/nkterm.wasm"
 scripts/build_brawlpit_wasm.sh "$OUT/brawlpit.wasm"
+scripts/build_shankpit_survival_wasm.sh "$OUT/survival.wasm"
 ART="${BRAWLPIT_ART_DIR:-../WOTAN/BRAWLPIT}"
 for f in duck.png sprites.png; do
   [ -f "$ART/$f" ] || { echo "FAIL: $ART/$f not found (check out WOTAN beside PARENA, or set BRAWLPIT_ART_DIR)" >&2; exit 1; }

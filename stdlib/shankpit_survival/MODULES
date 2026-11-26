@@ -1,0 +1,24 @@
+# SURVIVAL: the shankpit-460 engine + the CITY level + the survival mods, in build order (scripts/build_shankpit_survival_wasm.sh)
+stdlib/shankpit460/sp_mem.prn
+stdlib/shankpit460/sp_fields.prn
+stdlib/shankpit460/sp_map.prn
+stdlib/shankpit460/sp_map_data.prn
+stdlib/shankpit460/sp_map_w77.prn
+stdlib/shankpit460/sp_map_dust.prn
+stdlib/shankpit460/sp_phys.prn
+stdlib/shankpit460/sp_fx.prn
+stdlib/shankpit460/sp_net.prn
+stdlib/shankpit460/sp_ai.prn
+stdlib/shankpit460/sp_gfx.prn
+stdlib/shankpit460/sp_3d.prn
+stdlib/shankpit460/sp_view.prn
+stdlib/shankpit460/sp_input.prn
+stdlib/shankpit460/sp_hud.prn
+stdlib/shankpit460/sp_sim.prn
+stdlib/shankpit460/sp_rules.prn
+stdlib/shankpit460/sp_ui.prn
+stdlib/shankpit/survival_rules.prn
+stdlib/shankpit/chest_rules.prn
+stdlib/shankpit_survival/sv_city.prn
+stdlib/shankpit_survival/sv_mod.prn
+stdlib/shankpit460/sp_main.prn

@@ -1,0 +1,39 @@
+;; stdlib/shankpit460/sp_mods.prn -- the engine's mod surface, with every hook doing nothing.
+;;
+;; Founder real-time 2026-11-26: the SHANKPHONE's SURVIVAL button "launches OG shankpit as a level and collection of
+;; mods", PARENA first. So the engine (renderer, physics, input, HUD, bots) stays one codebase and a game mode is a
+;; level plus mods that fill these hooks. A build picks its mod set in its MODULES file: shankpit-460 lists this file
+;; (every hook is a no-op, so the arena shooter behaves exactly as before), the SURVIVAL build lists
+;; stdlib/shankpit_survival/ instead, which defines the same names. PARENA has no dynamic dispatch, so the swap is
+;; at build time and costs nothing per call.
+;;
+;; The contract (each call site is named; keep both implementations in step):
+;;   mod-init!              end of sp-init                  load the mode's level for the title backdrop
+;;   mod-active?            draw-hud!, apply-local-cmd!     true while the mode owns the match (mode 2)
+;;   mod-begin! -> Bool     begin-session!, requeue!        true = the mode started its own session
+;;   mod-tick!              sim-tick!, after the world step the mode's rules: waves, pickups, game over
+;;   mod-bot-think! -> Bool sim-tick!, per living bot       true = the mode drove this bot (skip sp_ai)
+;;   mod-respawn? -> Bool   update-entity!                  false = this dead player stays dead
+;;   mod-weapon-ok? -> Bool apply-local-cmd!                false = the local player cannot switch to w
+;;   mod-bounds -> F32      stadium-bounds                  half-width of the playable square
+;;   mod-hitscan!           fire-hitscan!, after players    the shot ray, for things that are not players
+;;   mod-box-color -> I32   draw-arena!                     a box colour, or -1 for the engine's own
+;;   mod-draw-world!        draw-arena!, after the boxes    the mode's props (items, chests)
+;;   mod-hud!               draw-hud!                       the mode's HUD (replaces the score bar)
+;;   mod-title! -> Bool     render-title!                   true = the mode drew its own title screen
+;;   mod-end! -> Bool       render-end!                     true = the mode drew its own end screen
+
+(defn mod-init! [] : Unit unit)
+(defn mod-active? [] : Bool false)
+(defn mod-begin! [] : Bool false)
+(defn mod-tick! [] : Unit unit)
+(defn mod-bot-think! [(p : I32)] : Bool false)
+(defn mod-respawn? [(p : I32)] : Bool true)
+(defn mod-weapon-ok? [(p : I32) (w : I32)] : Bool true)
+(defn mod-bounds [] : F32 420.0)
+(defn mod-hitscan! [(p : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit unit)
+(defn mod-box-color [(i : I32)] : I32 -1)
+(defn mod-draw-world! [] : Unit unit)
+(defn mod-hud! [(me : I32)] : Unit unit)
+(defn mod-title! [] : Bool false)
+(defn mod-end! [(alpha : F32)] : Bool false)

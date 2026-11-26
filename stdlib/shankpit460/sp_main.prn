@@ -20,7 +20,8 @@
     (gi! (want-weapon) 1)
     (gf! (g-pe) 0.45)
     (storef64! (clock-slot) 0.0)
-    (gf! (g-clock-acc) 0.0)))
+    (gf! (g-clock-acc) 0.0)
+    (mod-init!)))
 
 (defn capture-prev! [] : Unit
   (dotimes [i (max-players)]

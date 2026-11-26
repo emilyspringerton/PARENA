@@ -115,7 +115,7 @@
       (apply-usercmd! me (gf (g-cmd-fwd)) (gf (g-cmd-str)) (gf (g-cam-yaw)) (gf (g-cam-pitch))
                       (!= (gi (g-cmd-jump)) 0) (!= (gi (g-cmd-fire)) 0) (!= (gi (g-cmd-crouch)) 0)
                       (!= (gi (g-cmd-reload)) 0) (!= (gi (g-cmd-ability)) 0))
-      (when (>= (gi (g-cmd-weapon)) 0)
+      (when (and (>= (gi (g-cmd-weapon)) 0) (mod-weapon-ok? me (gi (g-cmd-weapon))))
         (set-p-weapon! me (clamp-i (gi (g-cmd-weapon)) 0 5))))
     (when (and (not (alive? me)) (= (p-is-bot me) 0))
       (apply-usercmd! me 0.0 0.0 (p-yaw me) (p-pitch me) false false false false false))))
@@ -170,9 +170,10 @@
       (do
         (apply-local-cmd!)
         (dotimes [i (max-players)]
-          (when (and (!= (p-is-bot i) 0) (alive? i)) (bot-think! i)))
+          (when (and (!= (p-is-bot i) 0) (alive? i)) (when (not (mod-bot-think! i)) (bot-think! i))))
         (world-step!)
         (tick-timers!)
+        (mod-tick!)
         (when (> (gi (g-match-left)) 0) (gi! (g-match-left) (- (gi (g-match-left)) 1)))
         (when (= (gi (g-mode)) 0) (check-bot-match-end!)))
     :else

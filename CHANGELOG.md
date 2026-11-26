@@ -1,5 +1,21 @@
 ## 2026-11-26
 
+- **feat(shankpit_survival): SHANKPIT SURVIVAL in PARENA -- the SHANKPHONE's survival button** (founder: "the shankphone itself can have a
+  button for survival that launches OG shankpit as a level and collection of mods"; PARENA rewrite chosen over porting the C client's GL).
+  - `stdlib/shankpit460/sp_mods.prn`: the engine's mod surface (14 no-op hooks), wired at their call sites in sp_sim/sp_phys/sp_view/sp_hud/
+    sp_ui/sp_main/sp_map/sp_input. The arena is unchanged: parity 40 scenarios worst 5e-7, engine 73/73, soak ok.
+  - `stdlib/shankpit/survival_rules.prn` (new, scalar, shareable with the C client): waves, zombie numbers, loot table, seeding.
+  - `stdlib/shankpit_survival/`: `sv_city.prn` (the CITY level from init_city_geo's formulas, 7 x 7), `sv_mod.prn` (waves, zombies,
+    arsenal, chests via chest_rules.prn, game over), `MODULES`, README. `scripts/build_shankpit_survival_wasm.sh` (232 KB, 0 imports,
+    fixed 8 MB); `build_shankpit460_wasm.sh` takes `SP_MODULES`.
+  - `tests/shankpit_survival_test.mjs`: 31 checks (city, knife start, gating, ring spawn, chase, pickup, chest, wave clear, death, AGAIN,
+    7 ms/frame); added to `scripts/test_shankpit460.sh`.
+  - netkit: `nk_garage.prn` object 5 "Survival" (+ `nk-survival-touch-key`, look/stick numbers), `host/nk_host_survival.prn` (lazy load,
+    frame loop, stick -> sp_pad, drag -> sp_mouse, buttons, menu taps), wiring in nk_host_ui/garage; `build_netkit_web.sh` ships
+    survival.wasm. garage_spec 48/48; `test_browser_garage.py` 30/30 in headless Chromium under the app CSP (new survival leg); the
+    whole `test_netkit.sh` passes (OpenSSH / libvncserver legs skipped: not installed on this box).
+  (sess-20261126-1643-452c2f1a)
+
 - feat(k8s): `parena-pod-render` gains a Vultr provider (`PARENA_K8S_PROVIDER=vultr`): `service-udp`/`service-tcp` become hostPorts on a pause sidecar plus `nodeSelector emily/pool=$PARENA_VULTR_GAME_POOL`, no LoadBalancer Service; `gateway` renders an Envoy Gateway (class/tls-secret) with one BackendTrafficPolicy for the request timeout; BackendConfig dropped; PVCs raised to Vultr's 10 GB minimum; `ingress` refused. New `pod-hostports-container-yaml`, `pod-node-selector-yaml`, `pod-gateway-vultr-yaml` in `stdlib/k8s/pod.prn`; tests in `test_k8s_pod.c`. Default (gke) output unchanged byte-for-byte. (sess-20261126-1643-452c2f1a)
 - **feat(netkit): a text editor that saves to a USB drive, and a VNC kit for a PC with no screen** (founder: "we have no way to write to
   the SD card so we need to build a text editor into netkit ... that allows us to save to the usb drive connected over usb c"; KIT-USB).

@@ -33,6 +33,14 @@ TYPESCRIPT VIA PARENA ... feel free to improve the bots."* Stats and the bot lea
 Build: `scripts/build_shankpit460_web.sh <outdir>` -> `shankpit460.wasm` + `sp-host.js`. WOTAN commits both
 (`WOTAN/scripts/build-shankpit460.sh`).
 
+## The mod surface (2026-11-26)
+
+`sp_mods.prn` is the engine's mod surface: 14 hooks (`mod-init!`, `mod-tick!`, `mod-bot-think!`, `mod-respawn?`,
+`mod-weapon-ok?`, `mod-bounds`, `mod-hitscan!`, `mod-box-color`, `mod-draw-world!`, `mod-hud!`, `mod-title!`, `mod-end!`,
+`mod-begin!`, `mod-active?`), each named at its call site. This build links the no-op set, so the arena is unchanged: parity
+worst |diff| is still 5e-7, 73/73 engine checks pass, and the soak passes. A game mode is a level plus mods that define the same
+names, picked by its MODULES file at build time (`SP_MODULES=...`). The first is SHANKPIT SURVIVAL (`../shankpit_survival/`).
+
 ## The game
 
 The match flow is the founder's: **PLAY -> a bot match starts at once and the HUD says SEARCHING FOR MATCH**. If another

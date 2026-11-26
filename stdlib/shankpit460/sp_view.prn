@@ -72,10 +72,11 @@
     ;; floor: one big tile field under everything (the slab at index 0 is never drawn as a box)
     (set-surface! (floor-color) 0 0.0 0.0)
     (gi! (g-pa) 255)
-    (pv-set! 0 -900.0 0.0 -900.0 -900.0 -900.0)
-    (pv-set! 1 900.0 0.0 -900.0 900.0 -900.0)
-    (pv-set! 2 900.0 0.0 900.0 900.0 900.0)
-    (pv-set! 3 -900.0 0.0 900.0 -900.0 900.0)
+    (let [(fe : F32) (fmax2 900.0 (* 2.0 (stadium-bounds)))]
+      (pv-set! 0 (- 0.0 fe) 0.0 (- 0.0 fe) (- 0.0 fe) (- 0.0 fe))
+      (pv-set! 1 fe 0.0 (- 0.0 fe) fe (- 0.0 fe))
+      (pv-set! 2 fe 0.0 fe fe fe)
+      (pv-set! 3 (- 0.0 fe) 0.0 fe (- 0.0 fe) fe))
     (draw-poly! 4)
     (gf! (g-pe) 0.45)
     (loop [i 1]
@@ -88,8 +89,10 @@
               (fd : F32) (+ (+ (* dx (* (gf (g-cam-sy)) (gf (g-cam-cp)))) (* dy (gf (g-cam-sp))))
                             (* dz (* (- 0.0 (gf (g-cam-cy))) (gf (g-cam-cp)))))]
           (when (> (+ fd rad) 0.0)
-            (draw-aabb! (bx i) (by i) (bz i) (bw i) (bh i) (bd i) (box-color i) 1)))
-        (recur (+ i 1))))))
+            (let [mc (mod-box-color i)]
+              (draw-aabb! (bx i) (by i) (bz i) (bw i) (bh i) (bd i) (if (>= mc 0) mc (box-color i)) 1))))
+        (recur (+ i 1))))
+    (mod-draw-world!)))
 
 ;; ---- a player ------------------------------------------------------------------------------------------------
 ;; part! places a box in the player's own frame (right, up, forward-horizontal) and draws it

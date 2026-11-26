@@ -30,6 +30,7 @@
     2 (gar-ssh-state)
     3 (gar-vnc-state)
     4 arc-state
+    5 surv-state
     0))
 (defn gar-fact-b [(id : I32)] : I32 (if (= id 1) (js/call scan-x "nk_dev_count") 0))
 
@@ -125,7 +126,7 @@
 (defn on-resize [(e : Any)] : Unit (gar-tick))
 
 ;; ---- taps ------------------------------------------------------------------------------------------------------------------------------------
-(defn view-name [(i : I32)] : String (js/aget (js/array "garage" "devices" "ssh" "vnc" "arcade") i))
+(defn view-name [(i : I32)] : String (js/aget (js/array "garage" "devices" "ssh" "vnc" "arcade" "survival") i))
 
 (defn garage-act! [(id : I32)] : Unit
   (let [action (js/call scan-x "nk_garage_action" id (gar-ssh-state) (gar-vnc-state))

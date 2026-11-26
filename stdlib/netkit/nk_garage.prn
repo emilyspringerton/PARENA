@@ -12,6 +12,11 @@
 ;;   2 terminal        -> the SSH view                    light: connecting / live
 ;;   3 monitor         -> the VNC view                    light: connecting / live
 ;;   4 arcade cabinet  -> BRAWLPIT, inside this page      light: loading / ready / could not load
+;;   5 survival        -> SHANKPIT SURVIVAL, inside this page (the shankpit-460 PARENA engine + the CITY level + the survival
+;;                        mods, stdlib/shankpit_survival/)   light: loading / ready / could not load
+;;
+;; Founder real-time 2026-11-26: "the shankpit net kit can be the shankphone and the shankphone itself can have a button for survival
+;; that launches OG shankpit as a level and collection of mods". The garage is the SHANKPHONE's home screen; object 5 is that button.
 ;;
 ;; PURE SCALAR FUNCTIONS, no linear-memory state at all: the page host passes the facts in (view size, scan state, session states) and
 ;; gets a number or a static string address back. That keeps the layout testable on any target and means the garage can never drift
@@ -20,13 +25,13 @@
 ;; State codes the host passes in (it owns the sessions; this file only reads their summary):
 ;;   session   0 none, 1 connecting, 2 live          (ssh, vnc)
 ;;   scan      0 never scanned, 1 scanning, 2 scanned (with the device count passed separately)
-;;   arcade    0 not loaded yet, 1 loading, 2 ready, 3 could not load
-;; View codes: 0 garage, 1 devices, 2 ssh, 3 vnc, 4 arcade.
+;;   arcade    0 not loaded yet, 1 loading, 2 ready, 3 could not load     (survival uses the same four codes)
+;; View codes: 0 garage, 1 devices, 2 ssh, 3 vnc, 4 arcade, 5 survival.
 
-(defn nk-garage-count [] : I32 4)
+(defn nk-garage-count [] : I32 5)
 
-;; landscape tablet: one row of four; portrait: a 2 x 2 grid
-(defn nk-garage-cols [(vw : I32) (vh : I32)] : I32 (if (>= vw vh) 4 2))
+;; landscape: one row of five; portrait: two columns (three rows, the last object alone)
+(defn nk-garage-cols [(vw : I32) (vh : I32)] : I32 (if (>= vw vh) 5 2))
 (defn nk-garage-rows [(vw : I32) (vh : I32)] : I32 (/ (+ (nk-garage-count) (- (nk-garage-cols vw vh) 1)) (nk-garage-cols vw vh)))
 
 (defn garage-col [(id : I32) (vw : I32) (vh : I32)] : I32 (mod (- id 1) (nk-garage-cols vw vh)))
@@ -34,7 +39,7 @@
 (defn garage-cw [(vw : I32) (vh : I32)] : I32 (/ 1000 (nk-garage-cols vw vh)))
 (defn garage-ch [(vw : I32) (vh : I32)] : I32 (/ 1000 (nk-garage-rows vw vh)))
 
-;; an object fills 80% of its cell, centred; ids outside 1..4 are not objects (all zero)
+;; an object fills 80% of its cell, centred; ids outside 1..5 are not objects (all zero)
 (defn nk-garage-obj-x [(id : I32) (vw : I32) (vh : I32)] : I32
   (if (and (>= id 1) (<= id (nk-garage-count)))
       (+ (* (garage-col id vw vh) (garage-cw vw vh)) (/ (garage-cw vw vh) 10))
@@ -68,7 +73,7 @@
 ;; ---- lights ------------------------------------------------------------------------------------------------------------------------
 ;; colour codes: 0 off, 1 green, 2 amber, 3 red. a, b, c are the object's own facts:
 ;;   bench:    a = scan state, b = device count
-;;   terminal: a = ssh session      monitor: a = vnc session      cabinet: a = arcade state
+;;   terminal: a = ssh session      monitor: a = vnc session      cabinet: a = arcade state      survival: a = survival state
 (defn nk-garage-light [(id : I32) (a : I32) (b : I32) (c : I32)] : I32
   (case id
     1 (cond (= a 1) 2
@@ -78,6 +83,7 @@
     2 (cond (= a 2) 1 (= a 1) 2 :else 0)
     3 (cond (= a 2) 1 (= a 1) 2 :else 0)
     4 (cond (= a 2) 1 (= a 1) 2 (= a 3) 3 :else 0)
+    5 (cond (= a 2) 1 (= a 1) 2 (= a 3) 3 :else 0)
     0))
 
 (defn nk-garage-light-name-addr [(l : I32)] : I32
@@ -94,6 +100,7 @@
     2 (str-addr "Terminal")
     3 (str-addr "Monitor")
     4 (str-addr "Arcade cabinet")
+    5 (str-addr "Survival")
     (str-addr "")))
 
 ;; what the object is for (always shown)
@@ -103,6 +110,7 @@
     2 (str-addr "SSH to a device")
     3 (str-addr "See a device's screen")
     4 (str-addr "Play BRAWLPIT")
+    5 (str-addr "SHANKPIT: hold the city, wave after wave")
     (str-addr "")))
 
 ;; what the light means right now
@@ -126,6 +134,11 @@
         2 (str-addr "Loading")
         3 (str-addr "Could not load")
         (str-addr "Tap to load"))
+    5 (case light
+        1 (str-addr "Ready")
+        2 (str-addr "Loading")
+        3 (str-addr "Could not load")
+        (str-addr "Tap to play"))
     (str-addr "")))
 
 ;; ---- cables: a cable exists only while the connection it stands for is live ------------------------------------------------------
@@ -141,13 +154,15 @@
 ;; ---- taps ------------------------------------------------------------------------------------------------------------------------------
 ;; The view to go to for a tap on object `id`; ssh/vnc are the session states. A terminal or monitor with no live session has nothing
 ;; to show, so it sends you to the device list, where a session is started, with a hint (nk-garage-hint-addr).
-;; 0 = nothing; 1 devices; 2 ssh; 3 vnc; 4 arcade; 5 devices (hint: start an SSH session there); 6 devices (hint: start a screen session)
+;; 0 = nothing; 1 devices; 2 ssh; 3 vnc; 4 arcade; 5 devices (hint: start an SSH session there); 6 devices (hint: start a screen session);
+;; 7 survival
 (defn nk-garage-action [(id : I32) (ssh : I32) (vnc : I32)] : I32
   (case id
     1 1
     2 (if (= ssh 0) 5 2)
     3 (if (= vnc 0) 6 3)
     4 4
+    5 7
     0))
 
 (defn nk-garage-action-view [(action : I32)] : I32
@@ -158,6 +173,7 @@
     4 4
     5 1
     6 1
+    7 5
     0))
 
 (defn nk-garage-hint-addr [(action : I32)] : I32
@@ -167,12 +183,13 @@
     (str-addr "")))
 
 ;; the Android back button: where it goes from view `v`. -1 = leave the app (the garage is the top). From a live ssh / vnc view the
-;; host closes the session first (that is the existing behaviour); arcade and devices go back to the garage.
+;; host closes the session first (that is the existing behaviour); arcade, survival and devices go back to the garage.
 (defn nk-garage-back [(v : I32)] : I32
   (case v
     0 -1
     1 0
     4 0
+    5 0
     -1))
 
 ;; ---- BRAWLPIT's touch controls --------------------------------------------------------------------------------------------------
@@ -194,3 +211,22 @@
     11 27
     0))
 (defn nk-garage-touch-count [] : I32 11)
+
+;; ---- SURVIVAL's touch controls --------------------------------------------------------------------------------------------------
+;; The game is the shankpit-460 engine (stdlib/shankpit460/sp_input.prn): keyboard key codes, the left mouse button fires, the wheel
+;; changes weapon, and a mouse drag looks (the host turns a finger drag on the picture into sp_mouse). The move stick is analog (gamepad
+;; slot 0). Button codes -> what the host sends:
+;;   1 jump (Space) 2 crouch (C) 3 reload (R) 4 ability (E) 5 next weapon (wheel +1, code 1000) 6 fire (left mouse, code 1001)
+(defn nk-survival-touch-key [(btn : I32)] : I32
+  (case btn
+    1 32
+    2 67
+    3 82
+    4 69
+    5 1000
+    6 1001
+    0))
+(defn nk-survival-touch-count [] : I32 6)
+;; look sensitivity: degrees of turn per 100 CSS pixels of finger drag, and the move stick's full-deflection radius in CSS pixels
+(defn nk-survival-look-per-100px [] : I32 60)
+(defn nk-survival-stick-radius [] : I32 56)
