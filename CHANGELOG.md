@@ -1,5 +1,9 @@
 ## 2026-11-26
 
+- **feat(test): the garage tests are a SCARAB spec.** `test_garage.py` + `garage_checks.py` + `test_garage_ir.py` -> `tests/netkit/garage_spec.prn`
+  (45 specs, 110 expectations: layout in landscape and portrait, hit testing, cables, lights and their words, taps, Back, touch keys).
+  The Python IR-interpreter leg (the same checks on the compiler's LLVM IR, without the wasm toolchain) is gone: the spec runs them on
+  the linked wasm itself.
 - **feat(test): the Netkit crypto tests are SCARAB/LADYBUG specs.** `test_des.py`, `test_crypto.py`, `test_x25519.py` and `test_ed25519.py` ->
   `tests/netkit/{des,crypto,x25519,ed25519}_spec.prn` (6 + 16 + 11 + 8 specs). Published vectors (NIST, FIPS 180-4, RFC 7748/8032/8439) are
   literals in the specs; the random-input comparisons against independent implementations (pycryptodome, hashlib, pyca/cryptography,

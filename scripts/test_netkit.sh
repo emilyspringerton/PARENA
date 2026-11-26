@@ -14,10 +14,6 @@ cd "$(dirname "$0")/.."
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 scripts/build_netkit_wasm.sh "$W/netkit.wasm"
 scripts/build_netkit_term_wasm.sh "$W/nkterm.wasm"
-# the garage (nk_garage.prn): the SAME checks run twice -- on the compiler's LLVM IR, executed by a small interpreter (needs only python3), and
-# below (in the loop) on the linked wasm. test_garage_ir.py is therefore not part of the wasm loop.
-echo "== test_garage_ir.py (nk_garage.prn: parena's LLVM IR, interpreted)"
-python3 tests/netkit/test_garage_ir.py | tail -3
 # ---- SCARAB/LADYBUG suites (PARENA specs compiled INTO the module they test; stdlib/scarab/wasm.prn, scripts/scarab_wasm.sh) ----
 echo "== scarab/ladybug self-test"
 tests/scarab/run_self_test.sh | tail -1
@@ -35,10 +31,12 @@ echo "== x25519_spec.prn (nk_x25519.prn)"
 scripts/scarab_wasm.sh tests/netkit/x25519_spec.prn --modules stdlib/netkit/MODULES --file $V/x25519.vec | tail -3
 echo "== ed25519_spec.prn (nk_sha512.prn + nk_ed25519.prn)"
 scripts/scarab_wasm.sh tests/netkit/ed25519_spec.prn --modules stdlib/netkit/MODULES --file $V/sha512.vec --file $V/modl.vec --file $V/ed25519.vec | tail -3
+echo "== garage_spec.prn (nk_garage.prn)"
+scripts/scarab_wasm.sh tests/netkit/garage_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
 scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
 for t in tests/netkit/test_*.py; do
-  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py|*/test_browser_garage.py|*/test_garage_ir.py) continue;; esac
+  case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py|*/test_browser_garage.py) continue;; esac
   echo "== $(basename "$t")"
   case "$t" in */test_term.py) python3 "$t" "$W/nkterm.wasm" | tail -3;; *) python3 "$t" "$W/netkit.wasm" | tail -3;; esac
 done
