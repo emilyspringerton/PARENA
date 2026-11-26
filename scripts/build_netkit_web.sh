@@ -26,8 +26,8 @@ for f in duck.png sprites.png; do
   [ -f "$ART/$f" ] || { echo "FAIL: $ART/$f not found (check out WOTAN beside PARENA, or set BRAWLPIT_ART_DIR)" >&2; exit 1; }
   cp "$ART/$f" "$OUT/$f"
 done
-# the maker table (IEEE MAC prefixes -> maker), packed from the checked-in TSV -- no network needed (tools/netkit_oui_gen.py)
-python3 tools/netkit_oui_gen.py bin stdlib/netkit/data/oui_brands.tsv "$OUT/oui.bin" >/dev/null
+# the maker table (IEEE MAC prefixes -> maker), packed by PARENA from the checked-in TSV -- no network needed (nk_oui_gen.prn)
+scripts/build_netkit_oui.sh "$OUT/oui.bin" >/dev/null
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mapfile -t SRC < <(grep -v '^#' stdlib/netkit/host/MODULES | grep -v '^$')
 cat "${SRC[@]}" > "$W/nk_host_all.prn"

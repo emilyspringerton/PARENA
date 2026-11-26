@@ -1,0 +1,36 @@
+;; stdlib/netkit/tools/nk_oui_host.prn -- the build-time host for nk_oui_gen.prn: PARENA -> TypeScript -> JavaScript, run by node.
+;; It decides nothing: reads one file into the wasm's IN, calls nk_oui_curate or nk_oui_pack, writes OUT to a file, and turns a
+;; negative answer into a message naming the line. (scripts/build_netkit_oui.sh builds the wasm and this, then runs it.)
+;;   node nk-oui-host.js <nk_oui_gen.wasm> curate|pack <in> <out>
+
+(defn fs [] : Any (js/call (js/global "process") "getBuiltinModule" "node:fs"))
+(defn arg [(i : I32)] : Any (js/aget (js/get (js/global "process") "argv") i))
+(defn die! [(msg : String)] : Unit
+  (do (js/call (js/get (js/global "console") "error") "call" (js/global "console") msg)
+      (js/call (js/global "process") "exit" 1)))
+
+(defn why [(code : I32)] : String
+  (cond (= code -1) "malformed line"
+        (= code -2) "prefixes are not in ascending order"
+        (= code -3) "maker name longer than 23 bytes"
+        (= code -4) "more than 255 makers"
+        (= code -5) "oui.bin would not fit the scanner's 64 KB region"
+        (= code -6) "output buffer full"
+        :else "unknown error"))
+
+(defn run [] : Unit
+  (let [mode (str (arg 3))
+        bytes (js/call (fs) "readFileSync" (arg 4))
+        x (js/get (js/new "WebAssembly.Instance" (js/new "WebAssembly.Module" (js/call (fs) "readFileSync" (arg 2))) (js/obj)) "exports")
+        u8 (js/new "Uint8Array" (js/get (js/get x "memory") "buffer"))
+        n (js/get bytes "length")]
+    (if (> n (js/call x "nk_oui_gen_in_cap"))
+        (die! (str (arg 4) ": too big for the generator's input buffer"))
+        (do (js/call u8 "set" bytes (js/call x "nk_oui_gen_in_addr"))
+            (let [r (if (= mode "curate") (js/call x "nk_oui_curate" n) (js/call x "nk_oui_pack" n))]
+              (if (< r 0)
+                  (die! (str (arg 4) ":" (js/call x "nk_oui_gen_err_line") ": " (why r)))
+                  (let [a (js/call x "nk_oui_gen_out_addr")]
+                    (js/call (fs) "writeFileSync" (arg 5) (js/call u8 "slice" a (+ a r))))))))))
+
+(start (run))

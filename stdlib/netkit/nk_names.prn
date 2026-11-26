@@ -17,7 +17,7 @@
 ;; Memory (inside the map in nk_mem.prn):
 ;;   0x05B000 PKT    1536 B    one UDP packet: the query built here, or the reply the page wrote
 ;;   0x05C000 LABEL  512 x 32  the user's label per device (NUL-terminated); device flag 64 says it is set
-;;   0x070000 OUI    64 KB     the manufacturer table (oui.bin from tools/netkit_oui_gen.py; the page loads it at boot)
+;;   0x070000 OUI    64 KB     the manufacturer table (oui.bin from nk_oui_gen.prn; the page loads it at boot)
 ;; Device record bytes used here: +22 maker index (0 = unknown), +28 name rank (0 none .. 3 mDNS).
 ;; G words 192..223 belong to this file.
 

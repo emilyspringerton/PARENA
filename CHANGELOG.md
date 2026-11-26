@@ -1,5 +1,12 @@
 ## 2026-11-26
 
+- **feat(netkit): the maker-table generator is PARENA (founder: "ALL PARENA BASED MODS BASED DEVELOPMENT").** `tools/netkit_oui_gen.py` is
+  gone. `stdlib/netkit/nk_oui_gen.prn` (wasm, zero imports, no malloc) holds the brand rules and both jobs -- curate (Wireshark `manuf` ->
+  `oui_brands.tsv`) and pack (TSV -> `oui.bin`); `stdlib/netkit/tools/nk_oui_host.prn` (PARENA -> TS, run by node) only moves the file
+  bytes; `scripts/build_netkit_oui.sh` builds and runs them, and `build_netkit_web.sh` now calls it. Proven before the Python was deleted:
+  curate on the real 3 MB registry reproduced all 14,052 lines, pack reproduced `oui.bin` byte for byte, and the whole page bundle rebuilt
+  identical to SHANKPIT's vendored copy. New `test_oui_gen.py` (17: every rule kind, 28/36-bit blocks, every error with its line number).
+  Full `test_netkit.sh` passes with both Chromium legs.
 - **feat(netkit): the scanner names devices and their makers, and finds the Pi (EMILY SECTION 646, Drop One).** New `stdlib/netkit/nk_names.prn`
   (wasm, zero imports): a maker table (`tools/netkit_oui_gen.py` curates 14,052 IEEE MA-L prefixes for 84 home-network makers from Wireshark's
   `manuf` into `stdlib/netkit/data/oui_brands.tsv`, packed at build time into a 58 KB `oui.bin` the wasm binary-searches); private-MAC detection;

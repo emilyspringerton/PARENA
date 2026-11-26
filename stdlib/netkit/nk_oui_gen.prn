@@ -1,0 +1,686 @@
+;; stdlib/netkit/nk_oui_gen.prn -- builds the Netkit scanner's maker table (oui.bin). PARENA, wasm32, no imports, no malloc.
+;; Its own small module (not part of netkit.wasm): run at BUILD time by scripts/build_netkit_oui.sh, whose host
+;; (stdlib/netkit/tools/nk_oui_host.prn, PARENA -> TypeScript -> node) only reads a file into memory and writes the answer out.
+;;
+;; Founder, 2026-11-26: "ALL PARENA BASED MODS BASED DEVELOPMENT" -- so the decisions here (which IEEE blocks to keep, under which
+;; maker name, and the exact bytes of oui.bin) are PARENA, replacing the first Python version (tools/netkit_oui_gen.py, deleted; this
+;; module reproduces its output byte for byte, checked on the real registry before it was removed).
+;;
+;; Two jobs:
+;;   nk-oui-curate(len)  Wireshark's `manuf` text (generated from the public IEEE registries) at IN -> the curated TSV at OUT:
+;;                       "aa:bb:cc<TAB>Maker\n" for every 24-bit (MA-L) block whose registered name matches a brand rule below.
+;;                       Run by hand when the registry is refreshed; its output is checked in (stdlib/netkit/data/oui_brands.tsv).
+;;   nk-oui-pack(len)    that TSV at IN -> oui.bin at OUT (run by every page build, no network needed):
+;;                       0 "NKOU"  4 n entries  8 m makers  12 name-table offset (16 + 4n)
+;;                       16 n x u32 LE: prefix24 | maker << 24, ascending      then m x 24-byte NUL-padded names, sorted; maker 0 = "".
+;; Both return the output length, or a negative error (nk-oui-gen-err-line says which input line): -1 malformed line, -2 not in
+;; ascending prefix order, -3 maker name longer than 23 bytes, -4 more than 255 makers, -5 oui.bin would exceed 64 KB, -6 output full.
+;;
+;; Memory (16 MB fixed): 0x030000 G words | 0x040000 NAMES 256 x 32 B | 0x042000 MAP 256 x I32 | 0x100000 IN 8 MB |
+;;                       0x900000 OUT 4 MB | 0xD00000 ENT 16384 x 8 B (prefix, unsorted name index)
+
+(module netkit/oui_gen)
+
+(defn g-base [] : I32 196608)
+(defn names-base [] : I32 262144)
+(defn map-base [] : I32 270336)
+(defn in-base [] : I32 1048576)
+(defn in-cap [] : I32 8388608)
+(defn out-base [] : I32 9437184)
+(defn out-cap [] : I32 4194304)
+(defn ent-base [] : I32 13631488)
+(defn ent-max [] : I32 16384)
+
+(defn nk-oui-gen-in-addr [] : I32 (in-base))
+(defn nk-oui-gen-in-cap [] : I32 (in-cap))
+(defn nk-oui-gen-out-addr [] : I32 (out-base))
+
+(defn gi [(k : I32)] : I32 (load32 (+ (g-base) (shl k 2))))
+(defn gi! [(k : I32) (v : I32)] : Unit (store32! (+ (g-base) (shl k 2)) v))
+(defn g-out [] : I32 0)          ; bytes written to OUT
+(defn g-err-line [] : I32 1)
+(defn g-nnames [] : I32 2)
+(defn nk-oui-gen-err-line [] : I32 (gi (g-err-line)))
+
+(defn ib [(i : I32)] : I32 (load8 (+ (in-base) i)))
+(defn space? [(c : I32)] : Bool (or (= c 32) (or (and (>= c 9) (<= c 13)) false)))
+(defn cstr-len [(s : I32)] : I32 (loop [k 0] (if (= (load8 (+ s k)) 0) k (recur (+ k 1)))))
+
+;; ---- OUT -------------------------------------------------------------------------------------------------------------------------
+(defn out8! [(v : I32)] : Unit
+  (let [n (gi (g-out))]
+    (when (< n (out-cap)) (store8! (+ (out-base) n) v) (gi! (g-out) (+ n 1)))))
+(defn out-cstr! [(s : I32)] : Unit (dotimes [k (cstr-len s)] (out8! (load8 (+ s k)))))
+(defn out-in! [(a : I32) (b : I32)] : Unit (loop [i a] (when (< i b) (out8! (ib i)) (recur (+ i 1)))))
+(defn out-full? [] : Bool (>= (gi (g-out)) (out-cap)))
+
+;; ---- text helpers over IN -------------------------------------------------------------------------------------------------------------
+(defn line-end [(p : I32) (len : I32)] : I32 (loop [i p] (if (or (>= i len) (= (ib i) 10)) i (recur (+ i 1)))))
+(defn find-tab [(p : I32) (e : I32)] : I32 (loop [i p] (if (>= i e) -1 (if (= (ib i) 9) i (recur (+ i 1))))))
+(defn trim-start [(a : I32) (b : I32)] : I32 (loop [i a] (if (and (< i b) (space? (ib i))) (recur (+ i 1)) i)))
+(defn trim-end [(a : I32) (b : I32)] : I32 (loop [i b] (if (and (> i a) (space? (ib (- i 1)))) (recur (- i 1)) i)))
+(defn has-byte? [(a : I32) (b : I32) (c : I32)] : Bool (loop [i a] (if (>= i b) false (if (= (ib i) c) true (recur (+ i 1))))))
+(defn lower-hex [(c : I32)] : I32 (if (and (>= c 65) (<= c 70)) (+ c 32) c))
+(defn hexv [(c : I32)] : I32
+  (cond (and (>= c 48) (<= c 57)) (- c 48)
+        (and (>= c 97) (<= c 102)) (- c 87)
+        (and (>= c 65) (<= c 70)) (- c 55)
+        :else -1))
+;; "aa:bb:cc" at p -> 24-bit value, or -1
+(defn parse-prefix [(p : I32)] : I32
+  (loop [k 0 v 0]
+    (if (= k 3) v
+        (let [h (hexv (ib (+ p (* k 3))))
+              l (hexv (ib (+ p (+ (* k 3) 1))))
+              sep (if (< k 2) (= (ib (+ p (+ (* k 3) 2))) 58) true)]
+          (if (or (< h 0) (or (< l 0) (not sep))) -1
+              (recur (+ k 1) (bit-or (shl v 8) (bit-or (shl h 4) l))))))))
+
+;; does IN[a,b) match the pattern s (mode 0 starts with, 1 contains, 2 exactly)?
+(defn match-at? [(a : I32) (b : I32) (s : I32) (sn : I32)] : Bool
+  (and (<= (+ a sn) b)
+       (loop [k 0] (if (= k sn) true (if (= (ib (+ a k)) (load8 (+ s k))) (recur (+ k 1)) false)))))
+(defn rule-matches? [(k : I32) (a : I32) (b : I32)] : Bool
+  (let [s (rule-text-addr k)
+        sn (cstr-len s)
+        mode (rule-mode k)]
+    (cond (= mode 0) (match-at? a b s sn)
+          (= mode 2) (and (= (- b a) sn) (match-at? a b s sn))
+          :else (loop [p a] (if (> (+ p sn) b) false (if (match-at? p b s sn) true (recur (+ p 1))))))))
+;; the first brand whose rule matches the registered name IN[a,b), or -1
+(defn brand-of [(a : I32) (b : I32)] : I32
+  (loop [k 0] (if (>= k (rule-count)) -1 (if (rule-matches? k a b) (rule-brand k) (recur (+ k 1))))))
+
+;; ---- curate: manuf -> TSV ------------------------------------------------------------------------------------------------------------------
+(defn nk-oui-curate [(len : I32)] : I32
+  (do
+    (gi! (g-out) 0) (gi! (g-err-line) 0)
+    (out-cstr! (str-addr "# Netkit manufacturer table -- generated by PARENA stdlib/netkit/nk_oui_gen.prn (nk-oui-curate) from Wireshark's manuf (IEEE MA-L blocks).\n"))
+    (out-cstr! (str-addr "# prefix<TAB>maker. Regenerate: scripts/build_netkit_oui.sh --curate <manuf> stdlib/netkit/data/oui_brands.tsv\n"))
+    (loop [p 0 line 1 last -1]
+      (if (>= p (min-i len (in-cap)))
+          (if (out-full?) -6 (gi (g-out)))
+          (let [e (line-end p len)
+                t1 (find-tab p e)
+                a0 (trim-start p (if (< t1 0) e t1))
+                b0 (trim-end a0 (if (< t1 0) e t1))
+                skip (or (= (ib p) 35) (or (= (trim-start p e) e) (or (< t1 0) (or (!= (- b0 a0) 8) (has-byte? a0 b0 47)))))]
+            (if skip
+                (recur (+ e 1) (+ line 1) last)
+                (let [t2 (find-tab (+ t1 1) e)
+                      fa (if (< t2 0) (+ t1 1) (+ t2 1))
+                      fe (if (< t2 0) e (let [t3 (find-tab (+ t2 1) e)] (if (< t3 0) e t3)))
+                      a (trim-start fa fe)
+                      b (trim-end a fe)
+                      v (parse-prefix a0)
+                      br (brand-of a b)]
+                  (cond
+                    (< v 0) (do (gi! (g-err-line) line) -1)
+                    (< br 0) (recur (+ e 1) (+ line 1) last)
+                    (<= v last) (do (gi! (g-err-line) line) -2)
+                    :else (do (dotimes [k 8] (out8! (lower-hex (ib (+ a0 k)))))
+                              (out8! 9)
+                              (out-cstr! (brand-name-addr br))
+                              (out8! 10)
+                              (recur (+ e 1) (+ line 1) v))))))))))
+
+;; ---- pack: TSV -> oui.bin ---------------------------------------------------------------------------------------------------------------------
+(defn name-addr [(i : I32)] : I32 (+ (names-base) (shl i 5)))
+;; index of the maker name IN[a,b) in NAMES, adding it when new; -3 too long, -4 too many
+(defn name-index [(a : I32) (b : I32)] : I32
+  (let [n (gi (g-nnames))
+        len (- b a)]
+    (if (> len 23) -3
+        (let [f (loop [i 0]
+                  (if (>= i n) -1
+                      (let [s (name-addr i)]
+                        (if (and (= (cstr-len s) len) (loop [k 0] (if (= k len) true (if (= (load8 (+ s k)) (ib (+ a k))) (recur (+ k 1)) false))))
+                            i (recur (+ i 1))))))]
+          (cond (>= f 0) f
+                (>= n 255) -4
+                :else (let [s (name-addr n)]
+                        (do (dotimes [k 32] (store8! (+ s k) (if (< k len) (ib (+ a k)) 0)))
+                            (gi! (g-nnames) (+ n 1))
+                            n)))))))
+
+;; byte order of two NUL-terminated names (shorter first on a tie), as a sort key
+(defn name-less? [(x : I32) (y : I32)] : Bool
+  (loop [k 0]
+    (let [c (load8 (+ x k)) d (load8 (+ y k))]
+      (cond (!= c d) (< c d)
+            (= c 0) false
+            :else (recur (+ k 1))))))
+
+(defn out32! [(v : I32)] : Unit (do (out8! (bit-and v 255)) (out8! (bit-and (ushr v 8) 255)) (out8! (bit-and (ushr v 16) 255)) (out8! (ushr v 24))))
+
+(defn nk-oui-pack [(len : I32)] : I32
+  (do
+    (gi! (g-out) 0) (gi! (g-err-line) 0) (gi! (g-nnames) 0)
+    (let [n (loop [p 0 line 1 cnt 0 last -1]
+              (if (>= p (min-i len (in-cap))) cnt
+                  (let [e (line-end p len)]
+                    (if (or (= (ib p) 35) (= (trim-start p e) e))
+                        (recur (+ e 1) (+ line 1) cnt last)
+                        (let [t (find-tab p e)
+                              v (if (= t (+ p 8)) (parse-prefix p) -1)
+                              ni (if (< v 0) -1 (name-index (+ t 1) e))]
+                          (cond (< v 0) (do (gi! (g-err-line) line) -1)
+                                (< ni 0) (do (gi! (g-err-line) line) ni)
+                                (<= v last) (do (gi! (g-err-line) line) -2)
+                                (>= cnt (ent-max)) (do (gi! (g-err-line) line) -5)
+                                :else (do (store32! (+ (ent-base) (shl cnt 3)) v)
+                                          (store32! (+ (ent-base) (+ (shl cnt 3) 4)) ni)
+                                          (recur (+ e 1) (+ line 1) (+ cnt 1) v))))))))
+          m (gi (g-nnames))]
+      (if (< n 0) n
+          (if (> (+ 16 (+ (shl n 2) (* (+ m 1) 24))) 65536) -5
+              (do
+                ;; sort the names (insertion sort over an index list in MAP), then MAP[old] = new maker number (1-based)
+                (let [ord (+ (map-base) 1024)]
+                  (do (dotimes [i m] (store32! (+ ord (shl i 2)) i))
+                      (loop [i 1]
+                        (when (< i m)
+                          (let [x (load32 (+ ord (shl i 2)))]
+                            (do (loop [j (- i 1)]
+                                  (if (and (>= j 0) (name-less? (name-addr x) (name-addr (load32 (+ ord (shl j 2))))))
+                                      (do (store32! (+ ord (shl (+ j 1) 2)) (load32 (+ ord (shl j 2)))) (recur (- j 1)))
+                                      (store32! (+ ord (shl (+ j 1) 2)) x)))
+                                (recur (+ i 1))))))
+                      (dotimes [r m] (store32! (+ (map-base) (shl (load32 (+ ord (shl r 2))) 2)) (+ r 1)))
+                      (out8! 78) (out8! 75) (out8! 79) (out8! 85)               ; "NKOU"
+                      (out32! n) (out32! (+ m 1)) (out32! (+ 16 (shl n 2)))
+                      (dotimes [i n]
+                        (out32! (bit-or (load32 (+ (ent-base) (shl i 3)))
+                                        (shl (load32 (+ (map-base) (shl (load32 (+ (ent-base) (+ (shl i 3) 4))) 2))) 24))))
+                      (dotimes [k 24] (out8! 0))                               ; maker 0: ""
+                      (dotimes [r m]
+                        (let [s (name-addr (load32 (+ ord (shl r 2))))]
+                          (dotimes [k 24] (out8! (load8 (+ s k))))))
+                      (gi (g-out))))))))))
+
+(defn min-i [(a : I32) (b : I32)] : I32 (if (< a b) a b))
+
+;; ---- the brand rules (transcribed from the first, Python version; edit here) ----------------------------------------------------------------
+;; brands, in match order (first match wins; Meraki before Cisco, which would swallow it)
+(defn brand-count [] : I32 86)
+(defn brand-name-addr [(b : I32)] : I32
+  (case b
+    0 (str-addr "Meraki")
+    1 (str-addr "Raspberry Pi")
+    2 (str-addr "Apple")
+    3 (str-addr "Samsung")
+    4 (str-addr "Google")
+    5 (str-addr "Amazon")
+    6 (str-addr "Microsoft")
+    7 (str-addr "Intel")
+    8 (str-addr "Espressif (smart home)")
+    9 (str-addr "Tuya (smart home)")
+    10 (str-addr "Sonos")
+    11 (str-addr "Roku")
+    12 (str-addr "LG")
+    13 (str-addr "Sony")
+    14 (str-addr "Nintendo")
+    15 (str-addr "Valve")
+    16 (str-addr "TP-Link")
+    17 (str-addr "Netgear")
+    18 (str-addr "ASUS")
+    19 (str-addr "Ubiquiti")
+    20 (str-addr "eero")
+    21 (str-addr "Linksys")
+    22 (str-addr "D-Link")
+    23 (str-addr "Cisco")
+    24 (str-addr "Arris / CommScope")
+    25 (str-addr "Technicolor / Vantiva")
+    26 (str-addr "Sagemcom")
+    27 (str-addr "Huawei")
+    28 (str-addr "Honor")
+    29 (str-addr "Xiaomi")
+    30 (str-addr "OPPO / Realme / OnePlus")
+    31 (str-addr "vivo")
+    32 (str-addr "Motorola")
+    33 (str-addr "Lenovo")
+    34 (str-addr "Dell")
+    35 (str-addr "HP")
+    36 (str-addr "Acer")
+    37 (str-addr "Nvidia")
+    38 (str-addr "Synology")
+    39 (str-addr "QNAP")
+    40 (str-addr "Brother (printer)")
+    41 (str-addr "Canon")
+    42 (str-addr "Epson")
+    43 (str-addr "Philips Hue / Signify")
+    44 (str-addr "Ring")
+    45 (str-addr "Wyze")
+    46 (str-addr "Hikvision (camera)")
+    47 (str-addr "Dahua (camera)")
+    48 (str-addr "Reolink (camera)")
+    49 (str-addr "Vizio")
+    50 (str-addr "TCL")
+    51 (str-addr "Hisense")
+    52 (str-addr "Tesla")
+    53 (str-addr "Garmin")
+    54 (str-addr "Fitbit")
+    55 (str-addr "Bose")
+    56 (str-addr "Ecobee")
+    57 (str-addr "Arduino")
+    58 (str-addr "Texas Instruments")
+    59 (str-addr "Silicon Labs")
+    60 (str-addr "Nordic Semiconductor")
+    61 (str-addr "Realtek")
+    62 (str-addr "MediaTek")
+    63 (str-addr "Qualcomm")
+    64 (str-addr "Broadcom")
+    65 (str-addr "Murata (Wi-Fi module)")
+    66 (str-addr "AzureWave (Wi-Fi chip)")
+    67 (str-addr "Liteon (Wi-Fi module)")
+    68 (str-addr "Foxconn (Hon Hai)")
+    69 (str-addr "Pegatron")
+    70 (str-addr "Compal")
+    71 (str-addr "Quanta")
+    72 (str-addr "Wistron")
+    73 (str-addr "Zyxel")
+    74 (str-addr "ZTE")
+    75 (str-addr "Nokia")
+    76 (str-addr "Juniper")
+    77 (str-addr "Aruba / HPE")
+    78 (str-addr "Ruckus")
+    79 (str-addr "MikroTik")
+    80 (str-addr "GL.iNet")
+    81 (str-addr "Fortinet")
+    82 (str-addr "VMware (VM)")
+    83 (str-addr "Parallels (VM)")
+    84 (str-addr "QEMU / KVM (VM)")
+    85 (str-addr "Docker (container)")
+    (str-addr "")))
+;; patterns: brand, mode (0 = the vendor name starts with it, 1 = contains it, 2 = is exactly it), text
+(defn rule-count [] : I32 127)
+(defn rule-brand [(k : I32)] : I32
+  (case k
+    0 0
+    1 1
+    2 2
+    3 3
+    4 3
+    5 3
+    6 4
+    7 4
+    8 4
+    9 5
+    10 5
+    11 6
+    12 7
+    13 7
+    14 8
+    15 9
+    16 10
+    17 11
+    18 12
+    19 12
+    20 13
+    21 13
+    22 13
+    23 13
+    24 13
+    25 14
+    26 15
+    27 16
+    28 16
+    29 16
+    30 17
+    31 17
+    32 18
+    33 18
+    34 19
+    35 20
+    36 21
+    37 21
+    38 22
+    39 22
+    40 23
+    41 24
+    42 24
+    43 24
+    44 25
+    45 25
+    46 26
+    47 27
+    48 27
+    49 28
+    50 29
+    51 29
+    52 30
+    53 30
+    54 30
+    55 31
+    56 32
+    57 33
+    58 33
+    59 34
+    60 34
+    61 35
+    62 35
+    63 35
+    64 36
+    65 37
+    66 37
+    67 38
+    68 39
+    69 40
+    70 41
+    71 42
+    72 43
+    73 43
+    74 44
+    75 45
+    76 46
+    77 47
+    78 48
+    79 49
+    80 49
+    81 50
+    82 50
+    83 50
+    84 51
+    85 52
+    86 53
+    87 54
+    88 55
+    89 56
+    90 57
+    91 58
+    92 59
+    93 60
+    94 61
+    95 62
+    96 62
+    97 63
+    98 64
+    99 65
+    100 66
+    101 67
+    102 68
+    103 68
+    104 69
+    105 69
+    106 70
+    107 71
+    108 72
+    109 73
+    110 73
+    111 74
+    112 74
+    113 75
+    114 76
+    115 77
+    116 77
+    117 78
+    118 79
+    119 79
+    120 80
+    121 81
+    122 82
+    123 83
+    124 84
+    125 84
+    126 85
+    -1))
+(defn rule-mode [(k : I32)] : I32
+  (case k
+    0 0
+    1 0
+    2 0
+    3 0
+    4 0
+    5 0
+    6 0
+    7 0
+    8 0
+    9 0
+    10 0
+    11 0
+    12 0
+    13 0
+    14 0
+    15 0
+    16 0
+    17 0
+    18 0
+    19 0
+    20 0
+    21 0
+    22 0
+    23 0
+    24 0
+    25 0
+    26 0
+    27 0
+    28 0
+    29 0
+    30 0
+    31 0
+    32 0
+    33 0
+    34 0
+    35 0
+    36 0
+    37 0
+    38 0
+    39 0
+    40 0
+    41 0
+    42 0
+    43 0
+    44 0
+    45 0
+    46 0
+    47 0
+    48 0
+    49 0
+    50 0
+    51 0
+    52 1
+    53 0
+    54 0
+    55 0
+    56 0
+    57 0
+    58 0
+    59 0
+    60 0
+    61 2
+    62 0
+    63 0
+    64 0
+    65 0
+    66 0
+    67 0
+    68 0
+    69 0
+    70 0
+    71 0
+    72 0
+    73 0
+    74 0
+    75 0
+    76 1
+    77 1
+    78 0
+    79 0
+    80 0
+    81 0
+    82 0
+    83 0
+    84 1
+    85 0
+    86 0
+    87 0
+    88 0
+    89 0
+    90 0
+    91 0
+    92 0
+    93 0
+    94 0
+    95 0
+    96 0
+    97 0
+    98 0
+    99 0
+    100 0
+    101 0
+    102 0
+    103 0
+    104 0
+    105 0
+    106 0
+    107 0
+    108 0
+    109 0
+    110 0
+    111 0
+    112 0
+    113 0
+    114 0
+    115 0
+    116 0
+    117 0
+    118 0
+    119 0
+    120 1
+    121 0
+    122 0
+    123 0
+    124 0
+    125 0
+    126 0
+    -1))
+(defn rule-text-addr [(k : I32)] : I32
+  (case k
+    0 (str-addr "Cisco Meraki")
+    1 (str-addr "Raspberry Pi")
+    2 (str-addr "Apple, Inc")
+    3 (str-addr "Samsung Electro")
+    4 (str-addr "SAMSUNG ELECTRO")
+    5 (str-addr "Samsung Electronics")
+    6 (str-addr "Google, Inc")
+    7 (str-addr "Google LLC")
+    8 (str-addr "Nest Labs")
+    9 (str-addr "Amazon Technologies")
+    10 (str-addr "Amazon.com")
+    11 (str-addr "Microsoft")
+    12 (str-addr "Intel Corporate")
+    13 (str-addr "Intel Corporation")
+    14 (str-addr "Espressif")
+    15 (str-addr "Tuya")
+    16 (str-addr "Sonos")
+    17 (str-addr "Roku")
+    18 (str-addr "LG Electronics")
+    19 (str-addr "LG Innotek")
+    20 (str-addr "Sony Corporation")
+    21 (str-addr "Sony Mobile")
+    22 (str-addr "Sony Interactive")
+    23 (str-addr "Sony Visual")
+    24 (str-addr "Sony Home")
+    25 (str-addr "Nintendo")
+    26 (str-addr "Valve Corporation")
+    27 (str-addr "Tp-Link")
+    28 (str-addr "TP-LINK")
+    29 (str-addr "TP-Link")
+    30 (str-addr "Netgear")
+    31 (str-addr "NETGEAR")
+    32 (str-addr "ASUSTek")
+    33 (str-addr "Asus")
+    34 (str-addr "Ubiquiti")
+    35 (str-addr "eero")
+    36 (str-addr "Linksys")
+    37 (str-addr "Belkin")
+    38 (str-addr "D-Link")
+    39 (str-addr "D-LINK")
+    40 (str-addr "Cisco")
+    41 (str-addr "Commscope")
+    42 (str-addr "ARRIS")
+    43 (str-addr "Arris")
+    44 (str-addr "Technicolor")
+    45 (str-addr "Vantiva")
+    46 (str-addr "Sagemcom")
+    47 (str-addr "Huawei")
+    48 (str-addr "HUAWEI")
+    49 (str-addr "Honor Device")
+    50 (str-addr "Xiaomi")
+    51 (str-addr "Beijing Xiaomi")
+    52 (str-addr "Oppo Mobile")
+    53 (str-addr "Realme")
+    54 (str-addr "OnePlus")
+    55 (str-addr "vivo Mobile")
+    56 (str-addr "Motorola Mobility")
+    57 (str-addr "Lenovo")
+    58 (str-addr "LCFC")
+    59 (str-addr "Dell Inc")
+    60 (str-addr "Dell Technologies")
+    61 (str-addr "Hewlett Packard")
+    62 (str-addr "HP Inc")
+    63 (str-addr "Hewlett-Packard")
+    64 (str-addr "Acer ")
+    65 (str-addr "NVIDIA")
+    66 (str-addr "Nvidia")
+    67 (str-addr "Synology")
+    68 (str-addr "QNAP")
+    69 (str-addr "Brother Industries")
+    70 (str-addr "Canon Inc")
+    71 (str-addr "Seiko Epson")
+    72 (str-addr "Philips Lighting")
+    73 (str-addr "Signify")
+    74 (str-addr "Ring LLC")
+    75 (str-addr "Wyze")
+    76 (str-addr "Hikvision")
+    77 (str-addr "Dahua")
+    78 (str-addr "Reolink")
+    79 (str-addr "Vizio")
+    80 (str-addr "VIZIO")
+    81 (str-addr "TCL ")
+    82 (str-addr "TCT mobile")
+    83 (str-addr "Shenzhen TCL")
+    84 (str-addr "Hisense")
+    85 (str-addr "Tesla")
+    86 (str-addr "Garmin")
+    87 (str-addr "Fitbit")
+    88 (str-addr "Bose Corporation")
+    89 (str-addr "ecobee")
+    90 (str-addr "Arduino")
+    91 (str-addr "Texas Instruments")
+    92 (str-addr "Silicon Laboratories")
+    93 (str-addr "Nordic Semiconductor")
+    94 (str-addr "Realtek")
+    95 (str-addr "MediaTek")
+    96 (str-addr "MEDIATEK")
+    97 (str-addr "Qualcomm")
+    98 (str-addr "Broadcom")
+    99 (str-addr "Murata")
+    100 (str-addr "AzureWave")
+    101 (str-addr "Liteon")
+    102 (str-addr "Hon Hai")
+    103 (str-addr "Cloud Network Technology")
+    104 (str-addr "Pegatron")
+    105 (str-addr "PEGATRON")
+    106 (str-addr "Compal")
+    107 (str-addr "Quanta")
+    108 (str-addr "Wistron")
+    109 (str-addr "Zyxel")
+    110 (str-addr "ZyXEL")
+    111 (str-addr "zte")
+    112 (str-addr "ZTE")
+    113 (str-addr "Nokia")
+    114 (str-addr "Juniper")
+    115 (str-addr "Aruba")
+    116 (str-addr "Hewlett Packard Enterprise")
+    117 (str-addr "Ruckus")
+    118 (str-addr "Routerboard")
+    119 (str-addr "MikroTik")
+    120 (str-addr "GL Technologies")
+    121 (str-addr "Fortinet")
+    122 (str-addr "VMware")
+    123 (str-addr "Parallels")
+    124 (str-addr "QEMU")
+    125 (str-addr "Red Hat")
+    126 (str-addr "Docker")
+    (str-addr "")))

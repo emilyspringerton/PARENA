@@ -11,8 +11,7 @@ OUIBIN = sys.argv[2] if len(sys.argv) > 2 else None
 if OUIBIN is None:   # pack the checked-in table the way the page build does
     import subprocess, tempfile
     OUIBIN = os.path.join(tempfile.mkdtemp(), "oui.bin")
-    subprocess.run([sys.executable, os.path.join(HERE, "../../tools/netkit_oui_gen.py"), "bin",
-                    os.path.join(HERE, "../../stdlib/netkit/data/oui_brands.tsv"), OUIBIN], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([os.path.join(HERE, "../../scripts/build_netkit_oui.sh"), OUIBIN], check=True, stdout=subprocess.DEVNULL)   # PARENA (nk_oui_gen.prn)
 PKT, LABEL, OUI = 0x5B000, 0x5C000, 0x70000
 def u(x): return x & 0xFFFFFFFF
 def s32(x): return x - (1 << 32) if x >= (1 << 31) else x
