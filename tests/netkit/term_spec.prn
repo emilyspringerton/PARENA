@@ -1,0 +1,288 @@
+;; tests/netkit/term_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/term/nk_term.prn, the SSH terminal (built with
+;; stdlib/netkit/term/MODULES, the same sources as nkterm.wasm). Replaces tests/netkit/test_term.py.
+;; VT behaviour is checked against pyte (an independent VT100/xterm emulator) through its screens frozen in
+;; tests/netkit/vectors/term.vec -- 20 named cases, 2 x 150 random streams, a bash transcript -- plus 300 garbage streams that must
+;; never trap or leave the cursor out of bounds. Everything pyte does not model is checked exactly here: wrapping, SU/SD/NEL,
+;; IL/DL/region edge cases, colours, line drawing, the font itself, the alternate screen, replies, modes, keys, rendering, selection.
+;; Run: scripts/scarab_wasm.sh tests/netkit/term_spec.prn --modules stdlib/netkit/term/MODULES --file tests/netkit/vectors/term.vec
+
+(defn tx-in [] : I32 131072)
+(defn tx-out [] : I32 196608)
+(defn tx-st-base [] : I32 200704)
+(defn tx-font [] : I32 204800)
+(defn tx-grid [] : I32 1048576)
+(defn tx-fb [] : I32 3145728)
+(defn tx-copy [] : I32 4915200)
+(defn tx-st [(i : I32)] : I32 (load32 (+ (tx-st-base) (* 4 i))))
+
+;; feed n bytes from src (in chunks the IN area holds); the replies are gathered at REPLY, their count returned
+(defn tx-reply [] : I32 (+ (sc-scratch) 131072))
+(defn tx-feed-at [(src : I32) (n : I32)] : I32
+  (loop [off 0 got 0]
+    (if (>= off n) got
+        (let [k (if (< (- n off) 60000) (- n off) 60000)]
+          (do (dotimes [i k] (store8! (+ (tx-in) i) (load8 (+ src (+ off i)))))
+              (let [r (term-feed k)]
+                (do (dotimes [i r] (store8! (+ (tx-reply) (+ got i)) (load8 (+ (tx-out) i))))
+                    (recur (+ off k) (+ got r)))))))))
+(defn tx-feed! [(s : String)] : I32 (let [a (str-addr s)] (tx-feed-at a (sc-strlen a))))
+(defn tx-fresh! [] : I32 (tx-feed! "\x1bc"))       ; RIS: the cleanest known state, and a test of RIS itself
+(defn tx-key [(code : I32) (mods : I32)] : I32 (term-key code mods))
+
+;; ---- the screen as text, the way the old test (and pyte) see it: 34 rows, trailing blanks dropped, joined by \n, UTF-8 -------
+(defn tx-cell-addr [(r : I32) (c : I32)] : I32 (+ (tx-grid) (* 12 (+ (* (mod (+ (tx-st 2) r) 1500) 100) c))))
+(defn tx-glyph [(r : I32) (c : I32)] : I32 (bit-and (load32 (tx-cell-addr r c)) 65535))
+(defn tx-attr [(r : I32) (c : I32)] : I32 (bit-and (shr (load32 (tx-cell-addr r c)) 16) 255))
+(defn tx-fg [(r : I32) (c : I32)] : I32 (load32 (+ (tx-cell-addr r c) 4)))
+(defn tx-bg [(r : I32) (c : I32)] : I32 (load32 (+ (tx-cell-addr r c) 8)))
+;; glyph -> UTF-8 at a; returns bytes written. 0 space, <95 ASCII from 32, <223 U+2500 + (g - 95), else U+2580 + (g - 223)
+(defn tx-put-glyph [(a : I32) (g : I32)] : I32
+  (cond (= g 0) (do (store8! a 32) 1)
+        (< g 95) (do (store8! a (+ g 32)) 1)
+        :else (let [cp (if (< g 223) (+ 9472 (- g 95)) (+ 9600 (- g 223)))]
+                (do (store8! a (bit-or 224 (shr cp 12))) (store8! (+ a 1) (bit-or 128 (bit-and (shr cp 6) 63)))
+                    (store8! (+ a 2) (bit-or 128 (bit-and cp 63))) 3))))
+;; row r as text at a, trailing blanks dropped; returns its length
+(defn tx-row-at [(a : I32) (r : I32)] : I32
+  (let [last (loop [c 99] (cond (< c 0) -1 (= (tx-glyph r c) 0) (recur (- c 1)) :else c))]
+    (loop [c 0 n 0] (if (> c last) n (recur (+ c 1) (+ n (tx-put-glyph (+ a n) (tx-glyph r c))))))))
+(defn tx-row-buf [] : I32 (+ (sc-scratch) 196608))
+(defn tx-row [(r : I32)] : I32 (let [n (tx-row-at (tx-row-buf) r)] (do (store8! (+ (tx-row-buf) n) 0) (tx-row-buf))))
+;; the first `rows` rows joined by \n at SCREEN; returns the length
+(defn tx-screen-buf [] : I32 (+ (sc-scratch) 262144))
+(defn tx-screen [(rows : I32)] : I32
+  (loop [r 0 n 0]
+    (if (>= r rows) n
+        (let [m (tx-row-at (+ (tx-screen-buf) n) r)]
+          (if (< r (- rows 1))
+              (do (store8! (+ (tx-screen-buf) (+ n m)) 10) (recur (+ r 1) (+ n (+ m 1))))
+              (recur (+ r 1) (+ n m)))))))
+(defn tx-row-is [(r : I32) (s : String)] : Unit (lb-str-equal (tx-row r) s))
+;; n copies of byte b, NUL-terminated (in the scratch area, clear of the other buffers)
+(defn tx-run [(b : I32) (n : I32)] : I32 (let [a (+ (sc-scratch) 32768)] (do (sc-fill! a b n) (store8! (+ a n) 0) a)))
+
+;; ---- term.vec ---------------------------------------------------------------------------------------------------------------
+(defn tx-rec-next [(p : I32)] : I32
+  (let [nl (load32 (+ p 4)) sp (+ (+ p 8) nl) sl (load32 sp) scp (+ (+ sp 4) sl)] (+ (+ scp 4) (load32 scp))))
+(defn tx-rec-at [(k : I32)] : I32 (loop [p (sc-file-addr 0) i 0] (if (= i k) p (recur (tx-rec-next p) (+ i 1)))))
+(defn tx-rec-count [] : I32
+  (loop [p (sc-file-addr 0) i 0] (if (>= p (+ (sc-file-addr 0) (sc-file-len 0))) i (recur (tx-rec-next p) (+ i 1)))))
+;; run record p: fresh, feed its stream, 1 when the screen (its first 34 rows, or 3 for kind 4) equals the frozen one
+(defn tx-rec-ok [(p : I32)] : I32
+  (let [nl (load32 (+ p 4)) sp (+ (+ p 8) nl) sl (load32 sp) scp (+ (+ sp 4) sl) want (load32 scp)
+        rows (if (= (load32 p) 4) 3 34)]
+    (do (tx-fresh!) (tx-feed-at (+ sp 4) sl)
+        (let [n (tx-screen rows)] (if (and (= n want) (= (lb-same? (tx-screen-buf) (+ scp 4) n) 1)) 1 0)))))
+;; garbage: 1 when the cursor and margins stay in bounds
+(defn tx-garbage-ok [(p : I32)] : I32
+  (let [nl (load32 (+ p 4)) sp (+ (+ p 8) nl)]
+    (do (tx-fresh!) (tx-feed-at (+ sp 4) (load32 sp))
+        (if (and (and (and (>= (tx-st 0) 0) (< (tx-st 0) 100)) (and (>= (tx-st 1) 0) (< (tx-st 1) 34)))
+                 (and (<= 0 (tx-st 27)) (and (<= (tx-st 27) (tx-st 28)) (< (tx-st 28) 34))))
+            1 0))))
+;; how many records of `kind` fail; also the count of them (what = 0)
+(defn tx-kind-walk [(kind : I32) (what : I32)] : I32
+  (loop [p (sc-file-addr 0) seen 0 bad 0]
+    (if (>= p (+ (sc-file-addr 0) (sc-file-len 0))) (if (= what 0) seen bad)
+        (if (= (load32 p) kind)
+            (recur (tx-rec-next p) (+ seen 1) (+ bad (- 1 (if (= kind 3) (tx-garbage-ok p) (tx-rec-ok p)))))
+            (recur (tx-rec-next p) seen bad)))))
+;; one It per named case (kind 0) and for the transcript (kind 4), named from the file
+(defn tx-named-cases! [] : I32
+  (loop [p (sc-file-addr 0) n 0]
+    (if (>= p (+ (sc-file-addr 0) (sc-file-len 0))) n
+        (let [kind (load32 p)]
+          (if (or (= kind 0) (= kind 4))
+              (let [name (+ (sc-scratch) 8192) nl (load32 (+ p 4))]
+                (do (sc-put! name "vs pyte: ") (dotimes [i nl] (store8! (+ name (+ 9 i)) (load8 (+ (+ p 8) i))))
+                    (sc-it-addr! name (+ 9 nl))
+                    (lb-equal (tx-rec-ok p) 1)
+                    (recur (tx-rec-next p) (+ n 1))))
+              (recur (tx-rec-next p) n))))))
+
+(defn tx-text! [] : Unit
+  (do (sc-describe! "text and wrapping")
+        (sc-it! "text, CR LF and cursor position")
+        (tx-fresh!) (tx-feed! "hello\r\nworld") (tx-row-is 0 "hello") (tx-row-is 1 "world") (lb-equal (tx-st 0) 5) (lb-equal (tx-st 1) 1)
+        (sc-it! "100 characters fill the row; the wrap is deferred (the cursor stays on row 0)")
+        (tx-fresh!) (tx-feed-at (sc-scratch) (sc-fill! (sc-scratch) 120 100))
+        (lb-str-equal-addr (tx-row 0) (tx-run 120 100)) (lb-equal (tx-st 1) 0) (lb-equal (tx-st 25) 1)
+        (sc-it! "the next character wraps to the following row") (tx-feed! "y") (tx-row-is 1 "y") (lb-equal (tx-st 1) 1)
+        (sc-it! "autowrap off (?7l): extra characters overwrite the last column instead of wrapping")
+        (tx-fresh!) (tx-feed! "\x1b[?7l") (tx-feed-at (sc-scratch) (sc-fill! (sc-scratch) 122 105))
+        (lb-str-equal-addr (tx-row 0) (tx-run 122 100)) (tx-row-is 1 "")
+        (tx-feed! "\x1b[?7h")
+      (sc-end!)))
+
+(defn tx-vt! [] : Unit
+  (do (sc-describe! "VT behaviour")
+        (sc-it! "term.vec holds 621 records (20 cases, 2 x 150 random, 300 garbage, the transcript)") (lb-equal (tx-rec-count) 621)
+        (tx-named-cases!)
+        (sc-it! "SU (ESC[2S) scrolls the region up two lines (pyte has no SU)")
+        (tx-fresh!) (tx-feed! "1\r\n2\r\n3\r\n4\r\n5\x1b[2S") (tx-row-is 0 "3") (tx-row-is 1 "4") (tx-row-is 2 "5") (tx-row-is 3 "")
+        (sc-it! "SD (ESC[1T) scrolls it back down one line")
+        (tx-feed! "\x1b[1T") (tx-row-is 0 "") (tx-row-is 1 "3") (tx-row-is 2 "4") (tx-row-is 3 "5") (tx-row-is 4 "")
+        (sc-it! "NEL (ESC E) = CR + LF; IND (ESC D) = LF keeping the column")
+        (tx-fresh!) (tx-feed! "ab\x1bEcd\x1bDef") (tx-row-is 0 "ab") (tx-row-is 1 "cd") (tx-row-is 2 "  ef")
+      (sc-end!)
+      (sc-describe! "IL / DL / scroll regions (expectations from the VT100/xterm definitions)")
+        (sc-it! "DL deleting more lines than exist leaves blank lines and the cursor at column 0")
+        (tx-fresh!) (tx-feed! "2\x1b[6M") (tx-row-is 0 "") (tx-row-is 1 "") (tx-row-is 2 "") (lb-equal (tx-st 0) 0) (lb-equal (tx-st 1) 0)
+        (sc-it! "DL 2 at row 2 pulls D up and blanks the end")
+        (tx-fresh!) (tx-feed! "A\r\nB\r\nC\r\nD\x1b[2;1H\x1b[2M") (tx-row-is 0 "A") (tx-row-is 1 "D") (tx-row-is 2 "") (tx-row-is 3 "")
+        (sc-it! "IL 2 at row 2 pushes B, C, D down")
+        (tx-fresh!) (tx-feed! "A\r\nB\r\nC\r\nD\x1b[2;1H\x1b[2L")
+        (tx-row-is 0 "A") (tx-row-is 1 "") (tx-row-is 2 "") (tx-row-is 3 "B") (tx-row-is 4 "C") (tx-row-is 5 "D")
+        (sc-it! "LF at the bottom margin scrolls only the region")
+        (tx-fresh!) (tx-feed! "\x1b[1;1Ha\r\nb\r\nc\r\nd\r\ne\r\nf\x1b[2;4r\x1b[4;1H\n\ng")
+        (tx-row-is 0 "a") (tx-row-is 1 "d") (tx-row-is 2 "") (tx-row-is 3 "g") (tx-row-is 4 "e") (tx-row-is 5 "f")
+        (sc-it! "RI at the top margin scrolls the region DOWN, leaving rows outside it alone")
+        (tx-fresh!) (tx-feed! "a\r\nb\r\nc\r\nd\r\ne\r\nf\x1b[2;4r\x1b[2;1H\x1bMX")
+        (tx-row-is 0 "a") (tx-row-is 1 "X") (tx-row-is 2 "b") (tx-row-is 3 "c") (tx-row-is 4 "e") (tx-row-is 5 "f")
+        (sc-it! "RI above the region (row 1) does not scroll it")
+        (tx-fresh!) (tx-feed! "a\r\nb\r\nc\r\nd\r\ne\r\nf\x1b[2;4r\x1b[1;1H\x1bMX")
+        (tx-row-is 0 "X") (tx-row-is 1 "b") (tx-row-is 2 "c") (tx-row-is 3 "d") (tx-row-is 4 "e") (tx-row-is 5 "f")
+        (sc-it! "DECSTBM homes the cursor") (tx-fresh!) (tx-feed! "x\x1b[3;5r") (lb-equal (tx-st 0) 0) (lb-equal (tx-st 1) 0)
+        (sc-it! "a valid DECSTBM sets the margins; an inverted one (5;3) is ignored")
+        (tx-fresh!) (tx-feed! "\x1b[5;3r\x1b[4;5r") (lb-equal (tx-st 27) 3) (lb-equal (tx-st 28) 4)
+        (sc-it! "DECRC restores the same saved cursor every time (xterm does not pop it)")
+        (tx-fresh!) (tx-feed! "AB\x1b7\x1b[10;10HCD\x1b8\x1b8EF") (tx-row-is 0 "ABEF") (tx-row-is 9 "         CD")
+        (sc-it! "IL inside the region inserts a blank line there") (tx-fresh!) (tx-feed! "\x1b[3;1Hx\x1b[1;3r\x1b[3;1H\x1b[L") (tx-row-is 2 "")
+        (sc-it! "IL with the cursor OUTSIDE the region does nothing")
+        (tx-fresh!) (tx-feed! "a\r\nb\r\nc\r\nd\x1b[1;2r\x1b[4;1H\x1b[L") (tx-row-is 0 "a") (tx-row-is 1 "b") (tx-row-is 2 "c") (tx-row-is 3 "d")
+      (sc-end!)
+      (sc-describe! "random and hostile streams")
+        (sc-it! "150 random VT streams, group A (no regions): screens equal pyte's") (lb-equal (tx-kind-walk 1 0) 150) (lb-equal (tx-kind-walk 1 1) 0)
+        (sc-it! "150 random VT streams, group B (scroll regions): screens equal pyte's") (lb-equal (tx-kind-walk 2 0) 150) (lb-equal (tx-kind-walk 2 1) 0)
+        (sc-it! "300 garbage / hostile streams (random bytes, truncated escapes, huge counts, region and alt-screen churn): no trap, cursor and margins in bounds")
+        (lb-equal (tx-kind-walk 3 0) 300) (lb-equal (tx-kind-walk 3 1) 0)
+      (sc-end!)))
+
+(defn tx-cells! [] : Unit
+  (do (sc-describe! "colours, line drawing, the font")
+        (tx-fresh!) (tx-feed! "\x1b[31;44mA\x1b[0mB\x1b[1mC\x1b[38;5;196mD\x1b[48;2;1;2;3mE")
+        (sc-it! "SGR 31;44 sets red foreground and blue background from the palette") (lb-equal (tx-fg 0 0) 4936677) (lb-equal (tx-bg 0 0) 16096083)
+        (sc-it! "SGR 0 resets to the default colours and attributes") (lb-equal (tx-fg 0 1) 15918054) (lb-equal (tx-bg 0 1) 1510157) (lb-equal (tx-attr 0 1) 0)
+        (sc-it! "SGR 1 sets the bold flag") (lb-equal (bit-and (tx-attr 0 2) 1) 1)
+        (sc-it! "256-colour foreground (index 196 = pure red)") (lb-equal (tx-fg 0 3) 255)
+        (sc-it! "24-bit background colour") (lb-equal (tx-bg 0 4) 197121)
+        (sc-it! "the DEC line-drawing charset (ESC ( 0 ... ESC ( B) draws a box")
+        (tx-fresh!) (tx-feed! "\x1b(0lqqk\r\nx  x\r\nmqqj\x1b(Bok") (tx-row-is 0 "┌──┐") (tx-row-is 1 "│  │") (tx-row-is 2 "└──┘ok")
+        (sc-it! "UTF-8 box/block characters render; a character the font lacks (é) becomes a placeholder, not garbage")
+        (tx-fresh!) (tx-feed! "┌─┐ █ ▒ é") (lb-have-prefix (tx-row 0) "┌─┐ █ ▒ ") (lb-equal (load8 (+ (tx-row 0) (- (sc-strlen (tx-row 0)) 1))) 63)
+        (sc-it! "the whole font is loaded: the full block (glyph 231, past the first 4 KB of the font table) is 16 solid rows")
+        (lb-hex-equal (+ (tx-font) (* 231 16)) 16 "ffffffffffffffffffffffffffffffff")
+      (sc-end!)))
+
+(defn tx-modes! [] : Unit
+  (do (sc-describe! "the alternate screen")
+        (tx-fresh!) (tx-feed! "main1\r\nmain2\x1b[2;3H") (tx-feed! "\x1b[?1049h\x1b[2JALT SCREEN\x1b[5;5Hfoo")
+        (sc-it! "?1049h switches to a blank alternate screen")
+        (tx-row-is 0 "ALT SCREEN") (tx-row-is 1 "") (tx-row-is 4 "    foo") (lb-equal (term-alt-active) 1)
+        (tx-feed! "\x1b[?1049l")
+        (sc-it! "?1049l restores the main screen and the cursor exactly")
+        (tx-row-is 0 "main1") (tx-row-is 1 "main2") (tx-row-is 4 "") (lb-equal (term-alt-active) 0) (lb-equal (tx-st 0) 2) (lb-equal (tx-st 1) 1)
+        (sc-it! "scrolling inside the alternate screen adds nothing to the scrollback")
+        (tx-fresh!)
+        (dotimes [i 50] (tx-feed! "L\r\n"))
+        (let [t0 (tx-st 2)]
+          (do (tx-feed! "\x1b[?1049h") (dotimes [i 50] (tx-feed! "A\r\n")) (tx-feed! "\x1b[?1049l") (lb-equal (tx-st 2) t0)))
+      (sc-end!)
+      (sc-describe! "replies the server asks for")
+        (tx-fresh!) (tx-feed! "\x1b[5;9H")
+        (sc-it! "cursor position report: ESC[6n answers ESC[5;9R") (lb-text-equal (tx-reply) (tx-feed! "\x1b[6n") "\x1b[5;9R")
+        (sc-it! "device status: ESC[5n answers ESC[0n (ok)") (lb-text-equal (tx-reply) (tx-feed! "\x1b[5n") "\x1b[0n")
+        (sc-it! "primary device attributes are answered") (lb-text-equal (tx-reply) (tx-feed! "\x1b[c") "\x1b[?1;2c")
+        (sc-it! "ordinary text produces no reply") (lb-equal (tx-feed! "abc") 0)
+      (sc-end!)
+      (sc-describe! "modes reported to the page")
+        (tx-fresh!)
+        (sc-it! "defaults: no bracketed paste, normal cursor keys, cursor shown")
+        (lb-equal (term-bracketed) 0) (lb-equal (term-app-cursor) 0) (lb-equal (term-cursor-shown) 1)
+        (tx-feed! "\x1b[?2004h\x1b[?1h\x1b[?25l")
+        (sc-it! "?2004h ?1h ?25l are tracked") (lb-equal (term-bracketed) 1) (lb-equal (term-app-cursor) 1) (lb-equal (term-cursor-shown) 0)
+        (tx-feed! "\x1b[?2004l\x1b[?1l\x1b[?25h")
+        (sc-it! "...and undone") (lb-equal (term-bracketed) 0) (lb-equal (term-app-cursor) 0) (lb-equal (term-cursor-shown) 1)
+      (sc-end!)))
+
+;; key codes the page sends (above Unicode), and modifier bits
+(defn tk-enter [] : I32 1114113) (defn tk-bs [] : I32 1114114) (defn tk-up [] : I32 1114115) (defn tk-down [] : I32 1114116)
+(defn tk-pgup [] : I32 1114117) (defn tk-pgdn [] : I32 1114118) (defn tk-tab [] : I32 1114119) (defn tk-esc [] : I32 1114120)
+(defn tk-left [] : I32 1114121) (defn tk-right [] : I32 1114122) (defn tk-home [] : I32 1114123) (defn tk-end [] : I32 1114124)
+(defn tk-del [] : I32 1114125) (defn tk-ins [] : I32 1114126) (defn tk-f1 [] : I32 1114127)
+(defn tx-sends [(code : I32) (mods : I32) (s : String)] : Unit (lb-text-equal (tx-out) (tx-key code mods) s))
+(defn tx-sends-hex [(code : I32) (mods : I32) (hex : String)] : Unit (lb-hex-equal (tx-out) (tx-key code mods) hex))
+
+(defn tx-keys! [] : Unit
+  (do (sc-describe! "keys: the exact xterm sequences")
+        (tx-fresh!)
+        (sc-it! "plain characters") (tx-sends 97 0 "a") (tx-sends 90 0 "Z") (tx-sends 32 0 " ")
+        (sc-it! "non-ASCII characters are sent as UTF-8") (tx-sends 233 0 "é") (tx-sends 8364 0 "€") (tx-sends 128512 0 "😀")
+        (sc-it! "Enter = CR, Backspace = DEL (0x7f), Tab, Esc") (tx-sends (tk-enter) 0 "\r") (tx-sends (tk-bs) 0 "\x7f") (tx-sends (tk-tab) 0 "\t") (tx-sends (tk-esc) 0 "\x1b")
+        (sc-it! "Shift+Tab = ESC [ Z") (tx-sends (tk-tab) 4 "\x1b[Z")
+        (sc-it! "arrow keys (normal mode)") (tx-sends (tk-up) 0 "\x1b[A") (tx-sends (tk-down) 0 "\x1b[B") (tx-sends (tk-right) 0 "\x1b[C") (tx-sends (tk-left) 0 "\x1b[D")
+        (sc-it! "Home, End, Delete, Insert, PgUp, PgDn")
+        (tx-sends (tk-home) 0 "\x1b[H") (tx-sends (tk-end) 0 "\x1b[F") (tx-sends (tk-del) 0 "\x1b[3~") (tx-sends (tk-ins) 0 "\x1b[2~")
+        (tx-sends (tk-pgup) 0 "\x1b[5~") (tx-sends (tk-pgdn) 0 "\x1b[6~")
+        (tx-feed! "\x1b[?1h")
+        (sc-it! "application cursor key mode (?1h): arrows and Home/End use ESC O")
+        (tx-sends (tk-up) 0 "\x1bOA") (tx-sends (tk-down) 0 "\x1bOB") (tx-sends (tk-right) 0 "\x1bOC") (tx-sends (tk-left) 0 "\x1bOD")
+        (tx-sends (tk-home) 0 "\x1bOH") (tx-sends (tk-end) 0 "\x1bOF")
+        (tx-feed! "\x1b[?1l")
+        (sc-it! "modified arrows: ESC [ 1 ; <mod> <final>")
+        (tx-sends (tk-up) 1 "\x1b[1;5A") (tx-sends (tk-right) 4 "\x1b[1;2C") (tx-sends (tk-left) 2 "\x1b[1;3D") (tx-sends (tk-up) 5 "\x1b[1;6A")
+        (sc-it! "modified tilde keys: ESC [ 3 ; 5 ~") (tx-sends (tk-del) 1 "\x1b[3;5~") (tx-sends (tk-pgup) 1 "\x1b[5;5~")
+        (sc-it! "F1..F12")
+        (tx-sends (tk-f1) 0 "\x1bOP") (tx-sends (+ (tk-f1) 1) 0 "\x1bOQ") (tx-sends (+ (tk-f1) 2) 0 "\x1bOR") (tx-sends (+ (tk-f1) 3) 0 "\x1bOS")
+        (tx-sends (+ (tk-f1) 4) 0 "\x1b[15~") (tx-sends (+ (tk-f1) 5) 0 "\x1b[17~") (tx-sends (+ (tk-f1) 6) 0 "\x1b[18~") (tx-sends (+ (tk-f1) 7) 0 "\x1b[19~")
+        (tx-sends (+ (tk-f1) 8) 0 "\x1b[20~") (tx-sends (+ (tk-f1) 9) 0 "\x1b[21~") (tx-sends (+ (tk-f1) 10) 0 "\x1b[23~") (tx-sends (+ (tk-f1) 11) 0 "\x1b[24~")
+        (sc-it! "Ctrl+letter (c = 0x03, a = 0x01, z = 0x1a, d = 0x04), either case")
+        (tx-sends-hex 99 1 "03") (tx-sends-hex 67 1 "03") (tx-sends-hex 97 1 "01") (tx-sends-hex 122 1 "1a") (tx-sends-hex 100 1 "04")
+        (sc-it! "Ctrl+[ \\ ] space @ ?")
+        (tx-sends-hex 91 1 "1b") (tx-sends-hex 92 1 "1c") (tx-sends-hex 93 1 "1d") (tx-sends-hex 32 1 "00") (tx-sends-hex 64 1 "00") (tx-sends-hex 63 1 "7f")
+        (sc-it! "Alt+key = ESC prefix (Alt+Ctrl+F = ESC ACK)") (tx-sends 120 2 "\x1bx") (tx-sends-hex 102 3 "1b06")
+        (dotimes [i 80] (tx-feed! "s\r\n"))
+        (let [v0 (term-view)]
+          (do (sc-it! "Shift+PgUp scrolls the local history and sends nothing") (lb-equal (tx-key (tk-pgup) 4) 0) (lb-be-> (term-view) v0)
+              (sc-it! "Shift+PgDn scrolls back") (lb-equal (tx-key (tk-pgdn) 4) 0) (lb-equal (term-view) v0)))
+        (term-scroll 5) (tx-key 97 0)
+        (sc-it! "typing returns the view to the live screen") (lb-equal (term-view) 0)
+      (sc-end!)))
+
+;; pixels of cell (0, 0) that differ from the font bitmap of its glyph in the given colours
+(defn tx-cell-misses [(fg : I32) (bg : I32)] : I32
+  (let [g (tx-glyph 0 0)]
+    (loop [y 0 x 0 bad 0]
+      (cond (>= y 16) bad
+            (>= x 8) (recur (+ y 1) 0 bad)
+            :else (let [bits (load8 (+ (tx-font) (+ (* g 16) y)))
+                        px (load32 (+ (tx-fb) (* 4 (+ (* y 800) x))))
+                        want (bit-or -16777216 (if (= (bit-and (shr bits (- 7 x)) 1) 1) fg bg))]
+                    (recur y (+ x 1) (+ bad (if (= px want) 0 1))))))))
+(defn tx-screen-out! [] : Unit
+  (do (sc-describe! "rendering")
+        (tx-fresh!) (tx-feed! "A")
+        (let [r1 (term-render) r2 (term-render)]
+          (do (sc-it! "term_render paints when something changed and reports 0 when nothing did") (lb-equal r1 1) (lb-equal r2 0)))
+        (sc-it! "the 'A' cell is painted exactly from the font bitmap, opaque, in the foreground/background colours")
+        (lb-equal (tx-cell-misses 15918054 1510157) 0)
+        (sc-it! "the cursor cell (col 1) is painted in the cursor colour") (lb-equal (load32 (+ (tx-fb) 32)) (bit-or -16777216 4965104))
+        (term-set-cursor 0) (term-render)
+        (sc-it! "hiding the cursor repaints that cell normally") (lb-equal (load32 (+ (tx-fb) 32)) (bit-or -16777216 1510157))
+      (sc-end!)
+      (sc-describe! "selection and copy")
+        (tx-fresh!) (tx-feed! "first line\r\nsecond line\r\nthird")
+        (term-mouse 0 6 0) (term-mouse 1 5 1) (term-mouse 2 5 1)
+        (sc-it! "drag-select across two rows copies the text (trailing blanks trimmed)") (lb-text-equal (tx-copy) (term-copy) "line\nsecond")
+        (term-mouse 3 2 2)
+        (sc-it! "double-click selects the word") (lb-text-equal (tx-copy) (term-copy) "third")
+        (term-mouse 4 0 0)
+        (sc-it! "clearing the selection copies nothing") (lb-equal (term-copy) 0)
+      (sc-end!)))
+
+(defn scarab-main [] : I32
+  (do (term-init)
+      (sc-describe! "nk_term")
+        (tx-text!) (tx-vt!) (tx-cells!) (tx-modes!) (tx-keys!) (tx-screen-out!)
+      (sc-end!)
+      (sc-finish!)))

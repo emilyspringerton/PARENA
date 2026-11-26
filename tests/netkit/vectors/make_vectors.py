@@ -11,6 +11,7 @@ Formats (all integers u32 little-endian):
   sha512.vec   n data[n] digest64                                     (lengths 0..299, 511, 512, 1000, 4095)
   modl.vec     x64 r32                                                (406 cases)
   ed25519.vec  pk32 n msg[n] sig64 expect                             (expect 1 = must verify, 0 = must be rejected)
+  term.vec     kind name_len name n stream screen_len screen             (pyte screens; see the term section at the end)
 """
 import hashlib, os, random, struct, sys
 from Crypto.Cipher import DES
@@ -107,3 +108,53 @@ for bad in (P.to_bytes(32, "little"), (P + 3).to_bytes(32, "little"), bytes([2])
             key().public_key().public_bytes_raw()):
     ed(bad, msg, sig, 0)
 put("ed25519.vec", recs)
+
+# ---- the terminal: pyte's screens (an independent VT100/xterm emulator), 34 rows rstripped and joined by "\n", UTF-8 -------------
+#   term.vec     kind name_len name stream_len stream screen_len screen
+#                kind 0 = a named case, 1/2 = random stream group A/B, 3 = garbage (no screen: only "no trap, in bounds"),
+#                4 = the bash transcript (only its first 3 rows are compared)
+import pyte
+def py(data, rows=34):
+    sc = pyte.Screen(100, 34); st = pyte.ByteStream(sc); st.feed(data); return "\n".join(l.rstrip() for l in sc.display[:rows]).encode()
+def trec(kind, name, data, screen): return u32(kind) + u32(len(name)) + name + u32(len(data)) + data + u32(len(screen)) + screen
+recs = []
+cases = {
+  "cup": b"\x1b[5;10Hxy\x1b[1;1Hab", "cuu/cud/cuf/cub": b"\x1b[10;10H\x1b[3Axx\x1b[2By\x1b[4Cz\x1b[6Dw", "clamp": b"\x1b[999;999Hq\x1b[0;0Hr\x1b[100Ds",
+  "cha/vpa": b"abc\x1b[20Gd\x1b[12;1He\x1b[3dfg", "ed0": b"line1\r\nline2\r\nline3\x1b[2;3H\x1b[J", "ed1": b"line1\r\nline2\r\nline3\x1b[2;3H\x1b[1J",
+  "ed2": b"line1\r\nline2\x1b[2J", "el0/1/2": b"0123456789\x1b[1;5H\x1b[K\r\n0123456789\x1b[2;5H\x1b[1K\r\n0123456789\x1b[3;5H\x1b[2K",
+  "ich": b"abcdef\x1b[1;3H\x1b[2@XY", "dch": b"abcdef\x1b[1;3H\x1b[2P", "ech": b"abcdef\x1b[1;3H\x1b[3X",
+  "il": b"1\r\n2\r\n3\r\n4\r\n5\x1b[2;1H\x1b[2L", "dl": b"1\r\n2\r\n3\r\n4\r\n5\x1b[2;1H\x1b[2M",
+  "region": b"\x1b[1;1H" + b"".join(b"row%d\r\n" % i for i in range(30)) + b"\x1b[5;10r\x1b[10;1H\n\n\nbottom\x1b[5;1H\x1bMtop",
+  "region+il": b"\x1b[1;34r" + b"".join(b"r%d\r\n" % i for i in range(12)) + b"\x1b[3;8r\x1b[4;1H\x1b[2L\x1b[5;1H\x1b[1M",
+  "sgr": b"\x1b[1;31mred\x1b[0m plain \x1b[4munder\x1b[24m \x1b[7mrev\x1b[27m", "tabs": b"a\tb\t\tc", "bs": b"abc\b\bX\bY",
+  "scroll": b"".join(b"line%02d\r\n" % i for i in range(60)), "save/restore": b"ab\x1b7\x1b[10;10Hcd\x1b8ef",
+}
+for name, data in cases.items(): recs.append(trec(0, name.encode(), data, py(data)))
+R = random.Random(2026)
+common = [b"\x1b[%d;%dH", b"\x1b[%dG", b"\x1b[%dd", b"\x1b[%dP", b"\x1b[%d@", b"\x1b[%dX", b"\x1b[K", b"\x1b[1K", b"\x1b[2K", b"\x1b[J", b"\x1b[1J",
+          b"\x1b[m", b"\x1b[1m", b"\x1b[31m", b"\r", b"\n", b"\r\n", b"\r\n", b"\b", b"\t"]
+group_a = common + [b"\x1b[%dA", b"\x1b[%dB", b"\x1b[%dC", b"\x1b[%dD", b"\x1b7", b"\x1bM", b"\x1bD"]
+group_b = [b"\x1b[%dP", b"\x1b[%d@", b"\x1b[%dX", b"\x1b[K", b"\x1b[1K", b"\x1b[2K", b"\r", b"\n", b"\r\n", b"\r\n", b"\b", b"\x1bM"]
+def rand_stream(seqset, n, region=None):
+    out = b"\x1b[%d;%dr\x1b[%d;1H" % (region[0], region[1], region[0]) if region else b""
+    for i in range(n):
+        if i % 5 == 4: out += b"\r\n"
+        if R.random() < 0.55: out += bytes(R.choice(b"abcdefghijklmnopqrstuvwxyz0123456789 .,:;-_") for _ in range(R.randint(1, 8)))
+        else:
+            s = R.choice(seqset); k = s.count(b"%d")
+            out += s % tuple(R.randint(0, 12) for _ in range(k)) if k else s
+    return out
+for kind, gset, regioned in ((1, group_a, False), (2, group_b, True)):
+    for i in range(150):
+        region = None
+        if regioned: t = R.randint(2, 18); region = (t, t + R.randint(2, 12))
+        data = rand_stream(gset, R.randint(20, 120), region); recs.append(trec(kind, b"", data, py(data)))
+for i in range(300):
+    junk = bytes(R.randrange(256) for _ in range(R.randint(1, 400))) if i % 2 else b"".join(R.choice([b"\x1b[", b"\x1b", b"\x1b]", b";", b"?", b"99999", b"\x1b[%dr" % R.randint(0, 99), b"\x1b[%d;%dH" % (R.randint(0, 999), R.randint(0, 999)),
+        b"\x1b[%dL" % R.randint(0, 9999), b"\x1b[%dM" % R.randint(0, 9999), b"\x1b[%d@" % R.randint(0, 9999), b"\x1b[%dP" % R.randint(0, 9999), b"\x1b[%dS" % R.randint(0, 9999),
+        b"\x1b[?1049h", b"\x1b[?1049l", b"\x1b[?47h", b"\x1b[?47l", b"\n" * R.randint(1, 80), b"abc", "é".encode(), b"\xff", b"\xe2\x94"]) for _ in range(R.randint(1, 60)))
+    recs.append(trec(3, b"", junk, b""))
+bash = (b"ubuntu@pi:~$ ls\r\n\x1b[0m\x1b[01;34mDocuments\x1b[0m  \x1b[01;32mscript.sh\x1b[0m  notes.txt\r\nubuntu@pi:~$ echo helo"
+        b"\x08\x1b[Klo wor\x08\x08\x08\x1b[P\x1b[1@x\x1b[3C")
+recs.append(trec(4, b"a realistic bash transcript (colours, backspace + EL, DCH/ICH line editing)", bash, py(bash, 3)))
+put("term.vec", recs)

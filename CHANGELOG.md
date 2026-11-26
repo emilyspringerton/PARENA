@@ -1,5 +1,16 @@
 ## 2026-11-26
 
+- **fix(lexer): string literals of any length are kept whole.** `lex_string` used a fixed 4096-byte buffer and silently dropped every byte
+  past 4095. `stdlib/gfd/term_font.prn`'s font table is one 8160-byte literal, so every wasm build that uses it (the Netkit SSH terminal,
+  BRAWLPIT, D2, EMPIRE, REDGARDEN, shankpit-460) read glyphs 128..254 -- the box-drawing and block characters -- from whatever followed
+  the literal in memory: they rendered as garbage. The buffer now grows; a 100,000-byte literal parses whole (new lexer test), and all
+  537 `.prn` files still parse. The new term suite pins it (the full block, glyph 231, must be 16 solid rows: with the old compiler it
+  is not). Built artifacts carry the fix only once they are rebuilt.
+- **feat(test): the SSH terminal tests are a SCARAB spec.** `test_term.py` -> `tests/netkit/term_spec.prn` (85 specs, 205 expectations), on
+  the terminal's own module list. pyte's screens for the 20 named cases, the 2 x 150 random streams and the bash transcript, plus the 300
+  hostile streams, are frozen in `tests/netkit/vectors/term.vec` (made by `vectors/make_vectors.py`, same seed as before); every exact
+  check (wrapping, SU/SD/NEL, IL/DL/regions, colours, line drawing, alternate screen, replies, modes, all keys, pixels, selection) is
+  in the spec.
 - **feat(test): the garage tests are a SCARAB spec.** `test_garage.py` + `garage_checks.py` + `test_garage_ir.py` -> `tests/netkit/garage_spec.prn`
   (45 specs, 110 expectations: layout in landscape and portrait, hit testing, cables, lights and their words, taps, Back, touch keys).
   The Python IR-interpreter leg (the same checks on the compiler's LLVM IR, without the wasm toolchain) is gone: the spec runs them on
