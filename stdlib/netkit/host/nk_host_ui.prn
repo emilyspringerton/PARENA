@@ -11,11 +11,12 @@
       (set-hidden! "view-vnc" (!= name "vnc"))
       (set-hidden! "view-arcade" (!= name "arcade"))
       (set-hidden! "view-survival" (!= name "survival"))
+      (set-hidden! "view-gfd" (!= name "gfd"))
       (set-hidden! "view-files" (!= name "files"))
       (set-hidden! "view-drive" (!= name "drive"))
       (let [db (el "tab-drive")] (when (not (js/null? db)) (js/call (js/get db "classList") "toggle" "on" (= name "drive"))))
       (let [fb (el "tab-files")] (when (not (js/null? fb)) (js/call (js/get fb "classList") "toggle" "on" (= name "files"))))
-      (dotimes [i 6]
+      (dotimes [i 7]
         (let [n (view-name i)
               b (el (str "tab-" n))]
           (when (not (js/null? b))
@@ -24,6 +25,7 @@
       (when (!= name "devices") (set-hidden! "devices-hint" true))
       (if (= name "arcade") (arcade-enter!) (arcade-leave!))
       (if (= name "survival") (survival-enter!) (survival-leave!))
+      (when (= name "gfd") (gfd-enter!))
       (when (= name "garage") (gar-refresh!))
       (when (= name "ssh") (js/call (el "term-ime") "focus"))
       (when (= name "vnc") (vnc-fit!))
@@ -174,6 +176,7 @@
                       (and (not (js/null? ssh)) (= id (js/get ssh "id"))) (ssh-on-tcp! ev)
                       (and (not (js/null? vnc)) (= id (js/get vnc "id"))) (vnc-on-tcp! ev)
                       (and (not (js/null? files)) (= id (js/get files "id"))) (files-on-tcp! ev)
+                      (and (not (js/null? gfd)) (= id (js/get gfd "id"))) (gfd-on-tcp! ev)
                       :else unit))
       (= t "probe") (let [job (js/get ev "job")]
                       (if (>= job 1000000)
@@ -182,6 +185,7 @@
       (= t "name") (on-name! ev)
       (= t "udp") (on-udp! ev)
       (= t "drive") (drive-on-event! ev)
+      (= t "sso") (gfd-on-sso! ev)
       :else unit)))
 
 ;; Android's back button: close what is on top, else go up one level (devices and the arcade return to the garage -- nk_garage_back decides),
@@ -192,6 +196,7 @@
         (not (js/get (el "view-ssh") "hidden")) 2
         (not (js/get (el "view-vnc") "hidden")) 3
         (not (js/get (el "view-survival") "hidden")) 5
+        (not (js/get (el "view-gfd") "hidden")) 6
         :else 4))
 
 (defn nk-back [] : Bool

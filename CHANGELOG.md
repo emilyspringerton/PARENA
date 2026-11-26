@@ -1,5 +1,28 @@
 ## 2026-11-26
 
+- **feat(netkit): GoblinFoxDragon in the SHANKPHONE, the MUD with a GUI** (founder: "start building the affordances for a Goblin, Fox,
+  Dragon GUI into the Shank Phone app ... with the SSO login ... basic buttons for north, south, east, and west ... whatever you think we
+  would need to start building GFD as a MUD into something that's more of a gui mmo experience").
+  - `stdlib/netkit/nk_gfd.prn` (wasm, netkit-lite): the MUD's text becomes GUI state. It reads:
+    - the room (a heading followed by an Exits line), the exits as a mask, and up to 24 creatures with ids, names and HP;
+    - the vitals line (level, HP, MP, TP, zone), hits on you, and the guest and first-time-claim name prompts;
+    - a styled log, with ANSI codes stripped.
+    It also decides the 20 buttons' labels, when each is enabled, and the command each sends: the compass, plus Attack (the target you
+    tapped), Stop, Weapon skill at 100 TP, Look, Status, Bag, Map, Who, Mobs, Loot, Mine, Fish, Party and Home.
+    G words 338..356, region 0x3C0000.
+  - `host/nk_host_gfd.prn`: two ways in:
+    - a guest over raw TCP to play.okemily.com:2323;
+    - signed in over wss://wotan.okemily.com/GFD/ws with the IDUNA token (system-browser sign-in, then back through
+      wotan.okemily.com/shankphone/sso.html to `shankphone://sso`).
+    It paints the room, vitals bars, creature chips (tap to target), the compass, actions and a command line.
+  - `nk_garage.prn`: object 6 "GoblinFoxDragon"; six in a row on a tablet, 3x2 on a sideways phone.
+  - Tests:
+    - `tests/netkit/gfd_spec.prn` 28/28, every fixture captured from the live MUD;
+    - garage_spec 51/51;
+    - `test_browser_garage.py` 45/45, including a guest playing the LIVE MUD: room, exits, target, attack, stop, a typed command, a
+      move Meadow -> Hills;
+    - `test_gfd_ws_live.py`: the app's origin + a real IDUNA token reach the MUD in production, and a foreign origin is refused.
+  - The test bridge mirrors the app's new CSP (`connect-src 'self' wss://wotan.okemily.com`). (sess-20261126-1643-452c2f1a)
 - **feat(shankpit): trees + the resource-collection mod (wood), one rule file for both engines** (founder: "Add trees to zombie survival
   modes for shankpit og engine and shankpit wasm zombies ultra low poly models like our skins add resource collection mod parena based
   mods based dev"). `stdlib/shankpit/tree_rules.prn` holds:

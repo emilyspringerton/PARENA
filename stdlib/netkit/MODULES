@@ -16,3 +16,4 @@ stdlib/netkit/nk_smb.prn
 stdlib/netkit/nk_smb_files.prn
 stdlib/netkit/nk_edit.prn
 stdlib/netkit/nk_kit.prn
+stdlib/netkit/nk_gfd.prn

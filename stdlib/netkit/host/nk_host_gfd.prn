@@ -1,0 +1,267 @@
+;; stdlib/netkit/host/nk_host_gfd.prn -- the SHANKPHONE's GoblinFoxDragon screen: the MUD with a GUI around it.
+;;
+;; Founder real-time 2026-11-26: "start building the affordances for a Goblin, Fox, Dragon GUI into the Shank Phone app ... with the
+;; SSO login ... basic buttons for north, south, east, and west ... whatever you think we would need to start building GFD as a MUD into
+;; something that's more of a gui mmo experience". Every decision -- what a line is, the room, the exits, who is here, the vitals, which
+;; button is enabled and what it sends -- is nk_gfd.prn's (a netkit-lite wasm instance of its own). This file moves bytes and paints.
+;;
+;; Two ways in:
+;;   guest      raw TCP to play.okemily.com:2323 through the shell (NetkitNative.tcpOpen); no login, nothing persists.
+;;   signed in  wss://wotan.okemily.com/GFD/ws (the page CSP allows exactly that origin), first frame {"token": <IDUNA SSO JWT>};
+;;              the token comes from IDUNA's own sign-in page in the system browser (NetkitNative.ssoOpen) and back through
+;;              wotan.okemily.com/shankphone/sso.html -> shankphone://sso, kept encrypted by the shell ("gfd_sso").
+;; The character of a signed-in player is the IDUNA account's (the MUD's own name-claim flow on first sign-in).
+
+(def gfd null)          ; {x, u8, kind: "tcp"|"ws", id, ws, guest-name}
+(def gfd-ready false)    ; the wired-up controls exist
+(def gfd-lines 0)
+
+(defn gfd-state [] : I32
+  (cond (js/null? gfd) 0
+        (js/get gfd "up") 2
+        :else 1))
+
+;; ---- the signed-in identity the shell kept -------------------------------------------------------------------------------------------
+(defn gfd-sso [] : Any (store-json "gfd_sso" null))
+(defn gfd-sso-player [] : String
+  (let [s (gfd-sso)] (if (js/null? s) "" (str (js/get s "player")))))
+
+(defn gfd-render-connect! [] : Unit
+  (let [signed (not (js/null? (gfd-sso)))]
+    (do (set-hidden! "gfd-connect" (not (js/null? gfd)))
+        (set-hidden! "gfd-play" (js/null? gfd))
+        (set-hidden! "btn-gfd-sso" signed)
+        (set-hidden! "btn-gfd-resume" (not signed))
+        (set-hidden! "btn-gfd-signout" (not signed))
+        (set-text! "gfd-who" (if signed (str "Signed in with IDUNA" (if (= (gfd-sso-player) "") "" (str " (player " (gfd-sso-player) ")"))) "Not signed in")))))
+
+;; ---- bytes in -------------------------------------------------------------------------------------------------------------------------------
+(defn gfd-feed-u8! [(bytes : Any)] : Unit
+  (let [x (js/get gfd "x") u8 (js/get gfd "u8") total (js/get bytes "length")]
+    (do (loop [off 0]
+          (when (< off total)
+            (let [k (math/min 16000 (- total off))]
+              (do (js/call u8 "set" (js/call bytes "subarray" off (+ off k)) (js/call x "nk_gfd_in_addr"))
+                  (js/call x "nk_gfd_feed" k)
+                  (recur (+ off k))))))
+        (gfd-drain-log!)
+        (gfd-paint!)
+        ;; a guest answers the name prompt with the name typed on the connect panel
+        (when (and (= (js/call x "nk_gfd_state") 2) (not (js/get gfd "named")))
+          (do (js/set! gfd "named" true)
+              (if (= (js/get gfd "kind") "tcp")
+                  (gfd-send-text! (js/get gfd "name"))
+                  ;; a signed-in account's first visit: the name is permanent, so the player types it
+                  (do (js/set! (el "gfd-input") "placeholder" "choose your permanent character name")
+                      (js/call (el "gfd-input") "focus"))))))))
+
+(defn gfd-b64-u8 [(b64 : Any)] : Any
+  (let [bin (js/call-fn (js/global "atob") b64)
+        n (js/get bin "length")
+        out (js/new "Uint8Array" n)]
+    (do (dotimes [i n] (js/aset! out i (js/call bin "charCodeAt" i))) out)))
+
+;; ---- the log --------------------------------------------------------------------------------------------------------------------------------
+(defn gfd-drain-log! [] : Unit
+  (let [x (js/get gfd "x") u8 (js/get gfd "u8") a (js/call x "nk_gfd_log_addr") n (js/call x "nk_gfd_log_len")]
+    (when (> n 0)
+      (let [text (js/call (js/new "TextDecoder") "decode" (js/call u8 "subarray" a (+ a n)))
+            lines (js/call text "split" "\n")
+            box (el "gfd-log")
+            frag (js/call (doc) "createDocumentFragment")]
+        (do (dotimes [i (js/get lines "length")]
+              (let [ln (js/aget lines i)]
+                (when (> (js/get ln "length") 0)
+                  (let [kind (- (js/call ln "charCodeAt" 0) 48)
+                        style (js/call x "nk_gfd_kind_style" kind)]
+                    (when (> style 0)
+                      (let [d (js/call (doc) "createElement" "div")]
+                        (do (js/set! d "className" (str "gl s" style))
+                            (js/set! d "textContent" (js/call ln "slice" 1))
+                            (js/call frag "appendChild" d)
+                            (set! gfd-lines (+ gfd-lines 1)))))))))
+            (js/call box "appendChild" frag)
+            ;; keep the last 400 lines
+            (loop [] (when (> gfd-lines 400) (do (js/call box "removeChild" (js/get box "firstChild")) (set! gfd-lines (- gfd-lines 1)) (recur))))
+            (js/set! box "scrollTop" (js/get box "scrollHeight"))
+            (js/call x "nk_gfd_log_clear"))))))
+
+(defn gfd-echo! [(text : String)] : Unit
+  (let [d (js/call (doc) "createElement" "div") box (el "gfd-log")]
+    (do (js/set! d "className" "gl s9")
+        (js/set! d "textContent" (str "> " text))
+        (js/call box "appendChild" d)
+        (set! gfd-lines (+ gfd-lines 1))
+        (js/set! box "scrollTop" (js/get box "scrollHeight")))))
+
+;; ---- painting the panels from the wasm's state ------------------------------------------------------------------------------------------
+(defn gfd-word [(fn : String) (a : I32)] : String
+  (cstr (js/get gfd "u8") (js/call-fn (js/aget (js/get gfd "x") fn) a)))
+(defn gfd-word0 [(fn : String)] : String
+  (cstr (js/get gfd "u8") (js/call-fn (js/aget (js/get gfd "x") fn))))
+
+(defn gfd-bar! [(id : String) (permille : I32) (label : String)] : Unit
+  (do (let [b (el id)] (when (not (js/null? b)) (js/set! (js/get b "style") "width" (str (/ permille 10.0) "%"))))
+      (set-text! (str id "-t") label)))
+
+(defn gfd-paint! [] : Unit
+  (when (not (js/null? gfd))
+    (let [x (js/get gfd "x")
+          room (gfd-word0 "nk_gfd_room_addr")
+          zone (gfd-word0 "nk_gfd_zone_addr")]
+      (do
+        (set-text! "gfd-room" (if (= room "") "GoblinFoxDragon" room))
+        (set-text! "gfd-zone" (if (= zone "") "" (str "Lv " (js/call x "nk_gfd_vital" 0) " - " zone)))
+        (gfd-bar! "gfd-hp" (js/call x "nk_gfd_bar" 0) (str "HP " (js/call x "nk_gfd_vital" 1) "/" (js/call x "nk_gfd_vital" 2)))
+        (gfd-bar! "gfd-mp" (js/call x "nk_gfd_bar" 1) (str "MP " (js/call x "nk_gfd_vital" 3) "/" (js/call x "nk_gfd_vital" 4)))
+        (gfd-bar! "gfd-tp" (js/call x "nk_gfd_bar" 2) (str "TP " (js/call x "nk_gfd_vital" 5)))
+        ;; every button: enabled or not, as the wasm says
+        (dotimes [i (js/call x "nk_gfd_buttons")]
+          (let [b (el (str "gb-" (+ i 1)))]
+            (when (not (js/null? b)) (js/set! b "disabled" (= (js/call x "nk_gfd_btn_enabled" (+ i 1)) 0)))))
+        (gfd-paint-here!)))))
+
+;; who is here: a chip per creature, tap to pick it as the target
+(defn gfd-paint-here! [] : Unit
+  (let [x (js/get gfd "x")
+        n (js/call x "nk_gfd_creatures")
+        sel (js/call x "nk_gfd_selected")
+        box (el "gfd-here")]
+    (do (js/set! box "textContent" "")
+        (when (= n 0) (let [d (js/call (doc) "createElement" "span")] (do (js/set! d "className" "muted") (js/set! d "textContent" "Nobody here") (js/call box "appendChild" d))))
+        (dotimes [i n]
+          (let [b (js/call (doc) "createElement" "button")
+                bar (js/call (doc) "createElement" "i")]
+            (do (js/set! b "className" (str "gc" (if (= i sel) " on" "") (if (= (js/call x "nk_gfd_cr_burrowed" i) 1) " hid" "")))
+                (js/aset! (js/get b "dataset") "cr" (str i))
+                (js/set! b "textContent" (gfd-word "nk_gfd_cr_name_addr" i))
+                (js/set! (js/get bar "style") "width" (str (/ (js/call x "nk_gfd_cr_bar" i) 10.0) "%"))
+                (js/call b "appendChild" bar)
+                (js/call box "appendChild" b)))))))
+
+;; ---- bytes out -------------------------------------------------------------------------------------------------------------------------------
+(defn gfd-send-text! [(text : String)] : Unit
+  (when (and (not (js/null? gfd)) (js/get gfd "up"))
+    (let [b (js/call (js/new "TextEncoder") "encode" (str text "\r\n"))]
+      (if (= (js/get gfd "kind") "ws")
+          (js/call (js/get gfd "ws") "send" b)
+          (tcp-write! (js/get gfd "id")
+                      (js/call-fn (js/global "btoa") (js/call (js/get (js/global "String") "fromCharCode") "apply" null b)))))))
+
+(defn gfd-command! [(text : String)] : Unit
+  (when (> (js/get text "length") 0) (do (gfd-echo! text) (gfd-send-text! text))))
+
+;; a button: the wasm writes the command, the host sends it
+(defn on-gfd-button [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-gb]")]
+    (when (and (not (js/null? b)) (not (js/null? gfd)))
+      (let [x (js/get gfd "x")
+            n (js/call x "nk_gfd_cmd" (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "gb") 10))]
+        (when (> n 0) (gfd-command! (cstr (js/get gfd "u8") (js/call x "nk_gfd_cmd_addr"))))))))
+
+(defn on-gfd-here [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-cr]")]
+    (when (and (not (js/null? b)) (not (js/null? gfd)))
+      (let [x (js/get gfd "x") i (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "cr") 10)]
+        (do (js/call x "nk_gfd_select" (if (= (js/call x "nk_gfd_selected") i) -1 i))
+            (gfd-paint!))))))
+
+(defn on-gfd-send [(e : Any)] : Unit
+  (do (js/call e "preventDefault")
+      (let [t (val "gfd-input")]
+        (do (gfd-command! (str t)) (set-val! "gfd-input" "")))))
+
+;; ---- connecting ---------------------------------------------------------------------------------------------------------------------------------
+(defn gfd-new-session! [(kind : String) (name : String)] : Any
+  (let [x (exports-of (instantiate mod-lite))]
+    (do (js/call x "nk_gfd_reset")
+        (set! gfd (js/obj "x" x "u8" (u8-of x) "kind" kind "id" (new-id!) "up" false "named" false "name" name "ws" null))
+        (set! gfd-lines 0)
+        (js/set! (el "gfd-log") "textContent" "")
+        (gfd-render-connect!)
+        (gfd-paint!)
+        gfd)))
+
+(defn on-gfd-guest [(e : Any)] : Unit
+  (let [name (str (val "gfd-name"))]
+    (if (not (js/call (js/new "RegExp" "^[A-Za-z][A-Za-z0-9]{1,19}$") "test" name))
+        (set-text! "gfd-note" "A guest name is 2 to 20 letters or digits, starting with a letter.")
+        (if (not (have-native?))
+            (set-text! "gfd-note" "Guest play needs the SHANKPHONE app (a raw connection to the MUD).")
+            (let [s (gfd-new-session! "tcp" name)]
+              (do (set-text! "gfd-note" "")
+                  (tcp-open! (js/get s "id") "play.okemily.com" 2323)))))))
+
+(defn gfd-on-tcp! [(ev : Any)] : Unit
+  (let [e (js/get ev "e")]
+    (cond
+      (= e "open") (do (js/set! gfd "up" true) (gfd-paint!))
+      (= e "data") (gfd-feed-u8! (gfd-b64-u8 (js/get ev "b")))
+      :else (gfd-ended! (if (= e "closed") "The MUD closed the connection." "Could not reach the MUD (play.okemily.com:2323).")))))
+
+(defn gfd-ws-open [(e : Any)] : Unit
+  (let [s (gfd-sso)]
+    (do (js/set! gfd "up" true)
+        (js/call (js/get gfd "ws") "send" (js/call (js/global "JSON") "stringify" (js/obj "token" (js/get s "token"))))
+        (gfd-paint!))))
+(defn gfd-ws-message [(e : Any)] : Unit
+  (let [d (js/get e "data")]
+    (gfd-feed-u8! (if (= (js/typeof d) "string") (js/call (js/new "TextEncoder") "encode" d) (js/new "Uint8Array" d)))))
+(defn gfd-ws-close [(e : Any)] : Unit
+  (when (not (js/null? gfd))
+    (if (= (js/get e "code") 4401)
+        (do (when (have-native?) (js/call nat "ssoForget"))
+            (gfd-ended! "Your IDUNA sign-in was refused or has expired. Sign in again."))
+        (gfd-ended! "The MUD closed the connection."))))
+
+(defn on-gfd-resume [(e : Any)] : Unit
+  (let [s (gfd-sso)]
+    (when (not (js/null? s))
+      (let [g (gfd-new-session! "ws" "")
+            ws (js/new "WebSocket" "wss://wotan.okemily.com/GFD/ws")]
+        (do (js/set! ws "binaryType" "arraybuffer")
+            (js/set! ws "onopen" (callback gfd-ws-open))
+            (js/set! ws "onmessage" (callback gfd-ws-message))
+            (js/set! ws "onclose" (callback gfd-ws-close))
+            (js/set! g "ws" ws))))))
+
+(defn on-gfd-sso [(e : Any)] : Unit
+  (if (have-native?)
+      (do (set-text! "gfd-note" "IDUNA's sign-in page is open in your browser. Come back here when it is done.")
+          (js/call nat "ssoOpen"))
+      (set-text! "gfd-note" "Sign-in needs the SHANKPHONE app.")))
+(defn on-gfd-signout [(e : Any)] : Unit
+  (do (when (have-native?) (js/call nat "ssoForget"))
+      (gfd-render-connect!)))
+
+;; the shell's {t:"sso"} event: the sign-in came back (or could not start)
+(defn gfd-on-sso! [(ev : Any)] : Unit
+  (do (if (= (js/get ev "e") "ok")
+          (set-text! "gfd-note" "Signed in. Tap Play to enter the world.")
+          (set-text! "gfd-note" "No browser to sign in with."))
+      (gfd-render-connect!)
+      (show-view! "gfd")))
+
+(defn gfd-ended! [(why : String)] : Unit
+  (do (when (not (js/null? gfd))
+        (do (js/call (js/get gfd "x") "nk_gfd_closed")
+            (when (= (js/get gfd "kind") "tcp") (tcp-close! (js/get gfd "id")))
+            (when (and (= (js/get gfd "kind") "ws") (not (js/null? (js/get gfd "ws")))) (js/call (js/get gfd "ws") "close"))))
+      (set! gfd null)
+      (set-text! "gfd-note" why)
+      (gfd-render-connect!)))
+(defn on-gfd-leave [(e : Any)] : Unit (gfd-ended! "You left the world."))
+
+(defn gfd-enter! [] : Unit
+  (do (when (not gfd-ready)
+        (do (set! gfd-ready true)
+            (on! "gfd-actions" "click" (callback on-gfd-button))
+            (on! "gfd-compass" "click" (callback on-gfd-button))
+            (on! "gfd-here" "click" (callback on-gfd-here))
+            (on! "gfd-form" "submit" (callback on-gfd-send))
+            (on! "btn-gfd-guest" "click" (callback on-gfd-guest))
+            (on! "btn-gfd-sso" "click" (callback on-gfd-sso))
+            (on! "btn-gfd-resume" "click" (callback on-gfd-resume))
+            (on! "btn-gfd-signout" "click" (callback on-gfd-signout))
+            (on! "btn-gfd-leave" "click" (callback on-gfd-leave))))
+      (gfd-render-connect!)))

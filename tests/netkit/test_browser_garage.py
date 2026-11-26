@@ -49,11 +49,11 @@ with sync_playwright() as p:
 
     page.wait_for_selector("#obj-5", state="visible", timeout=20000)
     check(page.is_visible("#view-garage") and not page.is_visible("#view-devices"), "the page opens on the garage")
-    check(all(page.is_visible(f"#obj-{i}") for i in (1, 2, 3, 4, 5)), "five objects are visible on the floor (the fifth is SURVIVAL)")
+    check(all(page.is_visible(f"#obj-{i}") for i in (1, 2, 3, 4, 5, 6)), "six objects are visible on the floor (SURVIVAL, GoblinFoxDragon)")
     check(page.inner_text("#brand").replace("\n", "") == "SHANKPHONE", "the app is the SHANKPHONE")
-    boxes = [page.locator(f"#obj-{i}").bounding_box() for i in (1, 2, 3, 4, 5)]
+    boxes = [page.locator(f"#obj-{i}").bounding_box() for i in (1, 2, 3, 4, 5, 6)]
     check(all(b["width"] >= 44 and b["height"] >= 44 for b in boxes), f"every object is a finger-sized target (smallest {min(min(b['width'], b['height']) for b in boxes):.0f}px)")
-    check(all(boxes[i]["x"] + boxes[i]["width"] <= boxes[i + 1]["x"] + 1 for i in range(4)), "landscape: the five objects stand in a row without overlapping")
+    check(all(boxes[i]["x"] + boxes[i]["width"] <= boxes[i + 1]["x"] + 1 for i in range(5)), "landscape: the six objects stand in a row without overlapping")
     check(page.locator("#lamp-2").get_attribute("class") == "lamp l0" and page.inner_text("#status-2") == "No session", "the terminal's lamp is off: there is no session")
     page.screenshot(path=os.path.join(shots, "10-garage-landscape.png"))
     # portrait: the same wasm layout reflows to two columns
@@ -154,7 +154,60 @@ with sync_playwright() as p:
     _, sa = page.evaluate(SV); time.sleep(0.5); _, sb = page.evaluate(SV)
     check(sa == sb, "SURVIVAL stops drawing while it is off screen")
     page.screenshot(path=os.path.join(shots, "23-garage-after-survival.png"))
-    check(not [e for e in errors if "Content Security Policy" in e or "Refused" in e], "no CSP violation anywhere in the garage, the arcade or SURVIVAL")
+
+    # ---- GoblinFoxDragon: guest play against the LIVE MUD (play.okemily.com:2323) through the shell's raw TCP stand-in ----------------------------
+    # (skipped with GFD_LIVE=0; this needs the internet)
+    if os.environ.get("GFD_LIVE", "1") != "0":
+        page.click("#obj-6")
+        check(page.is_visible("#view-gfd") and page.is_visible("#gfd-connect"), "tapping GoblinFoxDragon opens the connect panel")
+        check(page.is_visible("#btn-gfd-sso") and not page.is_visible("#btn-gfd-resume"), "not signed in: Sign in with IDUNA is offered, Play is not")
+        page.fill("#gfd-name", "x"); page.click("#btn-gfd-guest")
+        check("2 to 20" in page.inner_text("#gfd-note"), "a bad guest name is refused on the phone, before connecting")
+        page.fill("#gfd-name", "Phone" + str(int(time.time()) % 99991)); page.click("#btn-gfd-guest")
+        wait(lambda: page.inner_text("#gfd-room") not in ("", "GoblinFoxDragon"), 30, "the first room")
+        check(page.is_visible("#gfd-play"), f"a guest enters the world; the room is shown ({page.inner_text('#gfd-room')})")
+        wait(lambda: page.inner_text("#gfd-hp-t").startswith("HP "), 10, "the vitals")
+        check(page.inner_text("#gfd-hp-t").startswith("HP "), f"vitals are bars, not prompt lines ({page.inner_text('#gfd-hp-t')})")
+        enabled = [d for d in ("1", "2", "3", "4") if page.locator(f"#gb-{d}").is_enabled()]
+        check(len(enabled) >= 1, f"the compass enables the room's exits ({len(enabled)} of N S E W)")
+        check(not page.locator("#gb-14").is_enabled(), "the weapon skill waits for 100 TP")
+        logtext = page.inner_text("#gfd-log")
+        check("[ Lv." not in logtext, "the vitals line is not repeated in the log")
+        page.screenshot(path=os.path.join(shots, "30-gfd-room.png"))
+        chips = page.locator("#gfd-here .gc").count()
+        if chips > 0:
+            page.locator("#gfd-here .gc").first.click()
+            check(page.locator("#gfd-here .gc.on").count() == 1, f"tapping a creature picks it as the target ({chips} here)")
+            page.click("#gb-12")
+            wait(lambda: "You target" in page.inner_text("#gfd-log") or "close the distance" in page.inner_text("#gfd-log"), 10, "the attack")
+            check(page.locator("#gb-13").is_enabled(), "Attack starts a fight: Stop is enabled")
+            page.click("#gb-13")
+        room0 = page.inner_text("#gfd-room")
+        page.fill("#gfd-input", "look"); page.click("#gfd-form button")
+        wait(lambda: "> look" in page.inner_text("#gfd-log"), 10, "the typed command")
+        check(True, "a typed command is sent and echoed")
+        d = enabled[0] if enabled else None
+        if d:
+            page.click(f"#gb-{d}")
+            wait(lambda: page.inner_text("#gfd-room") != room0, 15, "the next room")
+            check(True, f"a compass button moves: {room0} -> {page.inner_text('#gfd-room')}")
+        page.screenshot(path=os.path.join(shots, "31-gfd-moved.png"))
+        page.click("#btn-gfd-leave")
+        check(page.is_visible("#gfd-connect") and not page.is_visible("#gfd-play"), "Leave returns to the connect panel")
+        # signing in: the shell hands a token back; with a token, Play is offered (the token itself is checked by the MUD)
+        tok = os.environ.get("GFD_TEST_TOKEN", "")
+        if tok:
+            page.evaluate("t => { window.__ssoToken = t; }", tok)
+            page.click("#btn-gfd-sso")
+            wait(lambda: page.is_visible("#btn-gfd-resume"), 5, "the signed-in state")
+            check(page.is_visible("#btn-gfd-resume") and page.is_visible("#btn-gfd-signout") and not page.is_visible("#btn-gfd-sso"),
+                  "signed in: Play and Sign out are offered (the WebSocket itself is checked from the app's origin by test_gfd_ws_live.py;"
+                  " this page's 127.0.0.1 origin is refused by the MUD, as it should be)")
+            page.screenshot(path=os.path.join(shots, "32-gfd-signed-in.png"))
+            page.click("#btn-gfd-signout")
+            check(page.is_visible("#btn-gfd-sso"), "Sign out forgets the token")
+        page.click("#tab-garage")
+    check(not [e for e in errors if "Content Security Policy" in e or "Refused" in e], "no CSP violation anywhere in the garage, the arcade or SURVIVAL or GFD")
     check(not errors, f"no console error, page error or failed request ({errors[:3]})")
     browser.close()
 done()

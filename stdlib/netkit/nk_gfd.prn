@@ -1,0 +1,313 @@
+;; stdlib/netkit/nk_gfd.prn -- the SHANKPHONE's GoblinFoxDragon client: the MUD's text, turned into GUI state.
+;;
+;; Founder real-time 2026-11-26: "start building the affordances for a Goblin, Fox, Dragon GUI into the Shank Phone app ... the
+;; basic with the SSO login ... basic buttons for north, south, east, and west ... whatever you think we would need to start building
+;; GFD as a MUD into something that's more of a gui mmo experience". The MUD speaks plain text (no GMCP, no telnet negotiation --
+;; checked live). This module reads that text and keeps the state a GUI draws from; the page host only moves bytes and paints.
+;;
+;; What it understands (formats taken from the live server, apps2/mud in GoblinFoxDragon):
+;;   "=== Meadow ==="                          a heading; it becomes the ROOM when an "Exits:" line follows it
+;;   "Exits: west, up, north, south, east"     the exits (n s e w up down; anything else counts as "other")
+;;   "Creatures here:" then "  [id] name  HP:a/b (state)"   who is in the room (up to 24)
+;;   "[ Lv.1  HP:90/90  MP:0/0  TP:38  Haste:0%  Zone:Meadow ]"   the vitals line (shown as bars, hidden from the log)
+;;   "[!] ... HP: 82/90"                       a hit on you (updates HP at once)
+;;   "Enter your character name:"              the guest name prompt
+;; ANSI colour codes are dropped; CR is ignored; a line ends at LF.
+;;
+;; Memory (netkit-lite, 8 MB): region GFD at 0x3C0000 (256 KB, below the editor's 0x400000). G words 338..399.
+;;   +0       line being assembled (1 KB)
+;;   +1024    the heading waiting for an Exits line (128 B)
+;;   +2048    room name (128 B)      +2176  zone (64 B)      +2240  the selected target's id (64 B)
+;;   +4096    creatures: 24 x 128 B (id 48, name 48, hp, hpmax, flags)
+;;   +8192    command out (256 B): what the host should send, NUL-terminated
+;;   +16384   bytes in (16 KB): the host writes received bytes here and calls nk-gfd-feed(n)
+;;   +32768   log out (64 KB): completed lines for the page, each "<kind byte><text>\n"; the page reads it and calls nk-gfd-log-clear
+;; Line kinds: 0 text, 1 room heading, 2 exits, 3 creature, 4 vitals (hidden), 5 prompt (hidden), 6 your hit, 7 hit on you / alert,
+;;             8 other heading, 9 the name prompt, 10 echo of what you typed.
+
+(defn gfd-base [] : I32 3932160)
+(defn gfd-line [] : I32 (gfd-base))
+(defn gfd-cand [] : I32 (+ (gfd-base) 1024))
+(defn gfd-room [] : I32 (+ (gfd-base) 2048))
+(defn gfd-zone [] : I32 (+ (gfd-base) 2176))
+(defn gfd-target [] : I32 (+ (gfd-base) 2240))
+(defn gfd-cr [(i : I32)] : I32 (+ (gfd-base) (+ 4096 (* i 128))))
+(defn gfd-cmd [] : I32 (+ (gfd-base) 8192))
+(defn gfd-in [] : I32 (+ (gfd-base) 16384))
+(defn gfd-log [] : I32 (+ (gfd-base) 32768))
+(defn gfd-log-cap [] : I32 65536)
+(defn gfd-max-cr [] : I32 24)
+
+(defn gg-state [] : I32 338)     ; 0 idle, 2 asked for a name, 3 playing, 4 closed
+(defn gg-exits [] : I32 339)     ; bits: 1 n, 2 s, 4 e, 8 w, 16 up, 32 down, 64 other
+(defn gg-lv [] : I32 340)
+(defn gg-hp [] : I32 341)
+(defn gg-hpmax [] : I32 342)
+(defn gg-mp [] : I32 343)
+(defn gg-mpmax [] : I32 344)
+(defn gg-tp [] : I32 345)
+(defn gg-ncr [] : I32 346)
+(defn gg-len [] : I32 347)       ; bytes in the line being assembled
+(defn gg-mode [] : I32 348)      ; 1 while reading a "Creatures here:" list
+(defn gg-cand-age [] : I32 349)  ; lines since the last heading (a heading older than 8 lines is not a room)
+(defn gg-log-len [] : I32 350)
+(defn gg-room-seq [] : I32 351)  ; bumps on every new room
+(defn gg-vit-seq [] : I32 352)   ; bumps on every vitals change
+(defn gg-ansi [] : I32 353)      ; 0 text, 1 after ESC, 2 inside CSI
+(defn gg-fighting [] : I32 354)
+(defn gg-sel [] : I32 355)       ; selected creature index, -1 none
+(defn gg-cmd-len [] : I32 356)
+
+;; ---- small text helpers over linear memory ---------------------------------------------------------------------------------------
+(defn gfd-lit-len [(s : String)] : I32
+  (let [a (str-addr s)] (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1))))))
+;; does memory at a (length n) start with the literal at offset off?
+(defn gfd-has-at? [(a : I32) (n : I32) (off : I32) (s : String)] : Bool
+  (let [p (str-addr s) m (gfd-lit-len s)]
+    (if (> (+ off m) n)
+        false
+        (loop [i 0]
+          (cond (>= i m) true
+                (!= (load8 (+ a (+ off i))) (load8 (+ p i))) false
+                :else (recur (+ i 1)))))))
+;; first index of the literal in [a, a+n) at or after from, or -1
+(defn gfd-find [(a : I32) (n : I32) (from : I32) (s : String)] : I32
+  (loop [i from]
+    (cond (>= i n) -1
+          (gfd-has-at? a n i s) i
+          :else (recur (+ i 1)))))
+(defn gfd-digit? [(c : I32)] : Bool (and (>= c 48) (<= c 57)))
+;; the decimal number at a+off (stops at the first non-digit); 0 if none
+(defn gfd-num [(a : I32) (n : I32) (off : I32)] : I32
+  (loop [i off v 0]
+    (if (and (< i n) (gfd-digit? (load8 (+ a i))))
+        (recur (+ i 1) (+ (* v 10) (- (load8 (+ a i)) 48)))
+        v)))
+;; copy [a+from, a+to) to dst as a NUL-terminated string of at most cap-1 bytes
+(defn gfd-copy! [(a : I32) (from : I32) (to : I32) (dst : I32) (cap : I32)] : Unit
+  (let [n (min-i (max-i 0 (- to from)) (- cap 1))]
+    (do (loop [i 0] (when (< i n) (store8! (+ dst i) (load8 (+ a (+ from i)))) (recur (+ i 1))))
+        (store8! (+ dst n) 0))))
+(defn gfd-copy-lit! [(s : String) (dst : I32)] : I32
+  (let [n (gfd-lit-len s) p (str-addr s)]
+    (do (loop [i 0] (when (< i n) (store8! (+ dst i) (load8 (+ p i))) (recur (+ i 1))))
+        (store8! (+ dst n) 0)
+        n)))
+(defn gfd-cstr-len [(a : I32)] : I32 (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1)))))
+(defn gfd-trim-end [(a : I32) (n : I32)] : I32
+  (loop [k n] (if (and (> k 0) (<= (load8 (+ a (- k 1))) 32)) (recur (- k 1)) k)))
+
+;; ---- the log the page reads -------------------------------------------------------------------------------------------------------
+(defn gfd-log-put! [(kind : I32) (a : I32) (n : I32)] : Unit
+  (let [len (gi (gg-log-len))]
+    (when (< (+ len (+ n 2)) (gfd-log-cap))
+      (store8! (+ (gfd-log) len) (+ 48 kind))
+      (loop [i 0] (when (< i n) (store8! (+ (gfd-log) (+ len (+ 1 i))) (load8 (+ a i))) (recur (+ i 1))))
+      (store8! (+ (gfd-log) (+ len (+ n 1))) 10)
+      (gi! (gg-log-len) (+ len (+ n 2))))))
+
+;; ---- parsing one complete line ------------------------------------------------------------------------------------------------------
+(defn gfd-exit-bit [(a : I32) (from : I32) (to : I32)] : I32
+  (let [n (- to from)]
+    (cond (and (= n 5) (gfd-has-at? a to from "north")) 1
+          (and (= n 5) (gfd-has-at? a to from "south")) 2
+          (and (= n 4) (gfd-has-at? a to from "east")) 4
+          (and (= n 4) (gfd-has-at? a to from "west")) 8
+          (and (= n 2) (gfd-has-at? a to from "up")) 16
+          (and (= n 4) (gfd-has-at? a to from "down")) 32
+          (> n 0) 64
+          :else 0)))
+
+(defn gfd-parse-exits! [(a : I32) (n : I32)] : Unit
+  (let [mask 0]
+    (loop [i 6 start 6]
+      (when (<= i n)
+        (if (or (= i n) (= (load8 (+ a i)) 44))
+            (let [s (loop [k start] (if (and (< k i) (= (load8 (+ a k)) 32)) (recur (+ k 1)) k))
+                  e (loop [k i] (if (and (> k s) (= (load8 (+ a (- k 1))) 32)) (recur (- k 1)) k))
+                  ;; "south (Detroit School)": the direction is the first word
+                  w (loop [k s] (if (and (< k e) (!= (load8 (+ a k)) 32)) (recur (+ k 1)) k))]
+              (do (set! mask (bit-or mask (gfd-exit-bit a s w)))
+                  (recur (+ i 1) (+ i 1))))
+            (recur (+ i 1) start))))
+    (gi! (gg-exits) mask)))
+
+;; "  [id] name  HP:a/b (state)"
+(defn gfd-parse-creature! [(a : I32) (n : I32)] : Bool
+  (let [lb (gfd-find a n 0 "[")
+        rb (gfd-find a n 0 "]")
+        hp (gfd-find a n 0 "HP:")
+        k (gi (gg-ncr))]
+    (if (or (< lb 0) (or (< rb lb) (or (< hp rb) (>= k (gfd-max-cr)))))
+        false
+        (let [name-s (loop [i (+ rb 1)] (if (and (< i hp) (= (load8 (+ a i)) 32)) (recur (+ i 1)) i))
+              name-e (gfd-trim-end a hp)
+              slash (gfd-find a n hp "/")]
+          (do (gfd-copy! a (+ lb 1) rb (gfd-cr k) 48)
+              (gfd-copy! a name-s name-e (+ (gfd-cr k) 48) 48)
+              (store32! (+ (gfd-cr k) 96) (gfd-num a n (+ hp 3)))
+              (store32! (+ (gfd-cr k) 100) (if (> slash 0) (gfd-num a n (+ slash 1)) 0))
+              (store32! (+ (gfd-cr k) 104) (if (> (gfd-find a n hp "burrowed") 0) 1 0))
+              (gi! (gg-ncr) (+ k 1))
+              true)))))
+
+;; "[ Lv.1  HP:90/90  MP:0/0  TP:38  Haste:0%  Zone:Meadow  Overcast ]"
+(defn gfd-parse-vitals! [(a : I32) (n : I32)] : Unit
+  (let [lv (gfd-find a n 0 "Lv.")
+        hp (gfd-find a n 0 "HP:")
+        mp (gfd-find a n 0 "MP:")
+        tp (gfd-find a n 0 "TP:")
+        zn (gfd-find a n 0 "Zone:")]
+    (do
+      (when (>= lv 0) (gi! (gg-lv) (gfd-num a n (+ lv 3))))
+      (when (>= hp 0)
+        (gi! (gg-hp) (gfd-num a n (+ hp 3)))
+        (let [s (gfd-find a n hp "/")] (when (> s 0) (gi! (gg-hpmax) (gfd-num a n (+ s 1))))))
+      (when (>= mp 0)
+        (gi! (gg-mp) (gfd-num a n (+ mp 3)))
+        (let [s (gfd-find a n mp "/")] (when (> s 0) (gi! (gg-mpmax) (gfd-num a n (+ s 1))))))
+      (when (>= tp 0) (gi! (gg-tp) (gfd-num a n (+ tp 3))))
+      (when (>= zn 0)
+        (let [s (+ zn 5)
+              e (let [two (gfd-find a n s "  ") rb (gfd-find a n s " ]")]
+                  (cond (and (>= two 0) (or (< rb 0) (< two rb))) two
+                        (>= rb 0) rb
+                        :else n))]
+          (gfd-copy! a s e (gfd-zone) 64)))
+      (gi! (gg-vit-seq) (+ (gi (gg-vit-seq)) 1)))))
+
+(defn gfd-line! [(a : I32) (n0 : I32)] : Unit
+  (let [n (gfd-trim-end a n0)
+        ;; a creature row keeps its leading spaces; everything else is judged from its first non-space byte
+        lead (loop [i 0] (if (and (< i n) (= (load8 (+ a i)) 32)) (recur (+ i 1)) i))]
+    (gi! (gg-cand-age) (+ (gi (gg-cand-age)) 1))
+    (cond
+      (gfd-has-at? a n 0 "[ Lv.") (do (gi! (gg-mode) 0) (gfd-parse-vitals! a n) (gfd-log-put! 4 a n))
+      ;; a creature row is indented "  [id] ..."; a blank line or anything else ends the list
+      (and (= (gi (gg-mode)) 1) (and (>= lead 2) (gfd-has-at? a n lead "[")))
+        (if (gfd-parse-creature! a n) (gfd-log-put! 3 (+ a lead) (- n lead)) (gfd-log-put! 0 a n))
+      (= n 0) (do (gi! (gg-mode) 0) unit)
+      (and (= n 1) (gfd-has-at? a n 0 ">")) (gfd-log-put! 5 a n)
+      (gfd-has-at? a n 0 "=== ")
+        (do (gi! (gg-mode) 0)
+            (let [e (if (gfd-has-at? a n (- n 4) " ===") (- n 4) n)]
+              (gfd-copy! a 4 e (gfd-cand) 128))
+            (gi! (gg-cand-age) 0)
+            (gfd-log-put! 8 a n))
+      (gfd-has-at? a n 0 "Exits:")
+        (do (gfd-parse-exits! a n)
+            (when (< (gi (gg-cand-age)) 8)
+              (gfd-copy! (gfd-cand) 0 (gfd-cstr-len (gfd-cand)) (gfd-room) 128)
+              (gi! (gg-room-seq) (+ (gi (gg-room-seq)) 1))
+              (gi! (gg-ncr) 0)
+              (gi! (gg-sel) -1))
+            (gfd-log-put! 2 a n))
+      (gfd-has-at? a n 0 "Creatures here:") (do (gi! (gg-mode) 1) (gi! (gg-ncr) 0) (gfd-log-put! 0 a n))
+      (gfd-has-at? a n 0 "[!]")
+        (do (let [h (gfd-find a n 0 "HP: ")]
+              (when (>= h 0)
+                (gi! (gg-hp) (gfd-num a n (+ h 4)))
+                (gi! (gg-vit-seq) (+ (gi (gg-vit-seq)) 1))))
+            (gfd-log-put! 7 a n))
+      (gfd-has-at? a n 0 "You hit") (gfd-log-put! 6 a n)
+      (gfd-has-at? a n 0 "You target") (do (gi! (gg-fighting) 1) (gfd-log-put! 6 a n))
+      (or (gfd-has-at? a n 0 "You stop") (>= (gfd-find a n 0 "is defeated") 0)) (do (gi! (gg-fighting) 0) (gfd-log-put! 6 a n))
+      ;; the guest prompt ("Enter your character name:") and a signed-in account's first-time claim ("Choose a permanent character
+      ;; name ... Name:")
+      (or (>= (gfd-find a n 0 "character name") 0) (gfd-has-at? a n 0 "Name:")) (do (gi! (gg-state) 2) (gfd-log-put! 9 a n))
+      (gfd-has-at? a n 0 "Welcome, ") (do (gi! (gg-state) 3) (gfd-log-put! 0 a n))
+      :else (gfd-log-put! 0 a n))))
+
+;; ---- the byte stream -------------------------------------------------------------------------------------------------------------------
+(defn gfd-byte! [(c : I32)] : Unit
+  (let [st (gi (gg-ansi)) len (gi (gg-len))]
+    (cond
+      (= st 1) (gi! (gg-ansi) (if (= c 91) 2 0))
+      (= st 2) (when (and (>= c 64) (<= c 126)) (gi! (gg-ansi) 0))
+      (= c 27) (gi! (gg-ansi) 1)
+      (= c 13) unit
+      (= c 10) (do (gfd-line! (gfd-line) len) (gi! (gg-len) 0))
+      (= c 255) unit                                ; telnet IAC: the MUD sends none, ignore defensively
+      :else (when (< len 1023) (store8! (+ (gfd-line) len) c) (gi! (gg-len) (+ len 1))))))
+
+(defn nk-gfd-reset [] : Unit
+  (do (dotimes [k 62] (gi! (+ 338 k) 0))
+      (gi! (gg-sel) -1)
+      (store8! (gfd-room) 0) (store8! (gfd-zone) 0) (store8! (gfd-target) 0) (store8! (gfd-cand) 0)))
+(defn nk-gfd-in-addr [] : I32 (gfd-in))
+(defn nk-gfd-in-cap [] : I32 16384)
+;; n received bytes are at nk-gfd-in-addr; returns how many log bytes are waiting
+(defn nk-gfd-feed [(n : I32)] : I32
+  (do (dotimes [i (min-i n 16384)] (gfd-byte! (load8 (+ (gfd-in) i))))
+      ;; a prompt arrives without a newline ("Enter your character name: "): judge it as soon as it is complete
+      (when (and (> (gi (gg-len)) 0) (or (>= (gfd-find (gfd-line) (gi (gg-len)) 0 "name: ") 0) (gfd-has-at? (gfd-line) (gi (gg-len)) 0 "Name: ")))
+        (gfd-line! (gfd-line) (gi (gg-len))) (gi! (gg-len) 0))
+      (gi (gg-log-len))))
+(defn nk-gfd-log-addr [] : I32 (gfd-log))
+(defn nk-gfd-log-len [] : I32 (gi (gg-log-len)))
+(defn nk-gfd-log-clear [] : Unit (gi! (gg-log-len) 0))
+
+;; ---- state the GUI reads ---------------------------------------------------------------------------------------------------------------
+(defn nk-gfd-state [] : I32 (gi (gg-state)))
+(defn nk-gfd-closed [] : Unit (gi! (gg-state) 4))
+(defn nk-gfd-room-addr [] : I32 (gfd-room))
+(defn nk-gfd-zone-addr [] : I32 (gfd-zone))
+(defn nk-gfd-room-seq [] : I32 (gi (gg-room-seq)))
+(defn nk-gfd-vit-seq [] : I32 (gi (gg-vit-seq)))
+(defn nk-gfd-exits [] : I32 (gi (gg-exits)))
+(defn nk-gfd-vital [(k : I32)] : I32 (case k 0 (gi (gg-lv)) 1 (gi (gg-hp)) 2 (gi (gg-hpmax)) 3 (gi (gg-mp)) 4 (gi (gg-mpmax)) 5 (gi (gg-tp)) 0))
+;; a bar's fill in permille (k: 0 HP, 1 MP, 2 TP out of 300, as the game caps it)
+(defn nk-gfd-bar [(k : I32)] : I32
+  (case k
+    0 (if (> (gi (gg-hpmax)) 0) (min-i 1000 (/ (* (gi (gg-hp)) 1000) (gi (gg-hpmax)))) 0)
+    1 (if (> (gi (gg-mpmax)) 0) (min-i 1000 (/ (* (gi (gg-mp)) 1000) (gi (gg-mpmax)))) 0)
+    2 (min-i 1000 (/ (* (gi (gg-tp)) 1000) 300))
+    0))
+(defn nk-gfd-fighting [] : I32 (gi (gg-fighting)))
+(defn nk-gfd-creatures [] : I32 (gi (gg-ncr)))
+(defn nk-gfd-cr-id-addr [(i : I32)] : I32 (gfd-cr i))
+(defn nk-gfd-cr-name-addr [(i : I32)] : I32 (+ (gfd-cr i) 48))
+(defn nk-gfd-cr-hp [(i : I32)] : I32 (load32 (+ (gfd-cr i) 96)))
+(defn nk-gfd-cr-hpmax [(i : I32)] : I32 (load32 (+ (gfd-cr i) 100)))
+(defn nk-gfd-cr-burrowed [(i : I32)] : I32 (load32 (+ (gfd-cr i) 104)))
+(defn nk-gfd-cr-bar [(i : I32)] : I32
+  (if (> (nk-gfd-cr-hpmax i) 0) (min-i 1000 (/ (* (nk-gfd-cr-hp i) 1000) (nk-gfd-cr-hpmax i))) 0))
+(defn nk-gfd-select [(i : I32)] : Unit
+  (if (and (>= i 0) (< i (gi (gg-ncr))))
+      (do (gi! (gg-sel) i) (gfd-copy! (gfd-cr i) 0 (gfd-cstr-len (gfd-cr i)) (gfd-target) 64))
+      (do (gi! (gg-sel) -1) (store8! (gfd-target) 0))))
+(defn nk-gfd-selected [] : I32 (gi (gg-sel)))
+;; how the page shows a log line of kind k: 0 hide, 1 plain, 2 room, 3 exits, 4 creature, 5 your hit, 6 danger, 7 heading, 8 prompt
+(defn nk-gfd-kind-style [(k : I32)] : I32
+  (case k 0 1 1 2 2 3 3 4 4 0 5 0 6 5 7 6 8 7 9 8 10 1 1))
+
+;; ---- the buttons ---------------------------------------------------------------------------------------------------------------------------
+;; 1 north 2 south 3 east 4 west 5 up 6 down | 7 look 8 status 9 inventory 10 map 11 who | 12 attack 13 stop 14 weapon skill
+;; 15 home 16 loot pool 17 mine 18 fish 19 mobs here 20 party
+(defn nk-gfd-buttons [] : I32 20)
+(defn nk-gfd-btn-label-addr [(b : I32)] : I32
+  (str-addr (case b 1 "N" 2 "S" 3 "E" 4 "W" 5 "Up" 6 "Down" 7 "Look" 8 "Status" 9 "Bag" 10 "Map" 11 "Who" 12 "Attack" 13 "Stop"
+                    14 "WS" 15 "Home" 16 "Loot" 17 "Mine" 18 "Fish" 19 "Mobs" 20 "Party" "")))
+(defn nk-gfd-btn-enabled [(b : I32)] : I32
+  (let [ex (gi (gg-exits)) playing (= (gi (gg-state)) 3)]
+    (b2i (and playing
+              (cond (<= b 6) (!= (bit-and ex (shl 1 (- b 1))) 0)
+                    (= b 12) (> (gi (gg-ncr)) 0)
+                    (= b 13) (!= (gi (gg-fighting)) 0)
+                    (= b 14) (>= (gi (gg-tp)) 100)
+                    :else (<= b 20))))))
+;; the command a button sends (written at nk-gfd-cmd-addr, without the newline); returns its length, 0 = nothing to send
+(defn nk-gfd-cmd-addr [] : I32 (gfd-cmd))
+(defn nk-gfd-cmd [(b : I32)] : I32
+  (cond
+    (= b 12)
+      (let [n (gfd-copy-lit! "attack " (gfd-cmd))]
+        (if (> (gfd-cstr-len (gfd-target)) 0)
+            (do (gfd-copy! (gfd-target) 0 (gfd-cstr-len (gfd-target)) (+ (gfd-cmd) n) 64) (+ n (gfd-cstr-len (gfd-target))))
+            (if (> (gi (gg-ncr)) 0)
+                (do (gfd-copy! (gfd-cr 0) 0 (gfd-cstr-len (gfd-cr 0)) (+ (gfd-cmd) n) 64) (+ n (gfd-cstr-len (gfd-cr 0))))
+                0)))
+    :else
+      (gfd-copy-lit! (case b 1 "n" 2 "s" 3 "e" 4 "w" 5 "go up" 6 "go down" 7 "look" 8 "status" 9 "inv" 10 "map" 11 "who"
+                            13 "stop" 14 "ws" 15 "home" 16 "pool" 17 "mine" 18 "fish" 19 "mobs" 20 "party" "")
+                     (gfd-cmd))))

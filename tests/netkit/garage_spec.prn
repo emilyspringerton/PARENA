@@ -8,10 +8,10 @@
 (defn gx-y [(i : I32) (w : I32) (h : I32)] : I32 (nk-garage-obj-y i w h))
 (defn gx-w [(i : I32) (w : I32) (h : I32)] : I32 (nk-garage-obj-w i w h))
 (defn gx-h [(i : I32) (w : I32) (h : I32)] : I32 (nk-garage-obj-h i w h))
-;; objects 1..5 whose box is not inside the 1000 x 1000 floor, or has no size
+;; objects 1..6 whose box is not inside the 1000 x 1000 floor, or has no size
 (defn gx-outside [(vw : I32) (vh : I32)] : I32
   (loop [i 1 bad 0]
-    (if (> i 5) bad
+    (if (> i 6) bad
         (let [x (gx-x i vw vh) y (gx-y i vw vh) w (gx-w i vw vh) h (gx-h i vw vh)]
           (recur (+ i 1) (+ bad (if (and (and (> w 0) (> h 0)) (and (and (>= x 0) (>= y 0)) (and (<= (+ x w) 1000) (<= (+ y h) 1000)))) 0 1)))))))
 (defn gx-overlap? [(a : I32) (b : I32) (vw : I32) (vh : I32)] : I32
@@ -20,14 +20,14 @@
       1 0))
 (defn gx-overlaps [(vw : I32) (vh : I32)] : I32
   (loop [a 1 b 2 n 0]
-    (cond (> a 4) n
-          (> b 5) (recur (+ a 1) (+ a 2) n)
+    (cond (> a 5) n
+          (> b 6) (recur (+ a 1) (+ a 2) n)
           :else (recur a (+ b 1) (+ n (gx-overlap? a b vw vh))))))
 ;; how many objects a tap misses: where = 0 the middle, 1 the corner (+1, +1), 2 five units left of the left edge (which may go
 ;; to the neighbour on the left, never to nothing)
 (defn gx-tap-misses [(where : I32) (vw : I32) (vh : I32)] : I32
   (loop [i 1 bad 0]
-    (if (> i 5) bad
+    (if (> i 6) bad
         (let [x (gx-x i vw vh) y (gx-y i vw vh) w (gx-w i vw vh) h (gx-h i vw vh)
               hit (cond (= where 0) (nk-garage-hit (+ x (/ w 2)) (+ y (/ h 2)) vw vh)
                         (= where 1) (nk-garage-hit (+ x 1) (+ y 1) vw vh)
@@ -47,9 +47,9 @@
         (sc-it! "a cable attaches at an object's middle") (lb-equal (nk-garage-anchor-x 2 vw vh) (+ (gx-x 2 vw vh) (/ (gx-w 2 vw vh) 2)))
       (sc-end!)))
 
-;; objects/lights with no words: how many of the 20 (object, light) pairs have an empty status
+;; objects/lights with no words: how many of the 24 (object, light) pairs have an empty status
 (defn gx-wordless [] : I32
-  (loop [k 0 bad 0] (if (>= k 20) bad (recur (+ k 1) (+ bad (if (= (load8 (nk-garage-status-addr (+ 1 (/ k 4)) (mod k 4))) 0) 1 0))))))
+  (loop [k 0 bad 0] (if (>= k 24) bad (recur (+ k 1) (+ bad (if (= (load8 (nk-garage-status-addr (+ 1 (/ k 4)) (mod k 4))) 0) 1 0))))))
 (defn gx-key-dupes [] : I32
   (loop [a 1 b 2 n 0]
     (cond (>= a (nk-garage-touch-count)) n
@@ -63,12 +63,13 @@
 (defn scarab-main [] : I32
   (do (sc-describe! "nk_garage")
         (sc-describe! "the floor")
-          (sc-it! "five objects: scanner bench, terminal, monitor, arcade cabinet, survival") (lb-equal (nk-garage-count) 5)
-          (sc-it! "landscape (1280 x 800): one row of five") (lb-equal (nk-garage-cols 1280 800) 5) (lb-equal (nk-garage-rows 1280 800) 1)
+          (sc-it! "six objects: scanner bench, terminal, monitor, arcade cabinet, survival, GoblinFoxDragon") (lb-equal (nk-garage-count) 6)
+          (sc-it! "landscape (1280 x 800): one row of six") (lb-equal (nk-garage-cols 1280 800) 6) (lb-equal (nk-garage-rows 1280 800) 1)
+          (sc-it! "a phone held sideways (915 x 412): three by two") (lb-equal (nk-garage-cols 915 412) 3) (lb-equal (nk-garage-rows 915 412) 2)
           (sc-it! "portrait (800 x 1280): two columns, three rows") (lb-equal (nk-garage-cols 800 1280) 2) (lb-equal (nk-garage-rows 800 1280) 3)
           (gx-floor! "landscape" 1280 800)
           (gx-floor! "portrait" 800 1280)
-          (sc-it! "ids 0 and 6 are not objects") (lb-equal (gx-w 0 1280 800) 0) (lb-equal (gx-w 6 1280 800) 0)
+          (sc-it! "ids 0 and 7 are not objects") (lb-equal (gx-w 0 1280 800) 0) (lb-equal (gx-w 7 1280 800) 0)
         (sc-end!)
         (sc-describe! "lights are true to the state they are given")
           (sc-it! "bench: never scanned -> off") (lb-equal (nk-garage-light 1 0 0 0) 0)
@@ -81,6 +82,7 @@
           (lb-equal (nk-garage-light 3 0 0 0) 0) (lb-equal (nk-garage-light 3 1 0 0) 2) (lb-equal (nk-garage-light 3 2 0 0) 1)
           (sc-it! "cabinet: unloaded off, loading amber, ready green, failed red")
           (lb-equal (nk-garage-light 4 0 0 0) 0) (lb-equal (nk-garage-light 4 1 0 0) 2) (lb-equal (nk-garage-light 4 2 0 0) 1) (lb-equal (nk-garage-light 4 3 0 0) 3)
+          (sc-it! "GoblinFoxDragon: off, connecting amber, connected green") (lb-equal (nk-garage-light 6 0 0 0) 0) (lb-equal (nk-garage-light 6 1 0 0) 2) (lb-equal (nk-garage-light 6 2 0 0) 1)
           (sc-it! "survival: unloaded off, loading amber, ready green, failed red")
           (lb-equal (nk-garage-light 5 0 0 0) 0) (lb-equal (nk-garage-light 5 1 0 0) 2) (lb-equal (nk-garage-light 5 2 0 0) 1) (lb-equal (nk-garage-light 5 3 0 0) 3)
           (sc-it! "an unknown object has no light") (lb-equal (nk-garage-light 9 2 2 2) 0)
@@ -92,7 +94,7 @@
           (sc-it! "labels")
           (lb-str-equal (nk-garage-label-addr 1) "Scanner bench") (lb-str-equal (nk-garage-label-addr 2) "Terminal")
           (lb-str-equal (nk-garage-label-addr 3) "Monitor") (lb-str-equal (nk-garage-label-addr 4) "Arcade cabinet")
-          (lb-str-equal (nk-garage-label-addr 5) "Survival")
+          (lb-str-equal (nk-garage-label-addr 5) "Survival") (lb-str-equal (nk-garage-label-addr 6) "GoblinFoxDragon")
           (sc-it! "every object says what it is for")
           (lb-not-equal (load8 (nk-garage-sub-addr 1)) 0) (lb-not-equal (load8 (nk-garage-sub-addr 2)) 0)
           (lb-not-equal (load8 (nk-garage-sub-addr 3)) 0) (lb-not-equal (load8 (nk-garage-sub-addr 4)) 0) (lb-not-equal (load8 (nk-garage-sub-addr 5)) 0)
@@ -116,6 +118,7 @@
           (sc-it! "with no sessions: bench -> devices, terminal/monitor -> devices with a hint, cabinet -> arcade")
           (lb-equal (nk-garage-action 1 0 0) 1) (lb-equal (nk-garage-action 2 0 0) 5) (lb-equal (nk-garage-action 3 0 0) 6) (lb-equal (nk-garage-action 4 0 0) 4)
           (sc-it! "the survival button opens survival") (lb-equal (nk-garage-action 5 0 0) 7) (lb-equal (nk-garage-action-view 7) 5)
+          (sc-it! "the GoblinFoxDragon button opens the MUD") (lb-equal (nk-garage-action 6 0 0) 8) (lb-equal (nk-garage-action-view 8) 6)
           (sc-it! "terminal and monitor open their view when a session exists")
           (lb-equal (nk-garage-action 2 2 0) 2) (lb-equal (nk-garage-action 3 0 2) 3) (lb-equal (nk-garage-action 2 1 0) 2)
           (sc-it! "tapping nothing does nothing") (lb-equal (nk-garage-action 0 0 0) 0) (lb-equal (nk-garage-action 7 2 2) 0)
@@ -125,7 +128,7 @@
           (sc-it! "hints only where an action needs one")
           (lb-equal (gx-contains (nk-garage-hint-addr 5) "SSH") 1) (lb-equal (gx-contains (nk-garage-hint-addr 6) "Screen") 1) (lb-str-equal (nk-garage-hint-addr 1) "")
           (sc-it! "back: arcade and devices -> garage, garage -> leave the app")
-          (lb-equal (nk-garage-back 0) -1) (lb-equal (nk-garage-back 1) 0) (lb-equal (nk-garage-back 2) -1) (lb-equal (nk-garage-back 3) -1) (lb-equal (nk-garage-back 4) 0) (lb-equal (nk-garage-back 5) 0)
+          (lb-equal (nk-garage-back 0) -1) (lb-equal (nk-garage-back 1) 0) (lb-equal (nk-garage-back 2) -1) (lb-equal (nk-garage-back 3) -1) (lb-equal (nk-garage-back 4) 0) (lb-equal (nk-garage-back 5) 0) (lb-equal (nk-garage-back 6) 0)
         (sc-end!)
         (sc-describe! "touch controls")
           (sc-it! "touch buttons map to BRAWLPIT's own keys (A D W S Space J Shift K P Enter Esc)")

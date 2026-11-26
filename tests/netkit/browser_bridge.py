@@ -5,7 +5,7 @@ import asyncio, base64, struct, json, os, socket, threading, time
 from aiohttp import web, WSMsgType
 
 CSP = ("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-       "connect-src 'self'; base-uri 'none'; form-action 'none'")
+       "connect-src 'self' wss://wotan.okemily.com; base-uri 'none'; form-action 'none'")
 
 SHIM = r"""
 (function () {
@@ -34,6 +34,9 @@ SHIM = r"""
     arpText() { return ''; },
     localNets() { return JSON.stringify({ cidrs: ['127.0.0.0/29'], ips: ['127.0.0.1'] }); },
     storeGet(k) { return store.has(k) ? store.get(k) : ''; }, storeSet(k, v) { store.set(k, v); }, storeDel(k) { store.delete(k); },
+    // IDUNA sign-in (NativeBridge.ssoOpen / ssoForget): the test puts a real token in window.__ssoToken; the shell would get it back from the browser
+    ssoOpen() { if (window.__ssoToken) { store.set('gfd_sso', JSON.stringify({ token: window.__ssoToken, player: '' })); emit({ t: 'sso', e: 'ok', player: '' }); } else emit({ t: 'sso', e: 'nobrowser' }); },
+    ssoForget() { store.delete('gfd_sso'); },
     clipboardSet(t) { clip = t; window.__clip = t; }, clipboardGet() { return window.__clipIn !== undefined ? window.__clipIn : clip; },
     // the USB drive (DriveStore.java): an in-memory drive the test fills and reads back through window.__drive (path -> base64)
     driveState() { return JSON.stringify({ open: window.__driveOpen ? 1 : 0, name: window.__driveOpen ? 'TESTSTICK' : '' }); },

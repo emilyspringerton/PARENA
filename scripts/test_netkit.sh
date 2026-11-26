@@ -33,6 +33,10 @@ echo "== x25519_spec.prn (nk_x25519.prn)"
 scripts/scarab_wasm.sh tests/netkit/x25519_spec.prn --modules stdlib/netkit/MODULES --file $V/x25519.vec | tail -3
 echo "== ed25519_spec.prn (nk_sha512.prn + nk_ed25519.prn)"
 scripts/scarab_wasm.sh tests/netkit/ed25519_spec.prn --modules stdlib/netkit/MODULES --file $V/sha512.vec --file $V/modl.vec --file $V/ed25519.vec | tail -3
+echo "== gfd_spec.prn (nk_gfd.prn: the GoblinFoxDragon client)"
+scripts/scarab_wasm.sh tests/netkit/gfd_spec.prn --modules stdlib/netkit/MODULES | tail -3
+echo "== test_gfd_ws_live.py (the signed-in GFD route from the app origin, production; GFD_SMOKE_IDENTITY)"
+python3 tests/netkit/test_gfd_ws_live.py | tail -4
 echo "== garage_spec.prn (nk_garage.prn)"
 scripts/scarab_wasm.sh tests/netkit/garage_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== term_spec.prn (nk_term.prn, the SSH terminal)"

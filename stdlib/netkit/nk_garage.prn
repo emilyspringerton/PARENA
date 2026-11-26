@@ -14,6 +14,7 @@
 ;;   4 arcade cabinet  -> BRAWLPIT, inside this page      light: loading / ready / could not load
 ;;   5 survival        -> SHANKPIT SURVIVAL, inside this page (the shankpit-460 PARENA engine + the CITY level + the survival
 ;;                        mods, stdlib/shankpit_survival/)   light: loading / ready / could not load
+;;   6 GoblinFoxDragon -> the MUD as a GUI (nk_gfd.prn)       light: connecting / connected
 ;;
 ;; Founder real-time 2026-11-26: "the shankpit net kit can be the shankphone and the shankphone itself can have a button for survival
 ;; that launches OG shankpit as a level and collection of mods". The garage is the SHANKPHONE's home screen; object 5 is that button.
@@ -26,12 +27,13 @@
 ;;   session   0 none, 1 connecting, 2 live          (ssh, vnc)
 ;;   scan      0 never scanned, 1 scanning, 2 scanned (with the device count passed separately)
 ;;   arcade    0 not loaded yet, 1 loading, 2 ready, 3 could not load     (survival uses the same four codes)
-;; View codes: 0 garage, 1 devices, 2 ssh, 3 vnc, 4 arcade, 5 survival.
+;; View codes: 0 garage, 1 devices, 2 ssh, 3 vnc, 4 arcade, 5 survival, 6 gfd.
+;;   gfd       0 not connected, 1 connecting, 2 connected
 
-(defn nk-garage-count [] : I32 5)
+(defn nk-garage-count [] : I32 6)
 
-;; landscape: one row of five; portrait: two columns (three rows, the last object alone)
-(defn nk-garage-cols [(vw : I32) (vh : I32)] : I32 (if (>= vw vh) 5 2))
+;; landscape: one row of six on a tablet, three by two on a phone held sideways; portrait: two columns, three rows
+(defn nk-garage-cols [(vw : I32) (vh : I32)] : I32 (if (>= vw vh) (if (>= vw 1100) 6 3) 2))
 (defn nk-garage-rows [(vw : I32) (vh : I32)] : I32 (/ (+ (nk-garage-count) (- (nk-garage-cols vw vh) 1)) (nk-garage-cols vw vh)))
 
 (defn garage-col [(id : I32) (vw : I32) (vh : I32)] : I32 (mod (- id 1) (nk-garage-cols vw vh)))
@@ -39,7 +41,7 @@
 (defn garage-cw [(vw : I32) (vh : I32)] : I32 (/ 1000 (nk-garage-cols vw vh)))
 (defn garage-ch [(vw : I32) (vh : I32)] : I32 (/ 1000 (nk-garage-rows vw vh)))
 
-;; an object fills 80% of its cell, centred; ids outside 1..5 are not objects (all zero)
+;; an object fills 80% of its cell, centred; ids outside 1..6 are not objects (all zero)
 (defn nk-garage-obj-x [(id : I32) (vw : I32) (vh : I32)] : I32
   (if (and (>= id 1) (<= id (nk-garage-count)))
       (+ (* (garage-col id vw vh) (garage-cw vw vh)) (/ (garage-cw vw vh) 10))
@@ -84,6 +86,7 @@
     3 (cond (= a 2) 1 (= a 1) 2 :else 0)
     4 (cond (= a 2) 1 (= a 1) 2 (= a 3) 3 :else 0)
     5 (cond (= a 2) 1 (= a 1) 2 (= a 3) 3 :else 0)
+    6 (cond (= a 2) 1 (= a 1) 2 :else 0)
     0))
 
 (defn nk-garage-light-name-addr [(l : I32)] : I32
@@ -101,6 +104,7 @@
     3 (str-addr "Monitor")
     4 (str-addr "Arcade cabinet")
     5 (str-addr "Survival")
+    6 (str-addr "GoblinFoxDragon")
     (str-addr "")))
 
 ;; what the object is for (always shown)
@@ -111,6 +115,7 @@
     3 (str-addr "See a device's screen")
     4 (str-addr "Play BRAWLPIT")
     5 (str-addr "SHANKPIT: hold the city, wave after wave")
+    6 (str-addr "The MUD, with buttons")
     (str-addr "")))
 
 ;; what the light means right now
@@ -139,6 +144,10 @@
         2 (str-addr "Loading")
         3 (str-addr "Could not load")
         (str-addr "Tap to play"))
+    6 (case light
+        1 (str-addr "Connected")
+        2 (str-addr "Connecting")
+        (str-addr "Tap to play"))
     (str-addr "")))
 
 ;; ---- cables: a cable exists only while the connection it stands for is live ------------------------------------------------------
@@ -155,7 +164,7 @@
 ;; The view to go to for a tap on object `id`; ssh/vnc are the session states. A terminal or monitor with no live session has nothing
 ;; to show, so it sends you to the device list, where a session is started, with a hint (nk-garage-hint-addr).
 ;; 0 = nothing; 1 devices; 2 ssh; 3 vnc; 4 arcade; 5 devices (hint: start an SSH session there); 6 devices (hint: start a screen session);
-;; 7 survival
+;; 7 survival; 8 gfd
 (defn nk-garage-action [(id : I32) (ssh : I32) (vnc : I32)] : I32
   (case id
     1 1
@@ -163,6 +172,7 @@
     3 (if (= vnc 0) 6 3)
     4 4
     5 7
+    6 8
     0))
 
 (defn nk-garage-action-view [(action : I32)] : I32
@@ -174,6 +184,7 @@
     5 1
     6 1
     7 5
+    8 6
     0))
 
 (defn nk-garage-hint-addr [(action : I32)] : I32
@@ -190,6 +201,7 @@
     1 0
     4 0
     5 0
+    6 0
     -1))
 
 ;; ---- BRAWLPIT's touch controls --------------------------------------------------------------------------------------------------
