@@ -4,6 +4,7 @@ stdlib/netkit/host/nk_host_scan.prn
 stdlib/netkit/host/nk_host_ssh.prn
 stdlib/netkit/host/nk_host_vnc.prn
 stdlib/netkit/host/nk_host_files.prn
+stdlib/netkit/host/nk_host_drive.prn
 stdlib/netkit/host/nk_host_arcade.prn
 stdlib/netkit/host/nk_host_garage.prn
 stdlib/netkit/host/nk_host_ui.prn

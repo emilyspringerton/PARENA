@@ -1,0 +1,380 @@
+;; stdlib/netkit/host/nk_host_drive.prn -- the Drive screen: a USB drive (or SD card) plugged into the tablet, a text editor that saves
+;; to it, and the VNC kit for a Windows PC with no screen. The document, its cursor, selection, undo and line ends live in the wasm
+;; (nk_edit.prn); the kit's files and the password rules too (nk_kit.prn). This file draws the visible lines, turns taps and keys into
+;; nk-ed-* calls and moves bytes to and from the drive.
+;;
+;; The native contract (DriveStore.java; Android's folder picker and storage framework -- the only way an app reaches a USB stick):
+;;   driveState() -> JSON {open:0|1, name}   driveOpen()   driveForget()   driveList(path)   driveRead(path)   driveWrite(path, base64)
+;;   events {t:"drive", e:"open", name} | {e:"cancel"} | {e:"list", path, items:[{n, d, s, m}]} | {e:"read", path, b}
+;;          | {e:"wrote", path, n} | {e:"error", op, path, msg}         paths: "" is the top folder, "a/b.txt" one folder down
+
+(def drv null)        ; the Drive screen's state (a JS object), made on first visit
+(def ed-lh 20)        ; editor line height, px (netkit.css #ed-text line-height)
+
+(defn dx [] : Any (js/get drv "x"))
+(defn du8 [] : Any (js/get drv "u8"))
+(defn dcall [(name : String)] : I32 (js/call (js/get (dx) name) "call" null))
+(defn dtext [(a : I32)] : String (cstr (du8) a))
+(defn native-drive? [] : Bool (and (have-native?) (not (= (js/typeof (js/get nat "driveOpen")) "undefined"))))
+
+(defn drive-init! [] : Unit
+  (when (js/null? drv)
+    (let [x (exports-of (instantiate mod-lite))]
+      (do (set! drv (js/obj "x" x "u8" (u8-of x) "path" "" "doc" "" "open" false "name" "" "items" (js/array) "kit" 0
+                            "warned" false "busy" false "drag" false "comp" ""))
+          (js/call x "nk_ed_new" 0)))))
+
+;; bytes <-> base64 in chunks (a whole 2 MB export does not fit one fromCharCode.apply)
+(defn b64-chunk [(u8 : Any) (a : I32) (n : I32) (i : I32)] : String
+  (js/call (js/get (js/global "String") "fromCharCode") "apply" null (js/call u8 "subarray" (+ a i) (+ a (math/min n (+ i 32768))))))
+(defn bytes-b64 [(u8 : Any) (a : I32) (n : I32)] : String
+  (loop [i 0 acc ""] (if (>= i n) (js/call-fn (js/global "btoa") acc) (recur (+ i 32768) (str acc (b64-chunk u8 a n i))))))
+(defn utf8 [(a : I32) (b : I32)] : String (js/call (js/new "TextDecoder") "decode" (js/call (du8) "subarray" a b)))
+
+;; ---- the file list ------------------------------------------------------------------------------------------------------------------------------
+(defn drive-say! [(t : Any)] : Unit (set-text! "drive-where" t))
+(defn drive-title! [] : Unit
+  (set-text! "drive-title" (cond (not (js/get drv "open")) "USB drive"
+                                 (= (js/get drv "name") "") "USB drive"
+                                 :else (js/get drv "name"))))
+(defn drive-list! [(path : String)] : Unit
+  (do (js/set! drv "path" path)
+      (drive-say! (str "Reading " (if (= path "") "the drive" path) "..."))
+      (js/call nat "driveList" path)))
+
+(defn size-text [(s : Any)] : String
+  (cond (< s 0) "" (< s 1024) (str s " bytes") (< s 1048576) (str (math/round (/ s 1024.0)) " KB")
+        :else (str (/ (math/round (/ s 104857.6)) 10.0) " MB")))
+(defn item-cmp [(a : Any) (b : Any)] : I32
+  (cond (!= (js/get a "d") (js/get b "d")) (- (js/get b "d") (js/get a "d"))
+        :else (js/call (js/call (js/get a "n") "toLowerCase") "localeCompare" (js/call (js/get b "n") "toLowerCase"))))
+(defn item-html [(it : Any)] : String
+  (let [dir? (= (js/get it "d") 1) n (js/get it "n")]
+    (str "<li class=\"dev\" data-name=\"" (esc n) "\" data-dir=\"" (if dir? "1" "0") "\"><div class=\"dev-main\"><div class=\"dev-name\">"
+         (esc n) (if dir? "/" "") "</div><div class=\"dev-sub\">" (if dir? "folder" (size-text (js/get it "s"))) "</div></div>"
+         "<div class=\"dev-actions\"><button data-act=\"" (if dir? "open" "edit") "\">" (if dir? "Open" "Edit") "</button></div></li>")))
+(defn items-html [(items : Any)] : String
+  (let [n (js/get items "length")]
+    (loop [k 0 acc ""] (if (>= k n) acc (recur (+ k 1) (str acc (item-html (js/aget items k))))))))
+(defn drive-render-list! [] : Unit
+  (let [items (js/get drv "items") p (js/get drv "path")]
+    (do (js/call items "sort" (callback item-cmp))
+        (set-hidden! "btn-drive-up" (= p ""))
+        (drive-say! (str (if (= p "") "Top of the drive" p) "  -  " (js/get items "length") " items"))
+        (set-html! "drive-list" (if (= (js/get items "length") 0) "<li class=\"hint\">Empty. Tap New file, or VNC kit.</li>" (items-html items))))))
+
+(defn drive-show-box! [(which : String)] : Unit
+  (do (set-hidden! "drive-files" (!= which "files"))
+      (set-hidden! "drive-kit" (!= which "kit"))
+      (set-hidden! "ed" (!= which "ed"))
+      (set-hidden! "drive-bar" (= which "ed"))))
+
+(defn drive-enter! [] : Unit
+  (do (drive-init!)
+      (if (not (native-drive?))
+          (do (drive-say! "The USB drive is reached through the Netkit app on Android (its folder picker). In a browser, Save downloads the file instead.")
+              (set-hidden! "btn-drive-pick" true))
+          (let [st (js/call (js/global "JSON") "parse" (js/call nat "driveState"))]
+            (do (js/set! drv "open" (= (js/get st "open") 1)) (js/set! drv "name" (js/get st "name"))
+                (drive-title!)
+                (set-text! "btn-drive-pick" (if (js/get drv "open") "Change drive" "Choose USB drive"))
+                (when (and (js/get drv "open") (js/get (el "ed") "hidden")) (drive-list! (js/get drv "path")))
+                (when (not (js/get drv "open"))
+                  (drive-say! "Plug the USB drive into the tablet, tap Choose USB drive, pick the drive, then Use this folder and Allow.")))))))
+
+(defn on-drive-pick [(e : Any)] : Unit (when (native-drive?) (js/call nat "driveOpen")))
+(defn on-drive-up [(e : Any)] : Unit (drive-list! (parent-path (js/get drv "path"))))
+
+(defn on-drive-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-act]")]
+    (when (not (js/null? b))
+      (let [li (js/call b "closest" "li") d (js/get li "dataset") p (join-path (js/get drv "path") (js/get d "name"))]
+        (if (= (js/get (js/get b "dataset") "act") "open") (drive-list! p) (drive-read! p))))))
+
+;; ---- new file -----------------------------------------------------------------------------------------------------------------------------------
+(defn on-drive-new [(e : Any)] : Unit
+  (do (set-hidden! "drive-newrow" false) (set-val! "drive-newname" "") (js/call (el "drive-newname") "focus")))
+(defn on-drive-new-go [(e : Any)] : Unit
+  (let [name (js/call (str (val "drive-newname")) "trim")]
+    (if (or (= name "") (>= (js/call name "search" "[\\\\/:*?\"<>|]") 0))
+        (banner! "Give the file a name (no \\ / : * ? \" < > |), for example notes.txt or run.bat")
+        (let [n (put-text! (du8) (dcall "nk_txt_addr") name)]
+          (do (set-hidden! "drive-newrow" true)
+              (js/call (dx) "nk_ed_new" (js/call (dx) "nk_ed_eol_for_name" n))
+              (ed-open! (join-path (js/get drv "path") name)))))))
+
+;; ---- the editor ---------------------------------------------------------------------------------------------------------------------------------
+(defn drive-read! [(path : String)] : Unit
+  (do (js/set! drv "busy" true) (drive-say! (str "Opening " path "...")) (js/call nat "driveRead" path)))
+
+(defn ed-name [] : String
+  (let [p (js/get drv "doc") i (js/call p "lastIndexOf" "/")] (if (< i 0) p (js/call p "slice" (+ i 1)))))
+(defn ed-char-w [] : F64
+  (let [m (el "ed-measure")] (if (js/null? m) 9.0 (/ (js/get (js/call m "getBoundingClientRect") "width") 20.0))))
+
+(defn ed-open! [(path : String)] : Unit
+  (do (js/set! drv "doc" path) (js/set! drv "warned" false)
+      (drive-show-box! "ed")
+      (set-text! "ed-name" (ed-name))
+      (js/set! (el "ed-view") "scrollTop" 0) (js/set! (el "ed-view") "scrollLeft" 0)
+      (let [m (js/call (dx) "nk_ed_msg")] (set-text! "ed-msg" (dtext (js/call (dx) "nk_ed_msg_text_addr" m))))
+      (ed-draw! true)
+      (when (= (js/call (dx) "nk_ed_binary") 0) (js/call (el "ed-ime") "focus"))))
+
+;; one line's HTML: the selection highlighted, the caret where the cursor is
+(defn ed-seg [(a : I32) (b : I32)] : String (if (>= a b) "" (esc (utf8 (+ (js/call (dx) "nk_ed_buf_addr") a) (+ (js/call (dx) "nk_ed_buf_addr") b)))))
+(defn ed-line-html [(r : I32) (s0 : I32) (s1 : I32) (cur : I32)] : String
+  (let [x (dx) ls (js/call x "nk_ed_line_start" r) le (js/call x "nk_ed_line_end" r)
+        a (math/max ls (math/min s0 le)) b (math/max ls (math/min s1 le))
+        on? (and (>= cur ls) (<= cur le))
+        caret (if on? "<span class=\"caret\"></span>" "")
+        sel (if (< a b) (str "<span class=\"sel\">" (ed-seg a b) "</span>") "")]
+    (str (ed-seg ls a)
+         (if (and on? (= cur a)) caret "") sel (if (and on? (and (= cur b) (< a b))) caret "")
+         (ed-seg b le) (if (and on? (> cur b)) caret "")
+         (if (and (< s0 s1) (and (>= s1 (+ le 1)) (<= s0 le))) "<span class=\"sel\"> </span>" "") "\n")))
+(defn ed-lines-html [(first : I32) (last : I32)] : String
+  (let [x (dx) s0 (js/call x "nk_ed_sel_start") s1 (js/call x "nk_ed_sel_end") cur (js/call x "nk_ed_cursor")]
+    (loop [r first acc ""] (if (> r last) acc (recur (+ r 1) (str acc (ed-line-html r s0 s1 cur)))))))
+
+;; keep the cursor on screen, then draw only the rows that show
+(defn ed-follow! [] : Unit
+  (let [v (el "ed-view") x (dx) top (* (js/call x "nk_ed_row") ed-lh) h (js/get v "clientHeight")
+        left (* (js/call x "nk_ed_vcol") (ed-char-w)) w (js/get v "clientWidth")]
+    (do (when (< top (js/get v "scrollTop")) (js/set! v "scrollTop" top))
+        (when (> (+ top (+ ed-lh 8)) (+ (js/get v "scrollTop") h)) (js/set! v "scrollTop" (- (+ top (+ ed-lh 8)) h)))
+        (when (< left (js/get v "scrollLeft")) (js/set! v "scrollLeft" (math/max 0 (- left 40))))
+        (when (> (+ left 60) (+ (js/get v "scrollLeft") w)) (js/set! v "scrollLeft" (- (+ left 60) w))))))
+(defn ed-draw! [(follow : Bool)] : Unit
+  (let [x (dx) v (el "ed-view") n (js/call x "nk_ed_lines")]
+    (do (js/set! (js/get (el "ed-sizer") "style") "height" (str (+ (* n ed-lh) 16) "px"))
+        (js/call x "nk_ed_set_page" (math/max 1 (- (math/floor (/ (js/get v "clientHeight") ed-lh)) 1)))
+        (when follow (ed-follow!))
+        (let [first (math/max 0 (- (math/floor (/ (js/get v "scrollTop") ed-lh)) 2))
+              last (math/min (- n 1) (+ first (+ (+ 1 (math/floor (/ (js/get v "clientHeight") ed-lh))) 4)))]
+          (do (js/set! (js/get (el "ed-text") "style") "top" (str (+ 8 (* first ed-lh)) "px"))
+              (set-html! "ed-text" (ed-lines-html first last))))
+        (ed-status!))))
+(defn ed-status! [] : Unit
+  (let [x (dx) ro (= (js/call x "nk_ed_binary") 1)]
+    (do (set-text! "ed-pos" (str "Line " (+ 1 (js/call x "nk_ed_row")) ", column " (+ 1 (js/call x "nk_ed_vcol"))
+                                 "  -  " (js/call x "nk_ed_lines") " lines" (if (= (js/get drv "comp") "") "" (str "  -  typing: " (js/get drv "comp")))))
+        (set-text! "ed-state" (cond ro "read only" (= (js/call x "nk_ed_dirty") 1) "not saved" :else "saved"))
+        (set-text! "btn-ed-eol" (dtext (js/call x "nk_ed_eol_text_addr")))
+        (js/set! (el "btn-ed-save") "disabled" ro)
+        (js/set! (el "btn-ed-undo") "disabled" (= (js/call x "nk_ed_can_undo") 0)))))
+(defn on-ed-scroll [(e : Any)] : Unit (when (not (js/null? drv)) (ed-draw! false)))
+
+(defn ed-msg! [] : Unit
+  (let [m (js/call (dx) "nk_ed_msg")] (set-text! "ed-msg" (dtext (js/call (dx) "nk_ed_msg_text_addr" m)))))
+(defn ed-key! [(code : I32) (mods : I32)] : Unit
+  (do (js/call (dx) "nk_ed_key" code mods) (ed-msg!) (ed-draw! true)))
+(defn ed-type! [(s : String)] : Unit
+  (when (and (!= s "") (= (js/call (dx) "nk_ed_binary") 0))
+    (let [n (put-text! (du8) (dcall "nk_txt_addr") s)]
+      (do (js/call (dx) "nk_ed_insert" n) (ed-msg!) (ed-draw! true)))))
+(defn ed-paste! [(s : Any)] : Unit
+  (let [t (str s)]
+    (loop [i 0] (when (< i (js/get t "length")) (ed-type! (js/call t "slice" i (+ i 16000))) (recur (+ i 16000))))))
+
+(defn editor-keys? [] : Bool (and (not (js/null? drv)) (and (not (js/get (el "view-drive") "hidden")) (not (js/get (el "ed") "hidden")))))
+(defn ed-code-of [(k : String) (ctrl : Bool)] : I32
+  (cond (= k "ArrowLeft") 1 (= k "ArrowRight") 2 (= k "ArrowUp") 3 (= k "ArrowDown") 4 (= k "Home") 5 (= k "End") 6
+        (= k "Backspace") 7 (= k "Delete") 8 (= k "Enter") 9 (= k "Tab") 10 (= k "PageUp") 11 (= k "PageDown") 12
+        (and ctrl (or (= k "a") (= k "A"))) 13 (and ctrl (or (= k "z") (= k "Z"))) 14 :else 0))
+(defn on-ed-keydown [(e : Any)] : Unit
+  (when (and (editor-keys?) (= (js/get (js/get e "target") "id") "ed-ime"))
+    (let [k (js/get e "key") ctrl (or (js/get e "ctrlKey") (js/get e "metaKey")) code (ed-code-of k ctrl)]
+      (cond (js/get e "isComposing") unit
+            (and ctrl (or (= k "s") (= k "S"))) (do (js/call e "preventDefault") (ed-save!))
+            (and ctrl (or (= k "f") (= k "F"))) (do (js/call e "preventDefault") (on-ed-find-open null))
+            (and ctrl (or (= k "c") (= k "C"))) (do (js/call e "preventDefault") (ed-copy!))
+            (> code 0) (do (js/call e "preventDefault")
+                           (ed-key! code (bit-or (if (js/get e "shiftKey") 1 0) (if ctrl 2 0))))
+            :else unit))))
+
+;; the soft keyboard types into a hidden textarea holding one space (so Backspace always has something to delete); what lands is
+;; inserted and the space put back. A word being composed is shown in the status line and inserted when it is committed.
+(defn ed-ime-reset! [] : Unit
+  (let [t (el "ed-ime")] (do (js/set! t "value" " ") (js/call t "setSelectionRange" 1 1))))
+(defn ed-ime-take! [] : Unit
+  (let [v (str (val "ed-ime"))]
+    (do (js/set! drv "comp" "")
+        (ed-type! (if (js/call v "startsWith" " ") (js/call v "slice" 1) v))
+        (ed-ime-reset!))))
+(defn on-ed-input [(e : Any)] : Unit
+  (when (editor-keys?)
+    (let [it (js/get e "inputType")]
+      (cond (js/get e "isComposing") (do (js/set! drv "comp" (js/call (str (val "ed-ime")) "trim")) (ed-status!))
+            (= it "deleteContentBackward") (do (ed-ime-reset!) (ed-key! 7 0))
+            (= it "deleteContentForward") (do (ed-ime-reset!) (ed-key! 8 0))
+            (or (= it "insertLineBreak") (= it "insertParagraph")) (do (ed-ime-reset!) (ed-key! 9 0))
+            (= (val "ed-ime") "") (do (ed-ime-reset!) (ed-key! 7 0))
+            :else (ed-ime-take!)))))
+(defn on-ed-compend [(e : Any)] : Unit (when (editor-keys?) (ed-ime-take!)))
+(defn on-ed-paste [(e : Any)] : Unit
+  (when (editor-keys?)
+    (do (js/call e "preventDefault") (js/call e "stopPropagation")
+        (ed-paste! (js/call (js/get e "clipboardData") "getData" "text")))))
+(defn ed-copy! [] : Unit
+  (let [x (dx) a (js/call x "nk_ed_sel_start") b (js/call x "nk_ed_sel_end") base (js/call x "nk_ed_buf_addr")]
+    (when (and (< a b) (have-native?)) (js/call nat "clipboardSet" (utf8 (+ base a) (+ base b))))))
+
+;; taps: place the cursor (drag or Shift extends), and bring up the keyboard
+(defn ed-hit! [(e : Any) (extend : I32)] : Unit
+  (let [v (el "ed-view") r (js/call v "getBoundingClientRect")
+        y (+ (- (js/get e "clientY") (js/get r "top")) (- (js/get v "scrollTop") 8))
+        xx (+ (- (js/get e "clientX") (js/get r "left")) (- (js/get v "scrollLeft") 10))]
+    (do (js/call (dx) "nk_ed_click" (math/floor (/ y ed-lh)) (math/round (/ xx (ed-char-w))) extend)
+        (ed-draw! false))))
+(defn on-ed-down [(e : Any)] : Unit
+  (do (js/set! drv "drag" true)
+      (ed-hit! e (if (js/get e "shiftKey") 1 0))
+      (js/call e "preventDefault")
+      (when (= (js/call (dx) "nk_ed_binary") 0) (js/call (el "ed-ime") "focus" (js/obj "preventScroll" true)))))
+(defn on-ed-move [(e : Any)] : Unit (when (and (not (js/null? drv)) (js/get drv "drag")) (ed-hit! e 1)))
+(defn on-ed-up [(e : Any)] : Unit (when (not (js/null? drv)) (js/set! drv "drag" false)))
+
+;; the key bar under the editor (a tablet keyboard has no arrows); buttons never take the focus from the keyboard
+(def ed-shift false)
+(defn on-ed-keybar [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "button")]
+    (when (and (not (js/null? b)) (editor-keys?))
+      (do (js/call e "preventDefault")
+          (let [k (js/get (js/get b "dataset") "ek")]
+            (if (= k "shift")
+                (do (set! ed-shift (not ed-shift)) (js/call (js/get b "classList") "toggle" "on" ed-shift))
+                (ed-key! (js/call-fn (js/global "Number") k) (if ed-shift 1 0))))))))
+(defn on-keybar-down [(e : Any)] : Unit (js/call e "preventDefault"))
+
+;; ---- find, line ends, undo, save ---------------------------------------------------------------------------------------------------------------
+(defn on-ed-find-open [(e : Any)] : Unit (do (set-hidden! "ed-findbar" false) (js/call (el "ed-find") "focus")))
+(defn on-ed-find-next [(e : Any)] : Unit
+  (let [n (put-text! (du8) (dcall "nk_txt_addr") (val "ed-find"))]
+    (do (js/call (dx) "nk_ed_find" n) (ed-msg!) (ed-draw! true))))
+(defn on-ed-find-key [(e : Any)] : Unit
+  (when (= (js/get e "key") "Enter") (do (js/call e "preventDefault") (on-ed-find-next e))))
+(defn on-ed-eol [(e : Any)] : Unit
+  (do (js/call (dx) "nk_ed_set_eol" (- 1 (js/call (dx) "nk_ed_eol"))) (ed-draw! false)))
+(defn on-ed-undo [(e : Any)] : Unit (ed-key! 14 0))
+
+(defn ed-save! [] : Unit
+  (when (= (js/call (dx) "nk_ed_binary") 0)
+    (let [n (js/call (dx) "nk_ed_export") a (js/call (dx) "nk_ed_exp_addr")]
+      (if (native-drive?)
+          (do (set-text! "ed-msg" (str "Saving " (ed-name) "...")) (js/call nat "driveWrite" (js/get drv "doc") (bytes-b64 (du8) a n)))
+          (browser-download! (ed-name) (js/call (du8) "slice" a (+ a n)))))))
+(defn on-ed-save [(e : Any)] : Unit (ed-save!))
+;; outside the Android app: hand the bytes to the browser as a download
+(defn browser-download! [(name : String) (bytes : Any)] : Unit
+  (let [url (js/call (js/global "URL") "createObjectURL" (js/new "Blob" (js/array bytes) (js/obj "type" "application/octet-stream")))
+        a (js/call (doc) "createElement" "a")]
+    (do (js/set! a "href" url) (js/set! a "download" name) (js/call a "click")
+        (js/call (dx) "nk_ed_saved") (set-text! "ed-msg" (str "Downloaded " name)) (ed-status!))))
+
+;; Back / Files: leave the editor (a second tap discards unsaved changes)
+(defn ed-close! [] : Bool
+  (if (and (= (js/call (dx) "nk_ed_dirty") 1) (not (js/get drv "warned")))
+      (do (js/set! drv "warned" true) (set-text! "ed-msg" "Not saved. Tap Files (or Back) again to close without saving, or tap Save.") false)
+      (do (js/call (el "ed-ime") "blur") (drive-files!) true)))
+(defn on-ed-close [(e : Any)] : Unit (ed-close!))
+
+;; ---- the VNC kit ---------------------------------------------------------------------------------------------------------------------------------
+(defn on-drive-kit [(e : Any)] : Unit
+  (do (drive-show-box! "kit")
+      (set-text! "kit-run" (dtext (dcall "nk_kit_run_line_addr")))
+      (set-text! "kit-out" "")
+      (js/call (el "kit-pass") "focus")))
+(defn drive-files! [] : Unit (do (drive-show-box! "files") (when (js/get drv "open") (drive-list! (js/get drv "path")))))
+(defn on-kit-close [(e : Any)] : Unit (drive-files!))
+(defn kit-pw-code [] : I32 (js/call (dx) "nk_kit_pw_check" (put-text! (du8) (dcall "nk_txt_addr") (val "kit-pass"))))
+(defn on-kit-pass [(e : Any)] : Unit (set-text! "kit-pw-note" (dtext (js/call (dx) "nk_kit_pw_text_addr" (kit-pw-code)))))
+(defn kit-write! [(path : String) (n : I32)] : Unit
+  (js/call nat "driveWrite" path (bytes-b64 (du8) (js/call (dx) "nk_ed_exp_addr") n)))
+(defn kit-bat! [(buf : Any)] : Unit
+  (let [u (js/new "Uint8Array" buf)] (js/call nat "driveWrite" "setup.bat" (bytes-b64 u 0 (js/get u "length")))))
+(defn kit-bat-missing [(err : Any)] : Unit (do (js/set! drv "kit" 0) (banner! (str "This build has no setup.bat inside it (" err ")"))))
+(defn on-kit-write [(e : Any)] : Unit
+  (let [code (kit-pw-code)]
+    (cond (not (native-drive?)) (banner! "Writing to a USB drive needs the Netkit app on Android")
+          (not (js/get drv "open")) (banner! "Choose the USB drive first")
+          (and (!= code 0) (!= code 6)) (banner! (dtext (js/call (dx) "nk_kit_pw_text_addr" code)))
+          :else
+          (let [n (put-text! (du8) (dcall "nk_txt_addr") (val "kit-pass"))]
+            (do (js/set! drv "kit" 3)
+                (set-text! "kit-out" "Writing setup.bat, setup.conf and NETKIT.TXT...")
+                (kit-write! "setup.conf" (js/call (dx) "nk_kit_conf" n (if (checked? "kit-private") 1 0)))
+                (kit-write! "NETKIT.TXT" (dcall "nk_kit_readme"))
+                (js/call (js/call (js/call (js/call-fn (js/global "fetch") "kit/setup.bat") "then" (callback fetch-bytes)) "then" (callback kit-bat!))
+                         "catch" (callback kit-bat-missing)))))))
+(defn kit-wrote! [] : Unit
+  (do (js/set! drv "kit" (- (js/get drv "kit") 1))
+      (when (= (js/get drv "kit") 0)
+        (do (set-val! "kit-pass" "") (set-text! "kit-pw-note" "")
+            (set-text! "kit-out" (str "Done: setup.bat, setup.conf and NETKIT.TXT are on " (if (= (js/get drv "name") "") "the drive" (js/get drv "name"))
+                                      ". Eject the drive (Android's notification, or Settings, Storage) before pulling it out, then plug it into the PC."))))))
+
+;; ---- drive events ---------------------------------------------------------------------------------------------------------------------------------
+(defn drive-on-event! [(ev : Any)] : Unit
+  (when (not (js/null? drv))
+    (let [e (js/get ev "e")]
+      (cond
+        (= e "open") (do (js/set! drv "open" true) (js/set! drv "name" (js/get ev "name")) (drive-title!)
+                         (set-text! "btn-drive-pick" "Change drive") (drive-list! ""))
+        (= e "cancel") (drive-say! (if (js/get drv "open") "Kept the same drive." "No drive chosen. Plug it in, then Choose USB drive."))
+        (= e "list") (when (= (js/get ev "path") (js/get drv "path")) (do (js/set! drv "items" (js/get ev "items")) (drive-render-list!)))
+        (= e "read") (let [b (js/get ev "b") a (dcall "nk_ed_buf_addr") cap (dcall "nk_ed_cap")
+                           bin (js/call-fn (js/global "atob") b) n (math/min (js/get bin "length") (+ cap 1))]
+                       (do (dotimes [i n] (js/aset! (du8) (+ a i) (js/call bin "charCodeAt" i)))
+                           (js/call (dx) "nk_ed_load" (if (> (js/get bin "length") cap) (js/get bin "length") n))
+                           (js/set! drv "busy" false)
+                           (ed-open! (js/get ev "path"))
+                           (when (>= (js/call (js/call (js/get ev "path") "toLowerCase") "indexOf" "log") 0) (ed-key! 16 0))))
+        (= e "wrote") (if (> (js/get drv "kit") 0) (kit-wrote!)
+                          (when (= (js/get ev "path") (js/get drv "doc"))
+                            (do (js/call (dx) "nk_ed_saved") (js/set! drv "warned" false)
+                                (set-text! "ed-msg" (str "Saved to " (if (= (js/get drv "name") "") "the drive" (js/get drv "name")) " ("
+                                                         (js/get ev "n") " bytes). Eject the drive before pulling it out."))
+                                (ed-status!))))
+        (= e "error") (do (js/set! drv "busy" false)
+                          (when (> (js/get drv "kit") 0) (do (js/set! drv "kit" 0) (set-text! "kit-out" "")))
+                          (banner! (str (js/get ev "msg") (if (= (js/get ev "path") "") "" (str " (" (js/get ev "path") ")")))))
+        :else unit))))
+
+;; Back on the Drive screen: close the editor or the kit, then go up a folder. false at the top.
+(defn drive-back! [] : Bool
+  (cond (js/null? drv) false
+        (not (js/get (el "ed") "hidden")) (do (ed-close!) true)
+        (not (js/get (el "drive-kit") "hidden")) (do (drive-files!) true)
+        (!= (js/get drv "path") "") (do (drive-list! (parent-path (js/get drv "path"))) true)
+        :else false))
+(defn on-drive-up-click [(e : Any)] : Unit (on-drive-up e))
+
+(defn wire-drive! [] : Unit
+  (do (on! "btn-drive-pick" "click" (callback on-drive-pick))
+      (on! "btn-drive-up" "click" (callback on-drive-up-click))
+      (on! "btn-drive-new" "click" (callback on-drive-new))
+      (on! "drive-newgo" "click" (callback on-drive-new-go))
+      (on! "btn-drive-kit" "click" (callback on-drive-kit))
+      (on! "drive-list" "click" (callback on-drive-click))
+      (on! "btn-kit-close" "click" (callback on-kit-close))
+      (on! "btn-kit-write" "click" (callback on-kit-write))
+      (on! "kit-pass" "input" (callback on-kit-pass))
+      (on! "btn-ed-close" "click" (callback on-ed-close))
+      (on! "btn-ed-save" "click" (callback on-ed-save))
+      (on! "btn-ed-undo" "click" (callback on-ed-undo))
+      (on! "btn-ed-eol" "click" (callback on-ed-eol))
+      (on! "btn-ed-find" "click" (callback on-ed-find-open))
+      (on! "ed-find-next" "click" (callback on-ed-find-next))
+      (on! "ed-find" "keydown" (callback on-ed-find-key))
+      (on! "ed-view" "pointerdown" (callback on-ed-down))
+      (on! "ed-view" "pointermove" (callback on-ed-move))
+      (on! "ed-view" "pointerup" (callback on-ed-up))
+      (on! "ed-view" "pointercancel" (callback on-ed-up))
+      (on! "ed-view" "scroll" (callback on-ed-scroll))
+      (on! "ed-ime" "input" (callback on-ed-input))
+      (on! "ed-ime" "compositionend" (callback on-ed-compend))
+      (on! "ed-ime" "paste" (callback on-ed-paste))
+      (on! "ed-ime" "keydown" (callback on-ed-keydown))
+      (on! "ed-keys" "pointerdown" (callback on-keybar-down))
+      (on! "ed-keys" "click" (callback on-ed-keybar))))

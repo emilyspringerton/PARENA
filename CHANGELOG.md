@@ -1,5 +1,16 @@
 ## 2026-11-26
 
+- **feat(netkit): a text editor that saves to a USB drive, and a VNC kit for a PC with no screen** (founder: "we have no way to write to
+  the SD card so we need to build a text editor into netkit ... that allows us to save to the usb drive connected over usb c"; KIT-USB).
+  - `stdlib/netkit/nk_edit.prn`: the document over linear memory (0x400000..0x800000 in netkit-lite): insert/backspace/delete, the six
+    moves plus word and page moves, Shift-selection with an anchor of -1 meaning none (stdlib/editor/buffer.prn's model), undo, goal
+    column, auto-indent, find, CRLF/LF and BOM round-trip, binary and over-1-MB detection. G words 320..336.
+  - `stdlib/netkit/nk_kit.prn`: password rules, `setup.conf` (password, SPEAK=1, NOPAUSE=1), `NETKIT.TXT` (blind steps + marker) and
+    the Win+R launcher line. G word 337.
+  - `stdlib/netkit/host/nk_host_drive.prn`: the USB tab (file list, editor, kit); `nk_host_ui.prn` routes `drive` events and Back.
+  - `scripts/build_netkit_web.sh` copies `../SHANKPIT/ops/netkit/windows/setup.bat` into the bundle as `kit/setup.bat` (CRLF checked).
+  - `tests/netkit/edit_spec.prn` (43 specs, in `test_netkit.sh`); `tests/netkit/browser_bridge.py` gains an in-memory drive and `/kit/`.
+
 - **feat(netkit): browse Windows file sharing, read only** (founder: "can we get that working so we can explore what files are being
   shared? parena mods based"; KIT-SMB S2). New PARENA modules (in `MODULES`):
   - `stdlib/netkit/nk_md.prn`: MD4, MD5, HMAC-MD5, HMAC-SHA256.

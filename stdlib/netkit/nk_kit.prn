@@ -1,0 +1,86 @@
+;; stdlib/netkit/nk_kit.prn -- the VNC setup kit the tablet writes onto a USB drive for a Windows PC that has no screen.
+;;
+;; Founder 2026-11-26: "run the skrip to download our vnc server or whatever and open up the firewall assume i am administrator and i
+;; have access to the keyboard but no screen so i have no feedback". The script itself is SHANKPIT/ops/netkit/windows/setup.bat (a
+;; labelled stopgap: it drives the TightVNC installer, an OS service). The tablet copies it from its own bundle; this file decides
+;; the two files around it -- setup.conf (password, speak out loud, never pause) and NETKIT.TXT (the steps to type blind, and the
+;; marker the one-line launcher looks for) -- and checks the password against what setup.bat and VNC can actually carry.
+;; Output goes to EXP (nk_edit.prn), Windows line ends. G word 337 is this file's write cursor.
+
+(defn kg-w [] : I32 337)
+(defn kit-b! [(c : I32)] : Unit (let [w (gi (kg-w))] (when (< w 2000000) (do (store8! (+ (ed-exp) w) c) (gi! (kg-w) (+ w 1))))))
+(defn kit-cstr! [(a : I32)] : Unit (loop [i 0] (when (!= (load8 (+ a i)) 0) (kit-b! (load8 (+ a i))) (recur (+ i 1)))))
+(defn kit-s! [(s : String)] : Unit (kit-cstr! (str-addr s)))
+(defn kit-ln! [(s : String)] : Unit (do (kit-s! s) (kit-b! 13) (kit-b! 10)))
+
+;; The one line typed into Win+R. It finds the drive holding NETKIT.TXT (any letter) and runs setup.bat from it, so the drive letter
+;; never has to be known. Ctrl+Shift+Enter instead of Enter runs it as administrator.
+(defn kit-run-line [] : String
+  "powershell -ep bypass -c \"Get-PSDrive -PSProvider FileSystem|%{if(Test-Path($_.Root+'NETKIT.TXT')){& ($_.Root+'setup.bat') /nopause}}\"")
+(defn nk-kit-run-line-addr [] : I32 (str-addr (kit-run-line)))
+
+;; the VNC password (n bytes at TXT): 0 ok, 1 empty, 2 longer than 8, 3 a character setup.bat cannot carry, 4 ends in a backslash,
+;; 6 ok but shorter than 6. VNC authentication only uses 8 characters; a double quote breaks the installer's command line; cmd's
+;; percent and caret are fine inside setup.bat's quoting but control characters, spaces at the ends and non-ASCII are refused.
+(defn nk-kit-pw-check [(n : I32)] : I32
+  (let [t (txt-base)
+        bad (loop [i 0] (if (>= i n) false
+                            (let [c (load8 (+ t i))] (if (or (< c 32) (or (> c 126) (= c 34))) true (recur (+ i 1))))))]
+    (cond (= n 0) 1
+          (> n 8) 2
+          bad 3
+          (or (= (load8 t) 32) (= (load8 (+ t (- n 1))) 32)) 3
+          (= (load8 (+ t (- n 1))) 92) 4
+          (< n 6) 6
+          :else 0)))
+(defn nk-kit-pw-text-addr [(k : I32)] : I32
+  (case k
+    1 (str-addr "Type the VNC password the tablet will use")
+    2 (str-addr "VNC only uses 8 characters: use 8 or fewer")
+    3 (str-addr "Use letters, digits and ordinary symbols only (no double quote, no spaces at either end)")
+    4 (str-addr "It can't end with a backslash")
+    6 (str-addr "OK, but 6 to 8 characters is safer")
+    (str-addr "OK")))
+
+;; setup.conf: password at TXT (n bytes, already checked). flags: 1 = switch a Public network to Private.
+(defn nk-kit-conf [(n : I32) (flags : I32)] : I32
+  (do (gi! (kg-w) 0)
+      (kit-ln! "# setup.conf for setup.bat, written by the Netkit tablet app.")
+      (kit-ln! "# The VNC password is in this file: treat this drive as private, delete this file when done.")
+      (kit-s! "VNC_PASSWORD=") (dotimes [i n] (kit-b! (load8 (+ (txt-base) i)))) (kit-b! 13) (kit-b! 10)
+      (kit-ln! "# Say each step out loud (the PC has no screen).")
+      (kit-ln! "SPEAK=1")
+      (kit-ln! "# Never wait for a key at the end.")
+      (kit-ln! "NOPAUSE=1")
+      (kit-ln! (if (= (bit-and flags 1) 1) "NETWORK_PRIVATE=1" "NETWORK_PRIVATE=0"))
+      (kit-ln! "KEEP_AWAKE=1")
+      (gi (kg-w))))
+
+;; NETKIT.TXT: the blind steps, and the marker the launcher line looks for
+(defn nk-kit-readme [] : I32
+  (do (gi! (kg-w) 0)
+      (kit-ln! "NETKIT VNC KIT")
+      (kit-ln! "")
+      (kit-ln! "This file marks the drive for the launcher line below. Keep it here.")
+      (kit-ln! "")
+      (kit-ln! "On the Windows PC, with no screen, signed in as an administrator:")
+      (kit-ln! "1. Plug this drive in. Wait 10 seconds.")
+      (kit-ln! "2. Press Windows+R (on an Apple keyboard: Command+R). Wait 2 seconds.")
+      (kit-ln! "3. Type this line exactly:")
+      (kit-ln! "")
+      (kit-ln! (kit-run-line))
+      (kit-ln! "")
+      (kit-ln! "4. Press Ctrl+Shift+Enter (runs it as administrator). Wait 3 seconds.")
+      (kit-ln! "5. Press Alt+Y (says Yes to the Windows permission prompt).")
+      (kit-ln! "6. Listen. The PC says 'Netkit setup started', then each step.")
+      (kit-ln! "   It ends with 'VNC is ready' and the address, or 'Setup failed'.")
+      (kit-ln! "   Turn the volume up first (on an Apple keyboard: F12).")
+      (kit-ln! "   It needs the internet once, to download TightVNC, unless the installer is on this drive.")
+      (kit-ln! "")
+      (kit-ln! "Afterwards: plug the drive into the tablet, open Netkit, Drive, vnc-log.txt.")
+      (kit-ln! "Or scan from Netkit: the PC shows port 5900 open when VNC is up.")
+      (kit-ln! "")
+      (kit-ln! "Nothing heard after 30 seconds? Press Alt+Y once more, then wait.")
+      (kit-ln! "Still nothing: plug the drive into the tablet and read vnc-log.txt.")
+      (kit-ln! "No vnc-log.txt at all means the script never started: repeat from step 2.")
+      (gi (kg-w))))

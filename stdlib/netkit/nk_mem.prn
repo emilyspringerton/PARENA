@@ -36,6 +36,9 @@
 ;;  128..191 SSH     (nk_ssh*.prn)
 ;;  192..223 NAMES   (nk_names.prn)
 ;;  224..255 SMB     (nk_smb.prn; its region is 0x270000, 16 KB)
+;;  256..319 SMB files (nk_smb_files.prn)
+;;  320..336 EDIT    (nk_edit.prn; 0x400000..0x800000: document, export, line index, undo)
+;;  337      KIT     (nk_kit.prn; writes into the editor's export area)
 
 (module netkit/main)
 

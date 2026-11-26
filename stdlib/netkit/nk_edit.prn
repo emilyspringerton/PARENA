@@ -1,0 +1,355 @@
+;; stdlib/netkit/nk_edit.prn -- the Netkit text editor's document: a byte buffer with a cursor, a selection, undo, and the file's own
+;; line endings. Sans-IO like every netkit module: the page hands it bytes and keys, draws what it says, and saves what it exports.
+;;
+;; Founder 2026-11-26: "we have no way to write to the SD card so we need to build a text editor into netkit we can use the PARENA
+;; stuff built into the example for the editor if possible give us a text editor that allows us to save to the usb drive". The model
+;; and the operations are stdlib/editor/buffer.prn's (insert-at-cursor, backspace-at-cursor, delete-forward-at-cursor, the six cursor
+;; moves, Shift+arrow selection with the cursor as the moving end and an anchor of -1 meaning "none", delete-selection). That file is
+;; written against String/Result values the wasm target cannot hold, so this is the same design over linear memory, not an import.
+;; Added here because a tablet needs them: undo, a goal column for Up/Down, auto-indent on Enter, find, and CRLF files (a Windows
+;; .bat must keep CRLF; the document holds LF only and the export puts the file's own endings back).
+;;
+;; Memory (inside the 8 MB netkit-lite instance, above the SSH region):
+;;   0x400000 BUF  1 MB    the document, UTF-8, LF line ends only       (the page writes a file here, then calls nk-ed-load)
+;;   0x500000 EXP  2 MB    nk-ed-export's output (the file's bytes with its own endings), and a temporary for inserts
+;;   0x700000 IDX  512 KB  line start offsets, rebuilt after an edit when first asked for (131072 lines)
+;;   0x780000 UND  512 KB  the undo records: [prev, pos, oldlen, newlen, cursor] 20 bytes, then the old bytes
+;; G words 320..351 belong to this file.
+
+(defn ed-buf [] : I32 4194304)
+(defn ed-cap [] : I32 1048000)
+(defn ed-exp [] : I32 5242880)
+(defn ed-idx [] : I32 7340032)
+(defn ed-idx-cap [] : I32 131072)
+(defn ed-und [] : I32 7864320)
+(defn ed-und-cap [] : I32 524288)
+
+(defn eg-len [] : I32 320)
+(defn eg-cur [] : I32 321)
+(defn eg-anchor [] : I32 322)
+(defn eg-goal [] : I32 323)
+(defn eg-dirty [] : I32 324)
+(defn eg-eol [] : I32 325)        ; 0 LF, 1 CRLF
+(defn eg-bom [] : I32 326)
+(defn eg-lines [] : I32 327)
+(defn eg-idx-ok [] : I32 328)
+(defn eg-und-top [] : I32 329)    ; bytes used in UND
+(defn eg-binary [] : I32 330)
+(defn eg-coalesce [] : I32 331)   ; 1: the last undo record is typing that the next typed character may extend
+(defn eg-cut [] : I32 332)        ; 1: the loaded file was longer than the buffer and was cut
+(defn eg-und-last [] : I32 333)   ; offset of the last undo record, -1 none
+(defn eg-saved-top [] : I32 334)  ; undo top when the document was last saved (-2: unknowable)
+(defn eg-page [] : I32 335)       ; rows a Page Up / Page Down moves
+(defn eg-msg [] : I32 336)        ; the last message code (nk-ed-msg-text-addr)
+
+(defn ed-len [] : I32 (gi (eg-len)))
+(defn ed-at [(i : I32)] : I32 (load8 (+ (ed-buf) i)))
+(defn ed-cont? [(c : I32)] : Bool (= (bit-and c 192) 128))
+
+;; ---- line index -------------------------------------------------------------------------------------------------------------------------------
+(defn ed-touch! [] : Unit (do (gi! (eg-idx-ok) 0) (gi! (eg-dirty) 1)))
+(defn ed-reindex! [] : Unit
+  (let [n (ed-len)]
+    (do (store32! (ed-idx) 0)
+        (loop [i 0 k 1]
+          (if (or (>= i n) (>= k (ed-idx-cap)))
+              (gi! (eg-lines) k)
+              (if (= (ed-at i) 10)
+                  (do (store32! (+ (ed-idx) (shl k 2)) (+ i 1)) (recur (+ i 1) (+ k 1)))
+                  (recur (+ i 1) k))))
+        (gi! (eg-idx-ok) 1))))
+(defn ed-lines [] : I32 (do (when (= (gi (eg-idx-ok)) 0) (ed-reindex!)) (gi (eg-lines))))
+(defn ed-line-start [(r : I32)] : I32
+  (let [n (ed-lines)]
+    (cond (< r 0) 0 (>= r n) (load32 (+ (ed-idx) (shl (- n 1) 2))) :else (load32 (+ (ed-idx) (shl r 2))))))
+(defn ed-line-end [(r : I32)] : I32
+  (let [n (ed-lines)]
+    (if (< (+ r 1) n) (- (ed-line-start (+ r 1)) 1) (ed-len))))
+;; the row holding byte offset pos: the last line that starts at or before it
+(defn ed-row-of [(pos : I32)] : I32
+  (let [n (ed-lines)]
+    (loop [lo 0 hi (- n 1)]
+      (if (>= lo hi) lo
+          (let [mid (shr (+ (+ lo hi) 1) 1)]
+            (if (<= (ed-line-start mid) pos) (recur mid hi) (recur lo (- mid 1))))))))
+
+;; display columns: a tab goes to the next multiple of 4, every other character is one column (the page draws with tab-size 4)
+(defn ed-vcol-step [(col : I32) (c : I32)] : I32 (if (= c 9) (+ (- col (mod col 4)) 4) (+ col 1)))
+(defn ed-vcol-of [(pos : I32)] : I32
+  (let [s (ed-line-start (ed-row-of pos))]
+    (loop [i s col 0]
+      (if (>= i pos) col
+          (let [c (ed-at i)] (recur (+ i 1) (if (ed-cont? c) col (ed-vcol-step col c))))))))
+;; the offset in row r nearest display column vc (never inside a character, never past the line end)
+(defn ed-pos-at [(r : I32) (vc : I32)] : I32
+  (let [s (ed-line-start r) e (ed-line-end r)]
+    (loop [i s col 0]
+      (if (>= i e) e
+          (let [c (ed-at i) nx (ed-vcol-step col c)]
+            (if (> nx vc) i
+                (recur (ed-next-cp i) nx)))))))
+
+(defn ed-prev-cp [(pos : I32)] : I32
+  (loop [p (- pos 1)] (if (<= p 0) 0 (if (ed-cont? (ed-at p)) (recur (- p 1)) p))))
+(defn ed-next-cp [(pos : I32)] : I32
+  (let [n (ed-len)]
+    (loop [p (+ pos 1)] (if (>= p n) n (if (ed-cont? (ed-at p)) (recur (+ p 1)) p)))))
+
+;; ---- selection ----------------------------------------------------------------------------------------------------------------------------------
+(defn ed-cur [] : I32 (gi (eg-cur)))
+(defn ed-has-sel? [] : Bool (and (>= (gi (eg-anchor)) 0) (!= (gi (eg-anchor)) (ed-cur))))
+(defn ed-sel-start [] : I32 (if (ed-has-sel?) (min-i (gi (eg-anchor)) (ed-cur)) (ed-cur)))
+(defn ed-sel-end [] : I32 (if (ed-has-sel?) (max-i (gi (eg-anchor)) (ed-cur)) (ed-cur)))
+;; move the cursor; extend keeps (or starts) the selection, a plain move drops it
+(defn ed-move! [(pos : I32) (extend : Bool)] : Unit
+  (do (if extend
+          (when (< (gi (eg-anchor)) 0) (gi! (eg-anchor) (ed-cur)))
+          (gi! (eg-anchor) -1))
+      (gi! (eg-cur) (max-i 0 (min-i pos (ed-len))))
+      (gi! (eg-coalesce) 0)))
+
+;; ---- the one edit primitive: replace [start,end) with n bytes from src (src is never inside BUF) -----------------------------------------------
+(defn ed-shift! [(start : I32) (end : I32) (n : I32)] : Unit
+  (let [len (ed-len) tail (- len end) d (- n (- end start))]
+    (cond (> d 0) (loop [i (- tail 1)]
+                    (when (>= i 0) (store8! (+ (ed-buf) (+ (+ end d) i)) (ed-at (+ end i))) (recur (- i 1))))
+          (< d 0) (loop [i 0]
+                    (when (< i tail) (store8! (+ (ed-buf) (+ (+ end d) i)) (ed-at (+ end i))) (recur (+ i 1))))
+          :else unit)))
+(defn ed-replace-raw! [(start : I32) (end : I32) (src : I32) (n : I32)] : Unit
+  (do (ed-shift! start end n)
+      (dotimes [i n] (store8! (+ (ed-buf) (+ start i)) (load8 (+ src i))))
+      (gi! (eg-len) (+ (- (ed-len) (- end start)) n))
+      (ed-touch!)))
+
+(defn ed-und-clear! [] : Unit
+  (do (gi! (eg-und-top) 0) (gi! (eg-und-last) -1) (gi! (eg-coalesce) 0)
+      (when (!= (gi (eg-saved-top)) 0) (gi! (eg-saved-top) -2))))
+(defn ed-rec [(off : I32) (k : I32)] : I32 (load32 (+ (ed-und) (+ off (shl k 2)))))
+(defn ed-rec! [(off : I32) (k : I32) (v : I32)] : Unit (store32! (+ (ed-und) (+ off (shl k 2))) v))
+;; remember what [start,end) held, so undo can put it back
+(defn ed-record! [(start : I32) (end : I32) (n : I32)] : Unit
+  (let [old (- end start) need (+ 20 old)]
+    (if (> need (ed-und-cap))
+        (ed-und-clear!)
+        (do (when (> (+ (gi (eg-und-top)) need) (ed-und-cap)) (ed-und-clear!))
+            (let [off (gi (eg-und-top))]
+              (do (ed-rec! off 0 (gi (eg-und-last))) (ed-rec! off 1 start) (ed-rec! off 2 old) (ed-rec! off 3 n) (ed-rec! off 4 (ed-cur))
+                  (dotimes [i old] (store8! (+ (ed-und) (+ off (+ 20 i))) (ed-at (+ start i))))
+                  (gi! (eg-und-last) off)
+                  (gi! (eg-und-top) (+ off need))))))))
+;; typing extends the last record when it is plain typing that ends exactly here
+(defn ed-can-extend? [(start : I32) (end : I32)] : Bool
+  (let [off (gi (eg-und-last))]
+    (and (= (gi (eg-coalesce)) 1)
+         (and (= start end)
+              (and (>= off 0) (and (= (ed-rec off 2) 0) (= (+ (ed-rec off 1) (ed-rec off 3)) start)))))))
+
+;; returns 0, or -1 when the result would not fit (nothing changes)
+(defn ed-replace! [(start : I32) (end : I32) (src : I32) (n : I32) (typing : Bool)] : I32
+  (if (> (+ (- (ed-len) (- end start)) n) (ed-cap))
+      (do (gi! (eg-msg) 2) -1)
+      (do (if (and typing (ed-can-extend? start end))
+              (let [off (gi (eg-und-last))] (ed-rec! off 3 (+ (ed-rec off 3) n)))
+              (ed-record! start end n))
+          (ed-replace-raw! start end src n)
+          (gi! (eg-anchor) -1) (gi! (eg-goal) -1)
+          (gi! (eg-cur) (+ start n))
+          (gi! (eg-coalesce) (if typing 1 0))
+          0)))
+
+(defn nk-ed-undo [] : I32
+  (let [off (gi (eg-und-last))]
+    (if (< off 0) 0
+        (let [pos (ed-rec off 1) old (ed-rec off 2) n (ed-rec off 3)]
+          (do (ed-replace-raw! pos (+ pos n) (+ (ed-und) (+ off 20)) old)
+              (gi! (eg-cur) (ed-rec off 4)) (gi! (eg-anchor) -1) (gi! (eg-goal) -1) (gi! (eg-coalesce) 0)
+              (gi! (eg-und-last) (ed-rec off 0)) (gi! (eg-und-top) off)
+              (gi! (eg-dirty) (if (= off (gi (eg-saved-top))) 0 1))
+              1)))))
+(defn nk-ed-can-undo [] : I32 (if (>= (gi (eg-und-last)) 0) 1 0))
+
+;; ---- documents ----------------------------------------------------------------------------------------------------------------------------------
+(defn ed-fresh! [] : Unit
+  (do (gi! (eg-cur) 0) (gi! (eg-anchor) -1) (gi! (eg-goal) -1) (gi! (eg-idx-ok) 0)
+      (gi! (eg-und-top) 0) (gi! (eg-und-last) -1) (gi! (eg-coalesce) 0) (gi! (eg-saved-top) 0)
+      (gi! (eg-dirty) 0) (gi! (eg-msg) 0) (gi! (eg-binary) 0) (gi! (eg-cut) 0) (gi! (eg-bom) 0)
+      (when (< (gi (eg-page)) 1) (gi! (eg-page) 20))))
+(defn nk-ed-buf-addr [] : I32 (ed-buf))
+(defn nk-ed-cap [] : I32 (ed-cap))
+(defn nk-ed-exp-addr [] : I32 (ed-exp))
+;; an empty document; eol 1 = save with Windows (CRLF) line ends
+(defn nk-ed-new [(eol : I32)] : Unit (do (gi! (eg-len) 0) (ed-fresh!) (gi! (eg-eol) (if (= eol 1) 1 0))))
+
+;; the page wrote n bytes of a file at BUF: drop a UTF-8 BOM, turn CRLF (and a lone CR) into LF, remember which the file used
+(defn nk-ed-load [(n0 : I32)] : I32
+  (let [n (min-i n0 (ed-cap))
+        bom (and (>= n 3) (and (= (ed-at 0) 239) (and (= (ed-at 1) 187) (= (ed-at 2) 191))))
+        s (if bom 3 0)]
+    (do (ed-fresh!)
+        (gi! (eg-cut) (if (> n0 (ed-cap)) 1 0))
+        (gi! (eg-bom) (if bom 1 0))
+        (loop [i s w 0 crlf 0 nul 0]
+          (if (>= i n)
+              (do (gi! (eg-len) w) (gi! (eg-eol) (if (> crlf 0) 1 0)) (gi! (eg-binary) (if (> nul 0) 1 0)))
+              (let [c (ed-at i)]
+                (cond (= c 13) (if (and (< (+ i 1) n) (= (ed-at (+ i 1)) 10))
+                                   (recur (+ i 1) w (+ crlf 1) nul)
+                                   (do (store8! (+ (ed-buf) w) 10) (recur (+ i 1) (+ w 1) crlf nul)))
+                      :else (do (store8! (+ (ed-buf) w) c) (recur (+ i 1) (+ w 1) crlf (if (= c 0) (+ nul 1) nul)))))))
+        (gi! (eg-msg) (cond (= (gi (eg-binary)) 1) 3 (= (gi (eg-cut)) 1) 4 :else 0))
+        (gi! (eg-dirty) 0)
+        (ed-len))))
+
+;; the file's bytes at EXP: the BOM back if it had one, LF -> CRLF when the file used CRLF. Returns the length.
+(defn nk-ed-export [] : I32
+  (let [n (ed-len) crlf (= (gi (eg-eol)) 1) b (gi (eg-bom))]
+    (do (when (= b 1) (do (store8! (ed-exp) 239) (store8! (+ (ed-exp) 1) 187) (store8! (+ (ed-exp) 2) 191)))
+        (loop [i 0 w (if (= b 1) 3 0)]
+          (if (>= i n) w
+              (let [c (ed-at i)]
+                (if (and crlf (= c 10))
+                    (do (store8! (+ (ed-exp) w) 13) (store8! (+ (ed-exp) (+ w 1)) 10) (recur (+ i 1) (+ w 2)))
+                    (do (store8! (+ (ed-exp) w) c) (recur (+ i 1) (+ w 1))))))))))
+(defn nk-ed-saved [] : Unit (do (gi! (eg-dirty) 0) (gi! (eg-saved-top) (gi (eg-und-top))) (gi! (eg-coalesce) 0)))
+
+;; ---- typing ---------------------------------------------------------------------------------------------------------------------------------------
+;; n bytes the page put at TXT replace the selection. CR / CRLF become LF. Plain typing of one character joins the last undo step.
+(defn nk-ed-insert [(n : I32)] : I32
+  (let [t (txt-base)
+        m (loop [i 0 w 0]
+            (if (>= i n) w
+                (let [c (load8 (+ t i))]
+                  (cond (and (= c 13) (and (< (+ i 1) n) (= (load8 (+ t (+ i 1))) 10))) (recur (+ i 1) w)
+                        (= c 13) (do (store8! (+ (ed-exp) w) 10) (recur (+ i 1) (+ w 1)))
+                        :else (do (store8! (+ (ed-exp) w) c) (recur (+ i 1) (+ w 1)))))))
+        one (and (<= m 4) (and (> m 0) (and (!= (load8 (ed-exp)) 10) (!= (load8 (ed-exp)) 32))))]
+    (if (= m 0) 0
+        (ed-replace! (ed-sel-start) (ed-sel-end) (ed-exp) m one))))
+
+(defn ed-delete! [(a : I32) (b : I32)] : I32 (if (>= a b) 0 (ed-replace! a b (ed-exp) 0 false)))
+
+;; Enter keeps the current line's leading spaces and tabs
+(defn ed-enter! [] : I32
+  (let [s (ed-sel-start) ls (ed-line-start (ed-row-of s))]
+    (do (store8! (ed-exp) 10)
+        (let [m (loop [i ls w 1]
+                  (let [c (if (< i s) (ed-at i) 0)]
+                    (if (or (= c 32) (= c 9)) (do (store8! (+ (ed-exp) w) c) (recur (+ i 1) (+ w 1))) w)))]
+          (ed-replace! s (ed-sel-end) (ed-exp) m false)))))
+
+;; ---- moves ----------------------------------------------------------------------------------------------------------------------------------------
+(defn ed-word? [(c : I32)] : Bool
+  (or (>= c 128) (or (and (>= c 48) (<= c 57)) (or (and (>= c 65) (<= c 90)) (or (and (>= c 97) (<= c 122)) (= c 95))))))
+(defn ed-word-left [(pos : I32)] : I32
+  (let [p (loop [p pos] (if (and (> p 0) (not (ed-word? (ed-at (- p 1))))) (recur (- p 1)) p))]
+    (loop [q p] (if (and (> q 0) (ed-word? (ed-at (- q 1)))) (recur (- q 1)) q))))
+(defn ed-word-right [(pos : I32)] : I32
+  (let [n (ed-len)
+        p (loop [p pos] (if (and (< p n) (not (ed-word? (ed-at p)))) (recur (+ p 1)) p))]
+    (loop [q p] (if (and (< q n) (ed-word? (ed-at q))) (recur (+ q 1)) q))))
+;; Home goes to the first non-blank character, and from there to the line start
+(defn ed-home-of [(pos : I32)] : I32
+  (let [s (ed-line-start (ed-row-of pos)) e (ed-line-end (ed-row-of pos))
+        f (loop [i s] (if (and (< i e) (or (= (ed-at i) 32) (= (ed-at i) 9))) (recur (+ i 1)) i))]
+    (if (= pos f) s f)))
+(defn ed-vertical! [(rows : I32) (extend : Bool)] : Unit
+  (let [cur (ed-cur) r (ed-row-of cur)
+        goal (if (< (gi (eg-goal)) 0) (ed-vcol-of cur) (gi (eg-goal)))
+        t (+ r rows) last (- (ed-lines) 1)]
+    (do (cond (< t 0) (ed-move! 0 extend)
+              (> t last) (ed-move! (ed-len) extend)
+              :else (ed-move! (ed-pos-at t goal) extend))
+        (gi! (eg-goal) goal))))
+(defn ed-horizontal! [(pos : I32) (extend : Bool)] : Unit (do (ed-move! pos extend) (gi! (eg-goal) -1)))
+
+;; keys: 1 left 2 right 3 up 4 down 5 home 6 end 7 backspace 8 delete 9 enter 10 tab 11 page up 12 page down 13 select all
+;; 14 undo 15 document start 16 document end. mods: 1 shift, 2 ctrl. Returns 1 when the document or cursor changed.
+(defn nk-ed-key [(code : I32) (mods : I32)] : I32
+  (let [sh (= (bit-and mods 1) 1) ctrl (= (bit-and mods 2) 2) cur (ed-cur) sel (ed-has-sel?)]
+    (do (gi! (eg-msg) 0)
+        (cond
+          (= code 1) (do (ed-horizontal! (cond (and sel (not sh)) (ed-sel-start) ctrl (ed-word-left cur) :else (ed-prev-cp cur)) sh) 1)
+          (= code 2) (do (ed-horizontal! (cond (and sel (not sh)) (ed-sel-end) ctrl (ed-word-right cur) (>= cur (ed-len)) cur
+                                               :else (ed-next-cp cur)) sh) 1)
+          (= code 3) (do (ed-vertical! -1 sh) 1)
+          (= code 4) (do (ed-vertical! 1 sh) 1)
+          (= code 5) (do (ed-horizontal! (if ctrl 0 (ed-home-of cur)) sh) 1)
+          (= code 6) (do (ed-horizontal! (if ctrl (ed-len) (ed-line-end (ed-row-of cur))) sh) 1)
+          (= code 7) (if sel (+ 1 (ed-delete! (ed-sel-start) (ed-sel-end)))
+                         (+ 1 (ed-delete! (if ctrl (ed-word-left cur) (ed-prev-cp cur)) cur)))
+          (= code 8) (if sel (+ 1 (ed-delete! (ed-sel-start) (ed-sel-end)))
+                         (+ 1 (ed-delete! cur (if ctrl (ed-word-right cur) (if (>= cur (ed-len)) cur (ed-next-cp cur))))))
+          (= code 9) (+ 1 (ed-enter!))
+          (= code 10) (do (store8! (ed-exp) 9) (+ 1 (ed-replace! (ed-sel-start) (ed-sel-end) (ed-exp) 1 false)))
+          (= code 11) (do (ed-vertical! (- 0 (gi (eg-page))) sh) 1)
+          (= code 12) (do (ed-vertical! (gi (eg-page)) sh) 1)
+          (= code 13) (do (gi! (eg-anchor) 0) (gi! (eg-cur) (ed-len)) (gi! (eg-coalesce) 0) 1)
+          (= code 14) (nk-ed-undo)
+          (= code 15) (do (ed-horizontal! 0 sh) 1)
+          (= code 16) (do (ed-horizontal! (ed-len) sh) 1)
+          :else 0))))
+
+;; a tap at (row, display column); extend 1 = drag / shift-tap
+(defn nk-ed-click [(row : I32) (vc : I32) (extend : I32)] : Unit
+  (let [r (max-i 0 (min-i row (- (ed-lines) 1)))] (ed-horizontal! (ed-pos-at r (max-i 0 vc)) (= extend 1))))
+(defn nk-ed-set-page [(rows : I32)] : Unit (gi! (eg-page) (max-i 1 rows)))
+(defn nk-ed-set-eol [(eol : I32)] : Unit
+  (when (!= (gi (eg-eol)) eol) (do (gi! (eg-eol) (if (= eol 1) 1 0)) (gi! (eg-dirty) 1) (gi! (eg-saved-top) -2))))
+
+;; find: the n bytes at TXT, ASCII case-insensitive, after the selection, wrapping once. Selects the match; 1 found, 0 not.
+(defn ed-lower [(c : I32)] : I32 (if (and (>= c 65) (<= c 90)) (+ c 32) c))
+(defn ed-match? [(p : I32) (n : I32)] : Bool
+  (loop [i 0] (if (>= i n) true (if (= (ed-lower (ed-at (+ p i))) (ed-lower (load8 (+ (txt-base) i)))) (recur (+ i 1)) false))))
+(defn ed-find-from [(from : I32) (to : I32) (n : I32)] : I32
+  (loop [p from] (if (> (+ p n) to) -1 (if (ed-match? p n) p (recur (+ p 1))))))
+(defn nk-ed-find [(n : I32)] : I32
+  (if (or (<= n 0) (> n (ed-len))) 0
+      (let [a (ed-find-from (ed-sel-end) (ed-len) n)
+            p (if (>= a 0) a (ed-find-from 0 (ed-len) n))]
+        (if (< p 0) (do (gi! (eg-msg) 5) 0)
+            (do (gi! (eg-anchor) p) (gi! (eg-cur) (+ p n)) (gi! (eg-goal) -1) (gi! (eg-coalesce) 0) (gi! (eg-msg) 0) 1)))))
+
+;; ---- what the page draws ------------------------------------------------------------------------------------------------------------------------
+(defn nk-ed-len [] : I32 (ed-len))
+(defn nk-ed-cursor [] : I32 (ed-cur))
+(defn nk-ed-sel-start [] : I32 (ed-sel-start))
+(defn nk-ed-sel-end [] : I32 (ed-sel-end))
+(defn nk-ed-has-sel [] : I32 (if (ed-has-sel?) 1 0))
+(defn nk-ed-lines [] : I32 (ed-lines))
+(defn nk-ed-line-start [(r : I32)] : I32 (ed-line-start r))
+(defn nk-ed-line-end [(r : I32)] : I32 (ed-line-end r))
+(defn nk-ed-row [] : I32 (ed-row-of (ed-cur)))
+(defn nk-ed-vcol [] : I32 (ed-vcol-of (ed-cur)))
+(defn nk-ed-row-of [(pos : I32)] : I32 (ed-row-of pos))
+(defn nk-ed-vcol-of [(pos : I32)] : I32 (ed-vcol-of pos))
+(defn nk-ed-dirty [] : I32 (gi (eg-dirty)))
+(defn nk-ed-eol [] : I32 (gi (eg-eol)))
+(defn nk-ed-binary [] : I32 (gi (eg-binary)))
+(defn nk-ed-cut [] : I32 (gi (eg-cut)))
+(defn nk-ed-msg [] : I32 (gi (eg-msg)))
+(defn nk-ed-msg-text-addr [(m : I32)] : I32
+  (case m
+    2 (str-addr "That would make the file bigger than this editor holds (1 MB)")
+    3 (str-addr "This is not a text file (it has zero bytes in it). Saving it from here would damage it")
+    4 (str-addr "This file is bigger than 1 MB: only the start is open, and saving would cut the rest off")
+    5 (str-addr "Not found")
+    (str-addr "")))
+(defn nk-ed-eol-text-addr [] : I32 (if (= (gi (eg-eol)) 1) (str-addr "Windows (CRLF)") (str-addr "Unix (LF)")))
+;; an extension that needs Windows line ends when the file is new (.bat .cmd .ps1 .reg .ini .inf .txt)
+(defn nk-ed-eol-for-name [(n : I32)] : I32
+  (let [t (txt-base) dot (loop [i (- n 1)] (if (< i 0) -1 (if (= (load8 (+ t i)) 46) i (recur (- i 1)))))]
+    (if (< dot 0) 0
+        (let [k (- n (+ dot 1))
+              c0 (if (> k 0) (ed-lower (load8 (+ t (+ dot 1)))) 0)
+              c1 (if (> k 1) (ed-lower (load8 (+ t (+ dot 2)))) 0)
+              c2 (if (> k 2) (ed-lower (load8 (+ t (+ dot 3)))) 0)]
+          (cond (and (= k 3) (and (= c0 98) (and (= c1 97) (= c2 116)))) 1      ; bat
+                (and (= k 3) (and (= c0 99) (and (= c1 109) (= c2 100)))) 1     ; cmd
+                (and (= k 3) (and (= c0 112) (and (= c1 115) (= c2 49)))) 1     ; ps1
+                (and (= k 3) (and (= c0 114) (and (= c1 101) (= c2 103)))) 1    ; reg
+                (and (= k 3) (and (= c0 105) (and (= c1 110) (= c2 105)))) 1    ; ini
+                (and (= k 3) (and (= c0 105) (and (= c1 110) (= c2 102)))) 1    ; inf
+                (and (= k 3) (and (= c0 116) (and (= c1 120) (= c2 116)))) 1    ; txt
+                (and (= k 4) (and (= c0 99) (and (= c1 111) (= c2 110)))) 1     ; conf
+                :else 0)))))

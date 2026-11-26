@@ -43,6 +43,8 @@ echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
 scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
 echo "== smb_spec.prn (nk_smb.prn: the credential-free SMB2 probe; built replies + one recorded from a real Samba 4.19)"
 scripts/scarab_wasm.sh tests/netkit/smb_spec.prn --modules stdlib/netkit/MODULES --file $V/smb_samba419.hex | tail -3
+echo "== edit_spec.prn (nk_edit.prn: the Drive editor's document; nk_kit.prn: the VNC kit for a USB drive)"
+scripts/scarab_wasm.sh tests/netkit/edit_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== md_spec.prn (nk_md.prn: MD4, MD5, HMAC-MD5, HMAC-SHA256 vs the RFC vectors)"
 scripts/scarab_wasm.sh tests/netkit/md_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== smb_files_spec.prn (nk_smb_files.prn: NTLMv2 per MS-NLMP 4.2.4, recorded Samba + impacket sessions, built replies)"

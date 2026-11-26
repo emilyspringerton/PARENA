@@ -11,6 +11,8 @@
       (set-hidden! "view-vnc" (!= name "vnc"))
       (set-hidden! "view-arcade" (!= name "arcade"))
       (set-hidden! "view-files" (!= name "files"))
+      (set-hidden! "view-drive" (!= name "drive"))
+      (let [db (el "tab-drive")] (when (not (js/null? db)) (js/call (js/get db "classList") "toggle" "on" (= name "drive"))))
       (let [fb (el "tab-files")] (when (not (js/null? fb)) (js/call (js/get fb "classList") "toggle" "on" (= name "files"))))
       (dotimes [i 5]
         (let [n (view-name i)
@@ -22,7 +24,8 @@
       (if (= name "arcade") (arcade-enter!) (arcade-leave!))
       (when (= name "garage") (gar-refresh!))
       (when (= name "ssh") (js/call (el "term-ime") "focus"))
-      (when (= name "vnc") (vnc-fit!))))
+      (when (= name "vnc") (vnc-fit!))
+      (when (= name "drive") (drive-enter!))))
 
 (defn on-arcade-exit [(e : Any)] : Unit (show-view! "garage"))
 
@@ -175,6 +178,7 @@
                           (on-scan-result! job (js/get ev "code") (js/get ev "ms"))))
       (= t "name") (on-name! ev)
       (= t "udp") (on-udp! ev)
+      (= t "drive") (drive-on-event! ev)
       :else unit)))
 
 ;; Android's back button: close what is on top, else go up one level (devices and the arcade return to the garage -- nk_garage_back decides),
@@ -194,6 +198,7 @@
     (and (not (js/null? ssh)) (not (js/get (el "view-ssh") "hidden"))) (do (ssh-close!) true)
     (and (not (js/null? vnc)) (not (js/get (el "view-vnc") "hidden"))) (do (vnc-close!) true)
     (and (not (js/null? files)) (not (js/get (el "view-files") "hidden"))) (do (when (not (files-up!)) (files-close!)) true)
+    (not (js/get (el "view-drive") "hidden")) (do (when (not (drive-back!)) (show-view! "garage")) true)
     :else (let [t (js/call scan-x "nk_garage_back" (cur-view))]
             (if (< t 0) false (do (show-view! (view-name t)) true)))))
 
@@ -244,6 +249,7 @@
     (on! "btn-files-close" "click" (callback on-files-close-click))
     (on! "btn-files-up" "click" (callback on-files-up-click))
     (on! "files-list" "click" (callback on-files-click))
+    (wire-drive!)
     (on! "btn-fit" "click" (callback on-fit-click))
     (on! "btn-1to1" "click" (callback on-actual-click))
     (on! "btn-copy" "click" (callback on-copy-click))

@@ -35,7 +35,20 @@ SHIM = r"""
     localNets() { return JSON.stringify({ cidrs: ['127.0.0.0/29'], ips: ['127.0.0.1'] }); },
     storeGet(k) { return store.has(k) ? store.get(k) : ''; }, storeSet(k, v) { store.set(k, v); }, storeDel(k) { store.delete(k); },
     clipboardSet(t) { clip = t; window.__clip = t; }, clipboardGet() { return window.__clipIn !== undefined ? window.__clipIn : clip; },
+    // the USB drive (DriveStore.java): an in-memory drive the test fills and reads back through window.__drive (path -> base64)
+    driveState() { return JSON.stringify({ open: window.__driveOpen ? 1 : 0, name: window.__driveOpen ? 'TESTSTICK' : '' }); },
+    driveOpen() { window.__driveOpen = true; emit({ t: 'drive', e: 'open', name: 'TESTSTICK' }); },
+    driveForget() { window.__driveOpen = false; },
+    driveList(path) {
+      const d = window.__drive, pre = path === '' ? '' : path + '/', seen = new Map();
+      for (const k of Object.keys(d)) if (k.startsWith(pre)) { const rest = k.slice(pre.length), i = rest.indexOf('/');
+        if (i < 0) seen.set(rest, { n: rest, d: 0, s: atob(d[k]).length, m: 0 }); else seen.set(rest.slice(0, i), { n: rest.slice(0, i), d: 1, s: -1, m: 0 }); }
+      emit({ t: 'drive', e: 'list', path, items: [...seen.values()] });
+    },
+    driveRead(path) { const b = window.__drive[path]; emit(b === undefined ? { t: 'drive', e: 'error', op: 'read', path, msg: 'Not found (is the drive still plugged in?)' } : { t: 'drive', e: 'read', path, b }); },
+    driveWrite(path, b) { window.__drive[path] = b; window.__writes = (window.__writes || 0) + 1; emit({ t: 'drive', e: 'wrote', path, n: atob(b).length, name: 'TESTSTICK' }); },
   };
+  window.__drive = window.__drive || {};
 })();
 """
 
@@ -92,8 +105,9 @@ def make_app(html_dir, web_dir):
     async def shim(request): return web.Response(text=SHIM, content_type="text/javascript")
     async def static(request):
         name = request.match_info.get("name") or "index.html"
+        if request.path.startswith("/kit/"): name = "kit/" + os.path.basename(name)
         base = html_dir if name in ("index.html", "netkit.css") else web_dir
-        path = os.path.join(base, os.path.basename(name))
+        path = os.path.join(base, name if name.startswith("kit/") else os.path.basename(name))
         if not os.path.exists(path): return web.Response(status=404)
         ctype = {"html": "text/html", "css": "text/css", "js": "text/javascript", "wasm": "application/wasm", "png": "image/png"}.get(name.rsplit(".", 1)[-1], "application/octet-stream")
         body = open(path, "rb").read()
@@ -102,7 +116,7 @@ def make_app(html_dir, web_dir):
         return web.Response(body=body, content_type=ctype, headers={"Content-Security-Policy": CSP, "Cache-Control": "no-store"})
     app = web.Application()
     app.router.add_get("/tcp", tcp); app.router.add_get("/probe", probe); app.router.add_get("/udp", udp); app.router.add_get("/shim.js", shim)
-    app.router.add_get("/", static); app.router.add_get("/{name}", static)
+    app.router.add_get("/", static); app.router.add_get("/kit/{name}", static); app.router.add_get("/{name}", static)
     return app
 
 def udp_responders():
