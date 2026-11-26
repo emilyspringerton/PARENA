@@ -1,0 +1,167 @@
+;; stdlib/netkit/host/nk_host_files.prn -- the Files screen: Windows file sharing (SMB) on a device that answers on port 445.
+;; One session = one netkit-lite wasm instance (nk_smb_files.prn: the sign-in, the share list, folders, previews -- and every word
+;; shown here) and one native tcp socket, kept open while you browse. READ ONLY: the wasm has no code that changes a file.
+
+(def files null)               ; the session (a JS object) or null
+
+(defn fx [] : Any (js/get files "x"))
+(defn fu8 [] : Any (js/get files "u8"))
+(defn fcstr [(a : I32)] : String (cstr (fu8) a))
+
+(defn files-drain! [] : Unit
+  (when (not (js/null? files))
+    (let [x (fx) a (js/call x "nk_out_addr") n (js/call x "nk_out_len")]
+      (when (> n 0) (do (tcp-write! (js/get files "id") (get-b64 (fu8) a n)) (js/call x "nk_out_clear"))))))
+
+;; the share and path the next op works on, as "share\0path\0" at TXT
+(defn files-args! [(share : String) (path : String)] : Unit
+  (let [x (fx) t (js/call x "nk_txt_addr") n (put-text! (fu8) t share)]
+    (do (js/aset! (fu8) (+ t n) 0)
+        (let [m (put-text! (fu8) (+ t (+ n 1)) path)] (js/aset! (fu8) (+ t (+ n (+ m 1))) 0)))))
+
+(defn files-shares! [] : Unit
+  (do (js/set! files "op" "shares") (js/set! files "share" "") (js/set! files "path" "")
+      (set-text! "files-where" "Loading shares...")
+      (js/call (fx) "nk_smb_shares") (files-drain!)))
+(defn files-list! [(share : String) (path : String)] : Unit
+  (do (js/set! files "op" "list") (js/set! files "share" share) (js/set! files "path" path)
+      (set-text! "files-where" (str "\\\\" (js/get files "host") "\\" share (if (= path "") "" (str "\\" (rep-all path "/" "\\")))))
+      (set-hidden! "files-preview" true)
+      (files-args! share path) (js/call (fx) "nk_smb_list") (files-drain!)))
+(defn files-read! [(path : String)] : Unit
+  (do (js/set! files "op" "read")
+      (files-args! (js/get files "share") path) (js/call (fx) "nk_smb_read") (files-drain!)))
+
+(defn join-path [(a : String) (b : String)] : String (if (= a "") b (str a "/" b)))
+(defn parent-path [(p : String)] : String
+  (let [i (js/call p "lastIndexOf" "/")] (if (< i 0) "" (js/call p "slice" 0 i))))
+
+(defn shares-html [] : String
+  (let [x (fx) n (js/call x "nk_smb_share_count")]
+    (loop [k 0 acc ""]
+      (if (>= k n) acc
+          (let [name (fcstr (js/call x "nk_smb_share_name_addr" k))
+                remark (fcstr (js/call x "nk_smb_share_remark_addr" k))
+                open? (= (js/call x "nk_smb_share_browsable" k) 1)]
+            (recur (+ k 1)
+                   (str acc "<li class=\"dev" (if open? "" " dim") "\" data-share=\"" (esc name) "\"><div class=\"dev-main\"><div class=\"dev-name\">"
+                        (esc name) "</div><div class=\"dev-sub\">" (esc (fcstr (js/call x "nk_smb_share_kind_addr" k)))
+                        (if (= remark "") "" (str "  -  " (esc remark))) "</div></div>"
+                        (if open? "<div class=\"dev-actions\"><button data-act=\"open\">Open</button></div>" "") "</li>")))))))
+
+(defn entries-html [] : String
+  (let [x (fx) n (js/call x "nk_smb_entry_count")]
+    (loop [k 0 acc ""]
+      (if (>= k n)
+          (if (= (js/call x "nk_smb_entry_truncated") 1)
+              (str acc "<li class=\"hint\">" (- (js/call x "nk_smb_entry_total") n) " more not shown</li>") acc)
+          (let [name (fcstr (js/call x "nk_smb_entry_name_addr" k))
+                dir? (= (js/call x "nk_smb_entry_is_dir" k) 1)]
+            (recur (+ k 1)
+                   (str acc "<li class=\"dev\" data-name=\"" (esc name) "\" data-dir=\"" (if dir? "1" "0") "\"><div class=\"dev-main\"><div class=\"dev-name\">"
+                        (esc name) "</div><div class=\"dev-sub\">"
+                        (esc (fcstr (js/call x "nk_smb_entry_size_text_addr" k))) "  -  " (esc (fcstr (js/call x "nk_smb_entry_date_text_addr" k)))
+                        "</div></div><div class=\"dev-actions\"><button data-act=\"" (if dir? "open" "peek") "\">" (if dir? "Open" "Preview") "</button></div></li>")))))))
+
+(defn files-show-preview! [] : Unit
+  (let [x (fx) a (js/call x "nk_smb_preview_addr") n (js/call x "nk_smb_preview_len")]
+    (do (set-text! "files-preview"
+                   (if (= (js/call x "nk_smb_preview_is_text") 1)
+                       (js/call (js/new "TextDecoder") "decode" (js/call (fu8) "subarray" a (+ a n)))
+                       (str "Not a text file (" n " bytes read). Netkit only previews text.")))
+        (set-hidden! "files-preview" false))))
+
+(defn files-op-done! [] : Unit
+  (let [x (fx) st (js/call x "nk_smb_op_status") op (js/get files "op")]
+    (if (!= st 0)
+        (banner! (fcstr (js/call x "nk_smb_status_text_addr" st)))
+        (cond (= op "shares") (do (set-text! "files-where" (str "Shares on " (js/get files "host")))
+                                  (set-html! "files-list" (shares-html)))
+              (= op "list") (set-html! "files-list" (entries-html))
+              :else (files-show-preview!)))))
+
+(defn files-after! [] : Unit
+  (when (not (js/null? files))
+    (do (files-drain!)
+        (let [x (fx) ph (js/call x "nk_smb_files_phase")]
+          (cond
+            (= ph 9) (when (not (js/get files "ended"))
+                       (do (js/set! files "ended" true)
+                           (banner! (str (failure-text x (fu8))
+                                         (if (= (js/call x "nk_err_kind") 4)
+                                             (str " (" (fcstr (js/call x "nk_smb_status_text_addr" (js/call x "nk_smb_status"))) ")") "")))
+                           (files-close!)))
+            (and (= ph 2) (not (js/get files "up")))
+            (do (js/set! files "up" true)
+                (when (js/get files "save") (save-connection! "smb" (js/get files "host") (js/get files "port") (js/get files "user") (js/get files "pw")))
+                (js/set! files "pw" "")
+                (set-text! "files-title" (str (js/get files "host")
+                                              (cond (= (js/call x "nk_smb_guest") 2) "  (no account)" (= (js/call x "nk_smb_guest") 1) "  (guest)"
+                                                    :else (str "  (" (js/get files "user") ")"))))
+                (show-view! "files")
+                (files-shares!))
+            (and (= ph 2) (!= (js/get files "op") "")) (do (files-op-done!) (js/set! files "op" ""))
+            :else unit)))))
+
+(defn files-on-tcp! [(ev : Any)] : Unit
+  (let [e (js/get ev "e") x (fx)]
+    (cond
+      (= e "open") (files-drain!)                    ; SMB: the client speaks first
+      (= e "data") (let [a (js/call x "nk_in_reserve") n (put-b64! (fu8) a (js/get ev "b"))]
+                     (do (js/call x "nk_smb_files_feed" n) (files-after!)))
+      (= e "closed") (do (js/call x "nk_smb_files_closed") (files-after!))
+      (= e "error") (do (js/set! files "ended" true)
+                        (banner! (str (cstr scan-u8 (js/call scan-x "nk_err_text_addr" (js/call scan-x "nk_conn_kind" (js/get ev "code"))))
+                                      " (" (js/get files "host") ":" (js/get files "port") ")"))
+                        (files-close!))
+      :else unit)))
+
+(defn files-close! [] : Unit
+  (when (not (js/null? files))
+    (do (tcp-close! (js/get files "id"))
+        (set! files null)
+        (set-html! "files-list" "")
+        (set-hidden! "files-preview" true)
+        (set-hidden! "tab-files" true)
+        (show-view! "devices"))))
+(defn on-files-close-click [(e : Any)] : Unit (files-close!))
+
+;; Up: out of a folder, then out of the share to the share list. Returns false at the top.
+(defn files-up! [] : Bool
+  (cond (js/null? files) false
+        (not (js/get (el "files-preview") "hidden")) (do (set-hidden! "files-preview" true) true)
+        (!= (js/get files "op") "") true
+        (!= (js/get files "path") "") (do (files-list! (js/get files "share") (parent-path (js/get files "path"))) true)
+        (!= (js/get files "share") "") (do (files-shares!) true)
+        :else false))
+(defn on-files-up-click [(e : Any)] : Unit (files-up!))
+
+(defn on-files-click [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-act]")]
+    (when (and (not (js/null? b)) (and (not (js/null? files)) (= (js/get files "op") "")))
+      (let [li (js/call b "closest" "li") d (js/get li "dataset") act (js/get (js/get b "dataset") "act")]
+        (cond
+          (not (= (js/typeof (js/get d "share")) "undefined")) (files-list! (js/get d "share") "")
+          (= act "open") (files-list! (js/get files "share") (join-path (js/get files "path") (js/get d "name")))
+          (= act "peek") (files-read! (join-path (js/get files "path") (js/get d "name")))
+          :else unit)))))
+
+;; TXT for nk-smb-login: 16 random (client GUID) + 8 random (NTLM client challenge), the clock (Unix seconds) at +24,
+;; then "user\0\0password\0host\0" at +64 (an empty domain: the wasm takes it from "DOMAIN\user" or from the PC itself)
+(defn files-open! [(host : String) (port : I32) (user : String) (pw : String) (save : Bool)] : Unit
+  (do
+    (when (not (js/null? files)) (files-close!))
+    (let [x (exports-of (instantiate mod-lite)) u8 (u8-of x) id (new-id!) t (js/call x "nk_txt_addr")]
+      (do (js/call (js/global "crypto") "getRandomValues" (js/call u8 "subarray" t (+ t 24)))
+          (js/call (js/new "DataView" (js/get (js/get x "memory") "buffer")) "setUint32" (+ t 24)
+                   (math/floor (/ (js/call (js/global "Date") "now") 1000.0)) true)
+          (let [p1 (+ (+ t 64) (put-text! u8 (+ t 64) user))]
+            (do (js/aset! u8 p1 0) (js/aset! u8 (+ p1 1) 0)
+                (let [p3 (+ (+ p1 2) (put-text! u8 (+ p1 2) pw))]
+                  (do (js/aset! u8 p3 0) (js/aset! u8 (+ (+ p3 1) (put-text! u8 (+ p3 1) host)) 0)))))
+          (js/call x "nk_smb_login")
+          (set! files (js/obj "id" id "x" x "u8" u8 "host" host "port" port "user" user "pw" pw "save" save
+                              "up" false "ended" false "op" "" "share" "" "path" ""))
+          (set-hidden! "tab-files" false)
+          (set-text! "files-title" (str "Signing in to " host "..."))
+          (tcp-open! id host port)))))

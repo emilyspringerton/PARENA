@@ -19,15 +19,16 @@
 ;; fails the probe; strings are cut at 255 bytes. Specs: tests/netkit/smb_spec.prn (hand-built replies + a reply recorded from a
 ;; real Samba 4.19 server).
 ;;
-;; Memory: SMB region 0x270000 (16 KB): +0 server GUID (16) | +64 64-bit scratch | +256 six name slots x 256 B | +4096 REPORT 8 KB.
+;; Memory: SMB region 0x270000 (16 KB): +0 server GUID (16) | +64 64-bit scratch | +256 six name slots x 256 B. REPORT (the text every
+;; host shows, also used by nk_smb_files.prn's listings) is 128 KB at 0x34A800.
 ;; G words 224..255 belong to this file.
 
 (defn smb-base [] : I32 2555904)           ; 0x270000
 (defn smb-guid [] : I32 2555904)
 (defn smb-w64 [] : I32 2555968)            ; +64: four 16-bit limbs as I32 words (little limb first)
 (defn smb-names [] : I32 2556160)          ; +256
-(defn smb-report [] : I32 2560000)         ; +4096
-(defn smb-report-cap [] : I32 8191)
+(defn smb-report [] : I32 3450880)         ; 0x34A800, after nk_smb_files.prn's preview: 128 KB (a 2048-entry folder listing fits)
+(defn smb-report-cap [] : I32 131071)
 
 (defn g-smb-state [] : I32 224)
 (defn g-smb-dialect [] : I32 225)

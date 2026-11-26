@@ -43,6 +43,11 @@ echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
 scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
 echo "== smb_spec.prn (nk_smb.prn: the credential-free SMB2 probe; built replies + one recorded from a real Samba 4.19)"
 scripts/scarab_wasm.sh tests/netkit/smb_spec.prn --modules stdlib/netkit/MODULES --file $V/smb_samba419.hex | tail -3
+echo "== md_spec.prn (nk_md.prn: MD4, MD5, HMAC-MD5, HMAC-SHA256 vs the RFC vectors)"
+scripts/scarab_wasm.sh tests/netkit/md_spec.prn --modules stdlib/netkit/MODULES | tail -3
+echo "== smb_files_spec.prn (nk_smb_files.prn: NTLMv2 per MS-NLMP 4.2.4, recorded Samba + impacket sessions, built replies)"
+scripts/scarab_wasm.sh tests/netkit/smb_files_spec.prn --modules stdlib/netkit/MODULES --file $V/smb_samba419_ls.hex \
+  --file $V/smb_samba419_cat.hex --file $V/smb_impacket_shares.hex --file $V/smb_impacket_ls.hex --file $V/smb_samba419_badpw.hex | tail -3
 echo "== the SMB probe vs a live Samba (scripts/netkit_smb_probe.sh, the PARENA -> TS node host pumping a real socket)"
 SMBD="${SAMBA_ROOT:+$SAMBA_ROOT/usr/sbin/smbd}"; SMBD="${SMBD:-$(command -v smbd || true)}"
 if [ -z "$SMBD" ] || [ ! -x "$SMBD" ]; then echo "SKIP: smbd not found (apt install samba, or set SAMBA_ROOT to an extracted samba + samba-libs + deps)";
@@ -50,13 +55,23 @@ else
   SL=""; [ -n "${SAMBA_ROOT:-}" ] && SL="$SAMBA_ROOT/usr/lib/x86_64-linux-gnu:$SAMBA_ROOT/usr/lib/x86_64-linux-gnu/samba"
   SP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
   mkdir -p "$W/smb"/{lock,state,cache,private,pid,log,ncalrpc}
-  printf '[global]\n workgroup = NETKITLAB\n netbios name = NETKITTEST\n smb ports = %s\n interfaces = 127.0.0.1\n bind interfaces only = yes\n lock directory = %s/lock\n state directory = %s/state\n cache directory = %s/cache\n private dir = %s/private\n pid directory = %s/pid\n ncalrpc dir = %s/ncalrpc\n log file = %s/log/log.%%m\n passdb backend = tdbsam:%s/private/passdb.tdb\n load printers = no\n disable spoolss = yes\n' \
-    "$SP" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" > "$W/smb/smb.conf"
+  mkdir -p "$W/smb/docs/Sub Folder"; printf 'netkit live check\n' > "$W/smb/docs/Sub Folder/note.txt"; head -c 5000 /dev/zero > "$W/smb/docs/zeros.bin"
+  printf '[global]\n workgroup = NETKITLAB\n netbios name = NETKITTEST\n smb ports = %s\n interfaces = 127.0.0.1\n bind interfaces only = yes\n lock directory = %s/lock\n state directory = %s/state\n cache directory = %s/cache\n private dir = %s/private\n pid directory = %s/pid\n ncalrpc dir = %s/ncalrpc\n log file = %s/log/log.%%m\n passdb backend = tdbsam:%s/private/passdb.tdb\n load printers = no\n disable spoolss = yes\n[docs]\n path = %s/docs\n read only = yes\n valid users = %s\n' \
+    "$SP" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$(id -un)" > "$W/smb/smb.conf"
+  PDB="${SAMBA_ROOT:+$SAMBA_ROOT/usr/bin/pdbedit}"; PDB="${PDB:-$(command -v pdbedit || true)}"
+  printf 'netkit-live-1\nnetkit-live-1\n' | LD_LIBRARY_PATH="$SL${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$PDB" -s "$W/smb/smb.conf" -a -u "$(id -un)" -t >/dev/null
   LD_LIBRARY_PATH="$SL${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$SMBD" -F --debug-stdout -d0 -s "$W/smb/smb.conf" > "$W/smb/smbd.out" 2>&1 & SMBPID=$!
   for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/$SP) 2>/dev/null && break; sleep 0.1; done
   if scripts/netkit_smb_probe.sh 127.0.0.1 "$SP" > "$W/smb/report.txt" && grep -qx 'Computer name: NETKITTEST' "$W/smb/report.txt" \
      && grep -qx 'File sharing: SMB 3.1.1' "$W/smb/report.txt" && grep -q '^Its clock: ' "$W/smb/report.txt"; then
     echo "live Samba probe: OK ($(grep -c . "$W/smb/report.txt") report lines)"
+    B=(scripts/netkit_smb_browse.sh 127.0.0.1 --port "$SP" --user "$(id -un)")
+    if NETKIT_SMB_PASSWORD=netkit-live-1 "${B[@]}" ls docs > "$W/smb/ls.txt" && grep -q '\[folder\].*Sub Folder$' "$W/smb/ls.txt" \
+       && grep -q '^4 KB .*zeros.bin$' "$W/smb/ls.txt" && grep -q '^signed in to 127.0.0.1 (SMB 2.1, signed)$' "$W/smb/ls.txt" \
+       && NETKIT_SMB_PASSWORD=netkit-live-1 "${B[@]}" cat docs "Sub Folder/note.txt" | grep -qx 'netkit live check' \
+       && ! NETKIT_SMB_PASSWORD=wrong "${B[@]}" ls docs > "$W/smb/bad.txt" && grep -q 'Wrong username or password' "$W/smb/bad.txt"; then
+      echo "live Samba sign-in + folder + preview + wrong password: OK"
+    else echo "FAIL: browsing the live Samba"; cat "$W/smb/ls.txt" "$W/smb/bad.txt" 2>/dev/null; kill $SMBPID; exit 1; fi
   else echo "FAIL: the SMB probe against a live Samba"; cat "$W/smb/report.txt" "$W/smb/smbd.out"; kill $SMBPID; exit 1; fi
   kill $SMBPID 2>/dev/null || true
 fi

@@ -11,4 +11,6 @@ stdlib/netkit/nk_sha512.prn
 stdlib/netkit/nk_ed25519.prn
 stdlib/netkit/nk_ssh_wire.prn
 stdlib/netkit/nk_ssh.prn
+stdlib/netkit/nk_md.prn
 stdlib/netkit/nk_smb.prn
+stdlib/netkit/nk_smb_files.prn

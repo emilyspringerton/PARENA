@@ -1,5 +1,43 @@
 ## 2026-11-26
 
+- **feat(netkit): browse Windows file sharing, read only** (founder: "can we get that working so we can explore what files are being
+  shared? parena mods based"; KIT-SMB S2). New PARENA modules (in `MODULES`):
+  - `stdlib/netkit/nk_md.prn`: MD4, MD5, HMAC-MD5, HMAC-SHA256.
+  - `stdlib/netkit/nk_smb_files.prn`: the SMB 2.0.2/2.1 session.
+    - Sign-in is NTLMv2 per MS-NLMP 3.3.2, with MsvAvFlags + MIC when the server sends a time, inside SPNEGO with a mechListMIC (Samba
+      requires it). There is no key exchange, so no RC4. `DOMAIN\user` parsing and anonymous sign-in are supported.
+    - Every request is HMAC-SHA256-signed, and a signed reply that does not verify ends the session.
+    - Shares are listed via IPC$ + \srvsvc: DCE/RPC bind and NetrShareEnumAll level 1 through FSCTL_PIPE_TRANSCEIVE, with READ for
+      further fragments.
+    - Folders are listed with QUERY_DIRECTORY until NO_MORE_FILES (2048-entry table, the rest counted).
+    - A text preview reads the first 60 KB.
+    - It is read only: there is no WRITE, SET_INFO, delete-on-close or write-access CREATE apart from the pipe.
+  - `nk_mem.prn` gains message words 29/30. The probe's report buffer moved to a 128 KB area at 0x34A800.
+
+  Command line: `scripts/netkit_smb_browse.sh` (host `stdlib/netkit/tools/nk_smb_browse.prn`). Page: `stdlib/netkit/host/nk_host_files.prn`
+  (the Files view, the sign-in dialog, saved "Files" connections, Back/Up) plus a Files button on devices answering 445. The size, date
+  and share-kind words come from the wasm.
+
+  Specs:
+  - `md_spec.prn` (23): RFC 1320/1321/2202/4231, MS-NLMP 4.2.2/4.2.4.
+  - `smb_files_spec.prn` (49):
+    - MS-NLMP 4.2.4's LMv2 / NTProofStr / temp / session key as literals.
+    - Five sessions recorded with fixed randomness from real Samba 4.19 (a folder, a preview, a wrong password) and impacket (shares, a
+      folder), replayed whole and byte by byte, with every server signature checked.
+    - A changed reply byte.
+    - Built replies: two-fragment share list, RPC fault, share kinds, two-page folder, 2100-entry cap, failed op keeps the session,
+      hostile offsets, binary and empty previews.
+    - Every request parsed for writes.
+
+  Nine mutations, all caught. `test_netkit.sh` adds both specs and a signed-in live-Samba leg: a folder with a space, the 4 KB size,
+  a preview, a wrong password. A one-off headless-Chromium run drove the Files screen against impacket on port 445 (17 checks, no console
+  errors).
+
+  Limits:
+  - Not run against a real Windows PC yet.
+  - SMB 3.x signing needs AES-CMAC + the SP800-108 KDF, which are not in PARENA yet.
+  - The share list was not checked against Samba, because its RPC helper would not run unprivileged here.
+
 - **feat(netkit): a Windows file-sharing (SMB) probe that needs no password** (founder: "windows file sharing is open on 445 can we add tools to
   the netkit for exploring those capabilities? parena first mods first"). New module `stdlib/netkit/nk_smb.prn` (in `MODULES`; G words
   224..255, region 0x270000). It is a sans-IO SMB2 client: NEGOTIATE (2.0.2..3.1.1, with the preauth, encryption and signing contexts),

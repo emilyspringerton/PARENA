@@ -1,0 +1,126 @@
+;; stdlib/netkit/tools/nk_smb_browse.prn -- the command-line host for nk_smb_files.prn: PARENA -> TypeScript -> JavaScript, node 24+.
+;; It decides nothing: one TCP socket, bytes in and out of the netkit wasm, and the wasm's own listing text or failure words.
+;;   node nk-smb-browse.mjs <netkit.wasm> <host> <port> <user> <domain> <command> [share] [path] [trace.hex]
+;;     command: shares | ls <share> [path] | cat <share> <path>      user "" = anonymous; domain "" = the server's own
+;;     the password comes from the environment (NETKIT_SMB_PASSWORD), never from the command line
+;;     NETKIT_SMB_FIXED=1 uses fixed "random" bytes and clock (how tests/netkit/smb_files_spec.prn's recording was made)
+;; scripts/netkit_smb_browse.sh wraps this.
+
+(defn req [(m : String)] : Any (js/call (js/global "process") "getBuiltinModule" m))
+(defn arg [(i : I32)] : Any (js/aget (js/get (js/global "process") "argv") i))
+(defn argc [] : I32 (js/get (js/get (js/global "process") "argv") "length"))
+(defn env [(k : String)] : Any (js/aget (js/get (js/global "process") "env") k))
+(defn say! [(s : Any)] : Unit (js/call (js/get (js/global "process") "stdout") "write" s))
+(defn quit! [(code : I32)] : Unit (js/call (js/global "process") "exit" code))
+
+(def x null)
+(def u8 null)
+(def sock null)
+(def trace "")
+(def host "")
+(def port 445)
+(def cmd "")
+(def started false)
+(def finished false)
+
+(defn cstr [(a : I32)] : String
+  (js/call (js/new "TextDecoder") "decode" (js/call u8 "subarray" a (js/call u8 "indexOf" 0 a))))
+(defn put-str! [(a : I32) (s : Any)] : I32
+  (let [b (js/call (js/new "TextEncoder") "encode" (str s))]
+    (do (js/call u8 "set" b a) (js/aset! u8 (+ a (js/get b "length")) 0) (+ a (+ (js/get b "length") 1)))))
+(defn opt [(i : I32)] : String (if (> (argc) i) (str (arg i)) ""))
+
+(defn failure-text [] : String
+  (let [detail (cstr (js/call x "nk_msg_text_addr" (js/call x "nk_err_msg")))
+        st (js/call x "nk_smb_status")]
+    (str (cstr (js/call x "nk_err_text_addr" (js/call x "nk_err_kind"))) (if (= detail "") "" (str ": " detail))
+         (if (= st 0) "" (str " (" (cstr (js/call x "nk_smb_status_text_addr" st)) ")")))))
+
+(defn finish! [(code : I32) (text : String)] : Unit
+  (when (not finished)
+    (do (set! finished true)
+        (when (> (argc) 10) (js/call (req "node:fs") "writeFileSync" (arg 10) (str trace "\n")))
+        (say! text)
+        (when (not (js/null? sock)) (js/call sock "destroy"))
+        (quit! code))))
+
+(defn drain! [] : Unit
+  (let [n (js/call x "nk_out_len") a (js/call x "nk_out_addr")]
+    (when (> n 0)
+      (do (js/call sock "write" (js/call (js/global "Buffer") "from" (js/call u8 "slice" a (+ a n))))
+          (js/call x "nk_out_clear")))))
+
+;; the op's answer, as the wasm writes it
+(defn result-text [] : String
+  (cond (= cmd "shares") (do (js/call x "nk_smb_shares_report") (cstr (js/call x "nk_smb_report_addr")))
+        (= cmd "ls") (do (js/call x "nk_smb_list_report") (cstr (js/call x "nk_smb_report_addr")))
+        :else (let [a (js/call x "nk_smb_preview_addr") n (js/call x "nk_smb_preview_len")]
+                (if (= (js/call x "nk_smb_preview_is_text") 1)
+                    (js/call (js/new "TextDecoder") "decode" (js/call u8 "subarray" a (+ a n)))
+                    (str "(" n " bytes of binary data)\n")))))
+
+(defn start-op! [] : Unit
+  (do (set! started true)
+      (let [p (put-str! (js/call x "nk_txt_addr") (opt 8))] (put-str! p (opt 9)))
+      (cond (= cmd "shares") (js/call x "nk_smb_shares")
+            (= cmd "ls") (js/call x "nk_smb_list")
+            :else (js/call x "nk_smb_read"))))
+
+(defn signed-in-line [] : String
+  (str "signed in to " host " (SMB " (cstr (js/call x "nk_smb_dialect_text_addr" (js/call x "nk_smb_session_dialect")))
+       (cond (= (js/call x "nk_smb_guest") 2) ", anonymous" (= (js/call x "nk_smb_guest") 1) ", as guest" :else "")
+       (if (= (js/call x "nk_smb_signed") 1) ", signed" ", not signed") ")\n"))
+
+(defn after! [] : Unit
+  (do (drain!)
+      (let [ph (js/call x "nk_smb_files_phase")]
+        (cond (= ph 9) (finish! 1 (str host ":" port ": " (failure-text) "\n"))
+              (and (= ph 2) (not started)) (do (say! (signed-in-line)) (start-op!) (drain!))
+              (= ph 2) (let [st (js/call x "nk_smb_op_status")]
+                         (if (= st 0) (finish! 0 (result-text))
+                             (finish! 1 (str (cstr (js/call x "nk_smb_status_text_addr" st)) "\n"))))
+              :else unit))))
+
+(defn on-data [(b : Any)] : Unit
+  (let [a (js/call x "nk_in_reserve") n (math/min (js/get b "length") (js/call x "nk_in_space"))]
+    (do (js/call u8 "set" (js/call b "subarray" 0 n) a)
+        (set! trace (str trace (js/call b "toString" "hex")))
+        (js/call x "nk_smb_files_feed" n)
+        (after!))))
+(defn on-connect [] : Unit (drain!))
+(defn on-close [(e : Any)] : Unit (do (js/call x "nk_smb_files_closed") (after!) (finish! 1 (str host ":" port ": connection closed\n"))))
+(defn err-kind [(c : Any)] : I32
+  (cond (= c "ECONNREFUSED") 2 (= c "ETIMEDOUT") 3 (= c "EHOSTUNREACH") 1 (= c "ENETUNREACH") 1 :else 6))
+(defn on-error [(e : Any)] : Unit
+  (finish! 1 (str host ":" port ": " (cstr (js/call x "nk_err_text_addr" (err-kind (js/get e "code")))) " (" (js/get e "code") ")\n")))
+(defn on-timeout [] : Unit (finish! 1 (str host ":" port ": " (cstr (js/call x "nk_err_text_addr" 3)) "\n")))
+
+;; TXT: 16 GUID + 8 client challenge (random, or fixed), the clock as Unix seconds at +24 (the wasm makes the FILETIME), then the four strings at +64
+(defn setup! [] : Unit
+  (let [t (js/call x "nk_txt_addr") fixed (= (str (env "NETKIT_SMB_FIXED")) "1")
+        pw (if (js/null? (env "NETKIT_SMB_PASSWORD")) "" (str (env "NETKIT_SMB_PASSWORD")))]
+    (do (if fixed (dotimes [i 24] (js/aset! u8 (+ t i) (+ 16 i))) (js/call u8 "set" (js/call (req "node:crypto") "randomBytes" 24) t))
+        (js/call (js/new "DataView" (js/get (js/get x "memory") "buffer")) "setUint32" (+ t 24)
+                 (if fixed 1795694400 (math/floor (/ (js/call (js/global "Date") "now") 1000.0))) true)
+        (let [p1 (put-str! (+ t 64) (opt 5)) p2 (put-str! p1 (opt 6)) p3 (put-str! p2 pw)] (put-str! p3 host)))))
+
+(defn run [] : Unit
+  (if (< (argc) 8)
+      (do (say! "usage: nk-smb-browse <netkit.wasm> <host> <port> <user> <domain> shares|ls|cat [share] [path] [trace.hex]\n") (quit! 2))
+      (do (set! x (js/get (js/new "WebAssembly.Instance"
+                                  (js/new "WebAssembly.Module" (js/call (req "node:fs") "readFileSync" (arg 2))) (js/obj)) "exports"))
+          (set! u8 (js/new "Uint8Array" (js/get (js/get x "memory") "buffer")))
+          (set! host (str (arg 3)))
+          (set! port (js/call-fn (js/global "Number") (arg 4)))
+          (set! cmd (opt 7))
+          (setup!)
+          (js/call x "nk_smb_login")
+          (set! sock (js/call (req "node:net") "connect" (js/obj "host" host "port" port)))
+          (js/call sock "setTimeout" 15000)
+          (js/call sock "on" "connect" (callback on-connect))
+          (js/call sock "on" "data" (callback on-data))
+          (js/call sock "on" "close" (callback on-close))
+          (js/call sock "on" "error" (callback on-error))
+          (js/call sock "on" "timeout" (callback on-timeout)))))
+
+(start (run))

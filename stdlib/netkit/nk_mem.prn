@@ -200,4 +200,6 @@
     26 (str-addr "The file-sharing server refused to agree on a protocol version")
     27 (str-addr "The file-sharing server's sign-in challenge was missing or unreadable")
     28 (str-addr "The file-sharing server hung up before answering (SMB2 turned off?)")
+    29 (str-addr "The PC refused the sign-in")
+    30 (str-addr "A reply's signature did not check out (tampering on the network, or a bug): disconnected")
     (str-addr "")))

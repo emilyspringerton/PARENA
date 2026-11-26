@@ -1,0 +1,408 @@
+;; tests/netkit/smb_files_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_smb_files.prn: sign in, shares, folders, preview.
+;; Sources of truth:
+;;   * MS-NLMP 4.2.4 (the NTLMv2 example: its LMv2 response, NTProofStr and session base key are literals here);
+;;   * sessions RECORDED from two independent real servers with fixed client randomness (scripts/netkit_smb_browse.sh with
+;;     NETKIT_SMB_FIXED=1 NETKIT_SMB_TRACE=...): Samba 4.19 (folder listing, file preview, a wrong password) and impacket's SMB server
+;;     (share list -- the local Samba's RPC helper would not run unprivileged -- and a folder). Every reply in them is SIGNED by the
+;;     server with the session key, and the replay checks each signature: the sign-in maths must match the real servers' byte for byte;
+;;   * replies built here from MS-SMB2 / MS-RPCE / MS-SRVS for the cases the servers did not produce (a share list in two RPC fragments,
+;;     an RPC fault, share types, folder paging, the 2048-entry cap, hostile offsets, a failed op that keeps the session).
+;; Every request the module sends in every scenario is parsed: no WRITE, no SET_INFO, no delete-on-close, and no CREATE asking for write
+;; access except the \srvsvc pipe's.
+;; Run: scripts/scarab_wasm.sh tests/netkit/smb_files_spec.prn --modules stdlib/netkit/MODULES \
+;;        --file vectors/smb_samba419_ls.hex --file vectors/smb_samba419_cat.hex --file vectors/smb_impacket_shares.hex \
+;;        --file vectors/smb_impacket_ls.hex --file vectors/smb_samba419_badpw.hex     (tests/netkit/vectors/)
+
+;; ---- memory: scratch +0 words | +0x10000 CH (a challenge) | +0x20000 TRACE | +0x28000 RPC stub being built | +0x30000 BUILD (512 KB)
+;;      | +0xB0000 small temporaries ------
+(defn fx-w [(k : I32)] : I32 (load32 (+ (sc-scratch) (* 4 k))))
+(defn fx-w! [(k : I32) (v : I32)] : Unit (store32! (+ (sc-scratch) (* 4 k)) v))
+(defn fx-build [] : I32 (+ (sc-scratch) 196608))
+(defn fx-ch [] : I32 (+ (sc-scratch) 65536))
+(defn fx-trace [] : I32 (+ (sc-scratch) 131072))
+(defn fx-stub [] : I32 (+ (sc-scratch) 163840))
+(defn fx-txt [] : I32 262144)
+(defn fx-out [] : I32 524288)
+;; words: 0 writer address, 1 writer count, 2 BUILD length, 3 frame start, 4 requests seen, 5 forbidden requests seen
+
+;; ---- the host's TXT: fixed randomness (16..39), the clock, then user\0domain\0password\0server\0 ---------------------------------------
+(defn fx-txt! [(user : String) (dom : String) (pw : String) (server : String)] : Unit
+  (do (dotimes [i 24] (store8! (+ (fx-txt) i) (+ 16 i)))
+      (store32! (+ (fx-txt) 24) 1795694400)
+      (let [p1 (+ (+ (fx-txt) 64) (+ 1 (sc-put! (+ (fx-txt) 64) user)))]
+        (do (store8! (- p1 1) 0)
+            (let [p2 (+ p1 (+ 1 (sc-put! p1 dom)))]
+              (do (store8! (- p2 1) 0)
+                  (let [p3 (+ p2 (+ 1 (sc-put! p2 pw)))]
+                    (do (store8! (- p3 1) 0) (store8! (+ p3 (sc-put! p3 server)) 0)))))))))
+;; the op's share\0path\0
+(defn fx-args! [(share : String) (path : String)] : Unit
+  (let [p (+ (fx-txt) (+ 1 (sc-put! (fx-txt) share)))]
+    (do (store8! (- p 1) 0) (store8! (+ p (sc-put! p path)) 0))))
+
+;; ---- every request the module sends is parsed here, then OUT is cleared --------------------------------------------------------------
+(defn fx-is-srvsvc? [(m : I32)] : Bool
+  (and (= (le16 (+ m 110)) 12) (and (= (le16 (+ m 120)) 115) (= (le16 (+ m 130)) 99))))
+(defn fx-scan-out! [] : Unit
+  (do (loop [p 0]
+        (when (<= (+ p 68) (nk-out-len))
+          (let [m (+ (fx-out) (+ p 4)) len (bit-or (shl (load8 (+ (fx-out) (+ p 1))) 16) (sc-be16 (+ (fx-out) (+ p 2))))
+                cmd (le16 (+ m 12))]
+            (do (fx-w! 4 (+ (fx-w 4) 1))
+                (when (or (= cmd 9) (= cmd 17)) (fx-w! 5 (+ (fx-w 5) 1)))
+                (when (= cmd 5)
+                  (let [acc (load32 (+ m 88)) opts (load32 (+ m 104))]
+                    (do (when (and (not (= (bit-and acc 1342242822) 0)) (not (fx-is-srvsvc? m))) (fx-w! 5 (+ (fx-w 5) 1)))
+                        (when (not (= (bit-and opts 4096) 0)) (fx-w! 5 (+ (fx-w 5) 1))))))
+                (recur (+ p (+ 4 len)))))))
+      (nk-out-clear)))
+
+;; ---- delivery: one NetBIOS frame at a time (mode 0) or one byte at a time (mode 1), from src+i, until the phase settles ---------------
+;; returns the offset reached. "settles" = ready (2) after having been busy, or failed (9), or the bytes run out.
+(defn fx-feed1! [(src : I32) (i : I32) (k : I32)] : Unit
+  (let [p (nk-in-reserve)] (do (dotimes [j k] (store8! (+ p j) (load8 (+ src (+ i j))))) (nk-smb-files-feed k) (fx-scan-out!))))
+(defn fx-run! [(src : I32) (from : I32) (n : I32) (mode : I32)] : I32
+  (loop [i from]
+    (if (or (>= i n) (= (nk-smb-files-phase) 9)) i
+        (let [flen (+ 4 (bit-or (shl (load8 (+ src (+ i 1))) 16) (sc-be16 (+ src (+ i 2)))))
+              k (if (= mode 0) (min-i flen (- n i)) 1)]
+          (do (fx-feed1! src i k)
+              (if (= (nk-smb-files-phase) 2) (+ i k) (recur (+ i k))))))))
+
+;; file k (hex text) -> TRACE; returns the byte count
+(defn fx-load! [(k : I32)] : I32
+  (let [a (sc-file-addr k) n (sc-file-len k)]
+    (loop [i 0 o 0]
+      (if (>= (+ i 1) n) o
+          (let [h (sc-hexval (load8 (+ a i)))]
+            (if (< h 0) (recur (+ i 1) o)
+                (do (store8! (+ (fx-trace) o) (bit-or (shl h 4) (sc-hexval (load8 (+ a (+ i 1)))))) (recur (+ i 2) (+ o 1)))))))))
+
+(defn fx-login! [(user : String) (pw : String)] : Unit
+  (do (fx-w! 4 0) (fx-w! 5 0) (fx-txt! user "" pw "127.0.0.1") (nk-smb-login) (fx-scan-out!)))
+
+;; replay recording k: sign in, run op (1 shares, 2 list, 3 read) with share/path, to the end
+(defn fx-replay! [(k : I32) (user : String) (pw : String) (op : I32) (share : String) (path : String) (mode : I32)] : Unit
+  (let [n (fx-load! k)]
+    (do (fx-login! user pw)
+        (let [i (fx-run! (fx-trace) 0 n mode)]
+          (when (= (nk-smb-files-phase) 2)
+            (fx-args! share path)
+            (cond (= op 1) (nk-smb-shares) (= op 2) (nk-smb-list) :else (nk-smb-read))
+            (fx-scan-out!)
+            (fx-run! (fx-trace) i n mode))))))
+
+(defn fx-read-only! [] : Unit
+  (do (sc-it! "and it only read: no WRITE, SET_INFO, delete-on-close or write-access CREATE (but the srvsvc pipe)")
+      (lb-equal (fx-w 5) 0) (lb-be-> (fx-w 4) 4)))
+
+;; ---- MS-NLMP 4.2.4 ---------------------------------------------------------------------------------------------------------------------
+;; writers into an absolute address (word 0) with a count (word 1)
+(defn fx-at! [(a : I32)] : Unit (do (fx-w! 0 a) (fx-w! 1 0)))
+(defn fx-len [] : I32 (fx-w 1))
+(defn fx-b! [(v : I32)] : Unit (do (store8! (+ (fx-w 0) (fx-w 1)) (bit-and v 255)) (fx-w! 1 (+ (fx-w 1) 1))))
+(defn fx-16! [(v : I32)] : Unit (do (fx-b! v) (fx-b! (shr v 8))))
+(defn fx-32! [(v : I32)] : Unit (do (fx-b! v) (fx-b! (shr v 8)) (fx-b! (shr v 16)) (fx-b! (ushr v 24))))
+(defn fx-zeros! [(n : I32)] : Unit (dotimes [i n] (fx-b! 0)))
+(defn fx-hexb! [(h : String)] : Unit (fx-w! 1 (+ (fx-w 1) (sc-hex! (+ (fx-w 0) (fx-w 1)) h))))
+(defn fx-u16! [(s : String)] : Unit (let [a (str-addr s)] (dotimes [i (sc-strlen a)] (fx-16! (load8 (+ a i))))))
+(defn fx-copy! [(src : I32) (n : I32)] : Unit (dotimes [i n] (fx-b! (load8 (+ src i)))))
+
+;; a CHALLENGE into CH: target name tn, then AV pairs domain, computer, (timestamp if ts), EOL. Returns its length.
+(defn fx-challenge! [(flags : I32) (tn : String) (dom : String) (comp : String) (ts : Bool)] : I32
+  (let [tl (* 2 (sc-strlen (str-addr tn)))
+        il (+ (+ (* 2 (sc-strlen (str-addr dom))) (* 2 (sc-strlen (str-addr comp)))) (+ 12 (if ts 12 0)))]
+    (do (fx-at! (fx-ch))
+        (fx-hexb! "4e544c4d53535000") (fx-32! 2) (fx-16! tl) (fx-16! tl) (fx-32! 56) (fx-32! flags)
+        (fx-hexb! "0123456789abcdef") (fx-zeros! 8) (fx-16! il) (fx-16! il) (fx-32! (+ 56 tl))
+        (fx-hexb! "0601b01d0000000f")
+        (fx-u16! tn)
+        (fx-16! 2) (fx-16! (* 2 (sc-strlen (str-addr dom)))) (fx-u16! dom)
+        (fx-16! 1) (fx-16! (* 2 (sc-strlen (str-addr comp)))) (fx-u16! comp)
+        (when ts (fx-16! 7) (fx-16! 8) (fx-32! -1449287680) (fx-32! 31292829))
+        (fx-16! 0) (fx-16! 0)
+        (+ 56 (fx-len)))))
+
+;; put CH (n bytes) where the module keeps the server's challenge and set the credentials as if it had arrived
+(defn fx-prime! [(n : I32) (user : String) (dom : String) (pw : String)] : Unit
+  (do (dotimes [i n] (store8! (+ (fs-chal) i) (load8 (+ (fx-ch) i)))) (gi! (g-fs-chal-len) n)
+      (zero-mem! (fs-user) 1024)
+      (sc-put! (fs-user) user) (sc-put! (fs-domain) dom) (sc-put! (fs-pass) pw)
+      (gi! (g-fs-anon) 0)
+      (dotimes [i 8] (store8! (+ (fx-txt) (+ 16 i)) 170))      ; client challenge aa..aa
+      (store32! (+ (fx-txt) 24) 0)))                           ; no clock: time zero, as in the example
+(defn fx-field [(at : I32)] : I32 (+ (fs-auth) (load32 (+ (fs-auth) (+ at 4)))))
+(defn fx-field-len [(at : I32)] : I32 (le16 (+ (fs-auth) at)))
+
+(defn fx-nlmp-specs! [] : Unit
+  (do (sc-describe! "NTLMv2 (MS-NLMP 4.2.4: User / Domain / Password, server challenge 0123456789abcdef, client challenge aa x 8, time 0)")
+        (fx-prime! (fx-challenge! -494238155 "Server" "Domain" "Server" false) "User" "Domain" "Password")
+        (fs-build-auth!)
+        (sc-it! "NTOWFv2") (lb-hex-equal (+ (fs-keys) 16) 16 "0c868a403bfd7a93a3001ef22ef02e3f")
+        (sc-it! "LMv2 response (no time from the server, so LMv2 is sent)")
+        (lb-equal (fx-field-len 12) 24) (lb-hex-equal (fx-field 12) 24 "86c35097ac9cec102554764a57cccc19aaaaaaaaaaaaaaaa")
+        (sc-it! "NTProofStr = the first 16 bytes of the NT response") (lb-hex-equal (fx-field 20) 16 "68cd0ab851e51c96aabc927bebef6a1c")
+        (sc-it! "the rest of the NT response is the example's temp, byte for byte")
+        (lb-equal (fx-field-len 20) 84)
+        (lb-hex-equal (+ (fx-field 20) 16) 68 "01010000000000000000000000000000aaaaaaaaaaaaaaaa0000000002000c0044006f006d00610069006e0001000c005300650072007600650072000000000000000000")
+        (sc-it! "session base key") (lb-hex-equal (+ (fs-keys) 32) 16 "8de40ccadbc14a82f15cb0ad0de95ca3")
+        (sc-it! "domain, user and workstation fields, UTF-16")
+        (lb-hex-equal (fx-field 28) 12 "44006f006d00610069006e00") (lb-hex-equal (fx-field 36) 8 "5500730065007200")
+        (lb-hex-equal (fx-field 44) 12 "4e00450054004b0049005400")
+        (sc-it! "no time from the server: no MIC (the field stays zero)") (lb-hex-equal (+ (fs-auth) 72) 16 "00000000000000000000000000000000")
+        (sc-it! "the password's UTF-16 copy is wiped") (lb-hex-equal (+ (fs-keys) 128) 16 "00000000000000000000000000000000")
+      (sc-end!)
+      (sc-describe! "NTLMv2 when the server sends a time (every Windows since Vista, and Samba)")
+        (fx-prime! (fx-challenge! -494238155 "Server" "Domain" "Server" true) "User" "Domain" "Password")
+        (fs-build-auth!)
+        (sc-it! "LmChallengeResponse is Z(24)") (lb-hex-equal (fx-field 12) 24 "000000000000000000000000000000000000000000000000")
+        (sc-it! "the blob carries the server's time, then MsvAvFlags = 2 (MIC present) before the EOL")
+        (lb-hex-equal (+ (fx-field 20) 24) 8 "00a09da99d7ddd01")
+        (lb-hex-equal (+ (fx-field 20) (- (fx-field-len 20) 16)) 16 "06000400020000000000000000000000")
+        (sc-it! "the MIC is HMAC-MD5(session key, NEGOTIATE | CHALLENGE | AUTHENTICATE with a zero MIC)")
+        (let [cat (+ (sc-scratch) 720896) al (gi (g-fs-auth-len)) cl (gi (g-fs-chal-len)) mic (+ (sc-scratch) 782000)]
+          (do (dotimes [i 40] (store8! (+ cat i) (load8 (+ (fs-neg) i))))
+              (dotimes [i cl] (store8! (+ cat (+ 40 i)) (load8 (+ (fs-chal) i))))
+              (dotimes [i al] (store8! (+ cat (+ (+ 40 cl) i)) (load8 (+ (fs-auth) i))))
+              (dotimes [i 16] (store8! (+ cat (+ (+ 40 cl) (+ 72 i))) 0))
+              (nk-hmac-md5 (+ (fs-keys) 32) 16 cat (+ 40 (+ cl al)) mic)
+              (lb-bytes-equal (+ (fs-auth) 72) mic 16)
+              (lb-not-equal (load32 (+ (fs-auth) 72)) 0)))
+      (sc-end!)))
+
+;; ---- the recordings --------------------------------------------------------------------------------------------------------------------
+(defn fx-samba-ls [] : String
+  "[folder]  2026-11-26 05:00:18 UTC  Taxes\n25 B  2026-11-26 05:00:18 UTC  readme.txt\n[folder]  2026-11-26 05:00:18 UTC  Photos\n16 B  2026-11-26 05:00:18 UTC  R\u{e9}sum\u{e9}.txt\n")
+
+(defn fx-recorded-specs! [] : Unit
+  (do (sc-describe! "real servers (recorded; every server signature checked)")
+        (sc-context! "Samba 4.19: a folder")
+          (fx-replay! 0 "ubuntu" "labpass123" 2 "docs" "" 0)
+          (sc-it! "signed in with SMB 2.1, signed, not as a guest")
+          (lb-equal (nk-smb-session-dialect) 528) (lb-equal (nk-smb-signed) 1) (lb-equal (nk-smb-guest) 0)
+          (sc-it! "the op finished, ready for the next") (lb-equal (nk-smb-files-phase) 2) (lb-equal (nk-smb-op-status) 0)
+          (sc-it! "four entries, folders flagged") (lb-equal (nk-smb-entry-count) 4) (lb-equal (nk-smb-entry-is-dir 0) 1)
+          (lb-equal (nk-smb-entry-is-dir 1) 0) (lb-equal (nk-smb-entry-size-lo 1) 25) (lb-str-equal (nk-smb-entry-name-addr 3) "R\u{e9}sum\u{e9}.txt")
+          (sc-it! "the listing") (nk-smb-list-report) (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (fx-samba-ls))
+          (sc-it! "the server's names came with the challenge") (lb-str-equal (nk-smb-name-addr 1) "SMBLAB")
+          (sc-it! "the password is gone from memory") (lb-equal (load8 (fs-pass)) 0)
+          (fx-read-only!)
+          (fx-replay! 0 "ubuntu" "labpass123" 2 "docs" "" 1)
+          (sc-it! "fed one byte at a time: the same listing") (lb-equal (nk-smb-files-phase) 2) (nk-smb-list-report)
+          (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (fx-samba-ls))
+        (sc-end!)
+        (sc-context! "Samba 4.19: a file preview in a sub-folder with a space in its name")
+          (fx-replay! 1 "ubuntu" "labpass123" 3 "docs" "Taxes/2025 notes.txt" 0)
+          (sc-it! "the file's bytes, text") (lb-equal (nk-smb-op-status) 0) (lb-text-equal (nk-smb-preview-addr) (nk-smb-preview-len) "line one\nline two\n")
+          (lb-equal (nk-smb-preview-is-text) 1) (lb-equal (nk-smb-file-size-lo) 18)
+          (fx-read-only!)
+        (sc-end!)
+        (sc-context! "Samba 4.19: a wrong password")
+          (fx-replay! 4 "ubuntu" "wrongpass" 2 "docs" "" 0)
+          (sc-it! "fails the session: AUTH_FAILED, the words, STATUS_LOGON_FAILURE")
+          (lb-equal (nk-smb-files-phase) 9) (lb-equal (nk-err-kind) 4) (lb-equal (nk-err-msg) 29)
+          (lb-str-equal (nk-smb-status-text-addr (nk-smb-status)) "Wrong username or password")
+        (sc-end!)
+        (sc-context! "impacket: the share list")
+          (fx-replay! 2 "labuser" "labpass123" 1 "" "" 0)
+          (sc-it! "SMB 2.0.2, signed") (lb-equal (nk-smb-session-dialect) 514) (lb-equal (nk-smb-signed) 1)
+          (sc-it! "three shares with their remarks") (lb-equal (nk-smb-op-status) 0) (lb-equal (nk-smb-share-count) 3)
+          (lb-str-equal (nk-smb-share-name-addr 0) "IPC$") (lb-str-equal (nk-smb-share-name-addr 1) "DOCS")
+          (lb-str-equal (nk-smb-share-remark-addr 1) "Lab documents") (lb-str-equal (nk-smb-share-name-addr 2) "PUBLIC")
+          (sc-it! "the report (impacket sends type 0 for IPC$ too)")
+          (nk-smb-shares-report)
+          (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) "folders  IPC$\nfolders  DOCS  -- Lab documents\nfolders  PUBLIC\n")
+          (fx-read-only!)
+        (sc-end!)
+        (sc-context! "impacket: a folder")
+          (fx-replay! 3 "labuser" "labpass123" 2 "DOCS" "Photos" 0)
+          (sc-it! "one file, 3000 bytes") (lb-equal (nk-smb-entry-count) 1) (lb-str-equal (nk-smb-entry-name-addr 0) "beach.jpg")
+          (lb-equal (nk-smb-entry-size-lo 0) 3000)
+        (sc-end!)
+        (sc-context! "a reply changed on the way (one byte of the Samba folder listing)")
+          (let [n (fx-load! 0)]
+            (do ;; the first QUERY_DIRECTORY reply with status 0: flip a byte of its first file name
+                (loop [p 0]
+                  (when (< (+ p 68) n)
+                    (let [m (+ (fx-trace) (+ p 4)) len (bit-or (shl (load8 (+ (fx-trace) (+ p 1))) 16) (sc-be16 (+ (fx-trace) (+ p 2))))]
+                      (if (and (= (le16 (+ m 12)) 14) (= (load32 (+ m 8)) 0))
+                          (store8! (+ m 150) (bit-xor (load8 (+ m 150)) 1))
+                          (recur (+ p (+ 4 len)))))))
+                (fx-login! "ubuntu" "labpass123")
+                (let [i (fx-run! (fx-trace) 0 n 0)]
+                  (do (fx-args! "docs" "") (nk-smb-list) (fx-scan-out!) (fx-run! (fx-trace) i n 0)))))
+          (sc-it! "is caught by its signature: the session ends") (lb-equal (nk-smb-files-phase) 9) (lb-equal (nk-err-msg) 30)
+        (sc-end!)
+      (sc-end!)))
+
+;; ---- built replies (an anonymous session: unsigned, so the spec can write the server's side) ------------------------------------------
+(defn fx-reset! [] : Unit (fx-w! 2 0))
+(defn fx-frame! [] : Unit (do (fx-w! 3 (fx-w 2)) (fx-at! (+ (fx-build) (fx-w 2))) (fx-zeros! 4)))
+(defn fx-frame-end! [] : Unit
+  (let [n (- (fx-len) 4) a (+ (fx-build) (fx-w 3))]
+    (do (store8! (+ a 1) (shr n 16)) (store8! (+ a 2) (bit-and (shr n 8) 255)) (store8! (+ a 3) (bit-and n 255))
+        (fx-w! 2 (+ (fx-w 3) (fx-len))))))
+(defn fx-hdr! [(cmd : I32) (st : I32)] : Unit
+  (do (fx-frame!) (fx-b! 254) (fx-b! 83) (fx-b! 77) (fx-b! 66) (fx-16! 64) (fx-16! 1) (fx-32! st) (fx-16! cmd) (fx-16! 1)
+      (fx-32! 1) (fx-32! 0) (fx-zeros! 8) (fx-32! 65279) (fx-32! 7) (fx-32! 4660) (fx-32! 0) (fx-zeros! 16)))
+(defn fx-err! [(cmd : I32) (st : I32)] : Unit (do (fx-hdr! cmd st) (fx-16! 9) (fx-zeros! 7) (fx-frame-end!)))
+
+(defn fx-signin! [] : Unit
+  (do (fx-hdr! 0 0) (fx-16! 65) (fx-16! 1) (fx-16! 528) (fx-16! 0) (fx-zeros! 16) (fx-32! 0) (fx-32! 65536) (fx-32! 65536) (fx-32! 65536)
+      (fx-zeros! 16) (fx-16! 128) (fx-16! 0) (fx-32! 0) (fx-frame-end!)
+      (let [cl (fx-challenge! -494238155 "LAB" "LAB" "LAB" true)]
+        (do (fx-hdr! 1 -1073741802) (fx-16! 9) (fx-16! 0) (fx-16! 72) (fx-16! (+ cl 3)) (fx-b! 4) (fx-b! 129) (fx-b! cl)
+            (fx-copy! (fx-ch) cl) (fx-frame-end!)))
+      (fx-hdr! 1 0) (fx-16! 9) (fx-16! 2) (fx-16! 72) (fx-16! 0) (fx-frame-end!)))
+(defn fx-tree! [] : Unit (do (fx-hdr! 3 0) (fx-16! 16) (fx-b! 1) (fx-b! 0) (fx-zeros! 12) (fx-frame-end!)))
+(defn fx-create! [(size : I32)] : Unit
+  (do (fx-hdr! 5 0) (fx-16! 89) (fx-zeros! 46) (fx-32! size) (fx-32! 0) (fx-zeros! 8) (fx-hexb! "a1a2a3a4a5a6a7a8b1b2b3b4b5b6b7b8")
+      (fx-zeros! 8) (fx-frame-end!)))
+(defn fx-close! [] : Unit (do (fx-hdr! 6 0) (fx-16! 60) (fx-zeros! 58) (fx-frame-end!)))
+(defn fx-tdis! [] : Unit (do (fx-hdr! 4 0) (fx-16! 4) (fx-16! 0) (fx-frame-end!)))
+(defn fx-ioctl! [(st : I32) (src : I32) (n : I32)] : Unit
+  (do (fx-hdr! 11 st) (fx-16! 49) (fx-16! 0) (fx-32! 1163287) (fx-zeros! 16) (fx-32! 112) (fx-32! 0) (fx-32! 112) (fx-32! n)
+      (fx-32! 0) (fx-32! 0) (fx-copy! src n) (fx-frame-end!)))
+(defn fx-read! [(st : I32) (src : I32) (n : I32)] : Unit
+  (do (fx-hdr! 8 st) (fx-16! 17) (fx-b! 80) (fx-b! 0) (fx-32! n) (fx-32! 0) (fx-32! 0) (fx-copy! src n) (fx-frame-end!)))
+(defn fx-qd-begin! [] : Unit (do (fx-hdr! 14 0) (fx-16! 9) (fx-16! 72) (fx-32! 0) (fx-w! 6 (fx-len)) (fx-w! 7 -1)))
+;; one FileDirectoryInformation record; word 7 = where the previous record's NextEntryOffset is
+(defn fx-qd-entry! [(name : String) (attrs : I32) (size : I32)] : Unit
+  (let [start (fx-len) nl (* 2 (sc-strlen (str-addr name)))]
+    (do (when (>= (fx-w 7) 0) (store32! (+ (fx-w 0) (fx-w 7)) (- start (fx-w 7))))
+        (fx-w! 7 start)
+        (fx-32! 0) (fx-32! 0) (fx-zeros! 16) (fx-32! -1449287680) (fx-32! 31292829) (fx-zeros! 8)
+        (fx-32! size) (fx-32! 0) (fx-zeros! 8) (fx-32! attrs) (fx-32! nl) (fx-u16! name)
+        (loop [] (when (not (= (bit-and (- (fx-len) (fx-w 6)) 7) 0)) (fx-b! 0) (recur))))))
+(defn fx-qd-end! [] : Unit
+  (do (store32! (+ (fx-w 0) (- (fx-w 6) 4)) (- (fx-len) (fx-w 6))) (fx-frame-end!)))
+
+;; RPC: a bind ack, and a response PDU carrying STUB[from, from+n) with the given PFC flags
+(defn fx-bind-ack! [(at : I32)] : I32
+  (do (fx-at! at) (fx-hexb! "05000c03100000004400000001000000b810b810000000000d005c504950455c73727673766300000100000000000000045d888aeb1cc9119fe808002b10486002000000")
+      (fx-len)))
+(defn fx-rpc-pdu! [(at : I32) (from : I32) (n : I32) (pfc : I32)] : I32
+  (do (fx-at! at) (fx-b! 5) (fx-b! 0) (fx-b! 2) (fx-b! pfc) (fx-32! 16) (fx-16! (+ 24 n)) (fx-16! 0) (fx-32! 2)
+      (fx-32! n) (fx-16! 0) (fx-b! 0) (fx-b! 0) (fx-copy! (+ (fx-stub) from) n) (fx-len)))
+;; a NetrShareEnumAll level-1 stub: Users (disk), C$ (disk, special), IPC$ (ipc, special), Printer (print queue)
+(defn fx-ndr-str! [(s : String)] : Unit
+  (let [n (+ 1 (sc-strlen (str-addr s)))]
+    (do (loop [] (when (not (= (bit-and (fx-len) 3) 0)) (fx-b! 0) (recur)))
+        (fx-32! n) (fx-32! 0) (fx-32! n) (fx-u16! s) (fx-16! 0))))
+(defn fx-share-stub! [] : I32
+  (do (fx-at! (fx-stub))
+      (fx-32! 1) (fx-32! 1) (fx-32! 131072) (fx-32! 4) (fx-32! 131076) (fx-32! 4)
+      (fx-32! 131080) (fx-32! 0) (fx-32! 131084)
+      (fx-32! 131088) (fx-32! -2147483648) (fx-32! 131092)
+      (fx-32! 131096) (fx-32! -2147483645) (fx-32! 131100)
+      (fx-32! 131104) (fx-32! 1) (fx-32! 0)
+      (fx-ndr-str! "Users") (fx-ndr-str! "") (fx-ndr-str! "C$") (fx-ndr-str! "Default share")
+      (fx-ndr-str! "IPC$") (fx-ndr-str! "Remote IPC") (fx-ndr-str! "Printer")
+      (loop [] (when (not (= (bit-and (fx-len) 3) 0)) (fx-b! 0) (recur)))
+      (fx-32! 4) (fx-32! 0) (fx-32! 0)
+      (fx-len)))
+
+(defn fx-run-built! [(op : I32) (share : String) (path : String)] : Unit
+  (do (fx-login! "" "")
+      (let [i (fx-run! (fx-build) 0 (fx-w 2) 0)]
+        (when (= (nk-smb-files-phase) 2)
+          (fx-args! share path)
+          (cond (= op 1) (nk-smb-shares) (= op 2) (nk-smb-list) :else (nk-smb-read))
+          (fx-scan-out!)
+          (fx-w! 9 (fx-run! (fx-build) i (fx-w 2) 0))))))
+
+(defn fx-built-specs! [] : Unit
+  (do (sc-describe! "built replies (anonymous session)")
+        (sc-context! "a share list in two RPC fragments: IOCTL says BUFFER_OVERFLOW, a READ brings the rest")
+          (let [sl (fx-share-stub!) half (bit-and (/ sl 2) -4)
+                a1 (+ (sc-scratch) 720896) a2 (+ (sc-scratch) 724992) a3 (+ (sc-scratch) 729088)
+                n1 (fx-bind-ack! a1) n2 (fx-rpc-pdu! a2 0 half 1) n3 (fx-rpc-pdu! a3 half (- sl half) 2)]
+            (do (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0)
+                (fx-ioctl! 0 a1 n1) (fx-ioctl! -2147483643 a2 n2) (fx-read! 0 a3 n3) (fx-close!) (fx-tdis!)
+                (fx-run-built! 1 "" "")))
+          (sc-it! "anonymous: not signed") (lb-equal (nk-smb-guest) 2) (lb-equal (nk-smb-signed) 0)
+          (sc-it! "four shares, joined across the fragments") (lb-equal (nk-smb-op-status) 0) (lb-equal (nk-smb-share-count) 4)
+          (lb-str-equal (nk-smb-share-name-addr 3) "Printer") (lb-str-equal (nk-smb-share-remark-addr 2) "Remote IPC")
+          (sc-it! "only the plain folder share is browsable")
+          (lb-equal (nk-smb-share-browsable 0) 1) (lb-equal (nk-smb-share-browsable 1) 0) (lb-equal (nk-smb-share-browsable 2) 0)
+          (lb-equal (nk-smb-share-browsable 3) 0)
+          (sc-it! "the report names each kind")
+          (nk-smb-shares-report)
+          (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) "folders  Users\nadmin    C$  -- Default share\nipc      IPC$  -- Remote IPC\nprinter  Printer\n")
+          (sc-it! "closed the pipe and left the tree") (lb-equal (fx-w 9) (fx-w 2)) (lb-equal (nk-smb-files-phase) 2)
+          (fx-read-only!)
+        (sc-end!)
+        (sc-context! "an RPC fault")
+          (let [a1 (+ (sc-scratch) 720896) a2 (+ (sc-scratch) 724992) n1 (fx-bind-ack! a1)]
+            (do (fx-at! a2) (fx-hexb! "0500030310000000200000000200000000000000000000000500000000000000") (fx-w! 8 (fx-len))
+                (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0) (fx-ioctl! 0 a1 n1) (fx-ioctl! 0 a2 (fx-w 8)) (fx-close!) (fx-tdis!)
+                (fx-run-built! 1 "" "")))
+          (sc-it! "is the op's status; the session stays signed in") (lb-equal (nk-smb-op-status) 5) (lb-equal (nk-smb-files-phase) 2)
+        (sc-end!)
+        (sc-context! "a folder in two pages")
+          (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0)
+          (fx-qd-begin!) (fx-qd-entry! "." 16 0) (fx-qd-entry! ".." 16 0) (fx-qd-entry! "a.txt" 32 10) (fx-qd-entry! "sub" 16 0) (fx-qd-end!)
+          (fx-qd-begin!) (fx-qd-entry! "b.bin" 32 5000000) (fx-qd-end!)
+          (fx-err! 14 -2147483642) (fx-close!) (fx-tdis!)
+          (fx-run-built! 2 "Users" "/Public\\Docs")
+          (sc-it! "both pages, without . and ..") (lb-equal (nk-smb-op-status) 0) (lb-equal (nk-smb-entry-count) 3)
+          (lb-str-equal (nk-smb-entry-name-addr 1) "sub") (lb-equal (nk-smb-entry-is-dir 1) 1)
+          (sc-it! "sizes and the listing") (nk-smb-list-report)
+          (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) "10 B  2026-11-26 12:00:00 UTC  a.txt\n[folder]  2026-11-26 12:00:00 UTC  sub\n4 MB  2026-11-26 12:00:00 UTC  b.bin\n")
+          (fx-read-only!)
+        (sc-end!)
+        (sc-context! "a folder with more entries than the table holds (2100, three pages)")
+          (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0)
+          (dotimes [pg 3] (do (fx-qd-begin!) (dotimes [i 700] (fx-qd-entry! "f" 32 1)) (fx-qd-end!)))
+          (fx-err! 14 -2147483642) (fx-close!) (fx-tdis!)
+          (fx-run-built! 2 "Users" "")
+          (sc-it! "keeps 2048, counts them all, says so") (lb-equal (nk-smb-entry-count) 2048) (lb-equal (nk-smb-entry-total) 2100)
+          (lb-equal (nk-smb-entry-truncated) 1) (nk-smb-list-report)
+          (lb-text-have-prefix (+ (nk-smb-report-addr) (- (nk-smb-report-len) 26)) 26 "... and 52 more not shown\n")
+        (sc-end!)
+        (sc-context! "an op that fails keeps the session: no such share, then a folder works")
+          (fx-reset!) (fx-signin!) (fx-err! 3 -1073741620)
+          (fx-run-built! 2 "Nope" "")
+          (sc-it! "the status and its words") (lb-equal (nk-smb-files-phase) 2)
+          (lb-str-equal (nk-smb-status-text-addr (nk-smb-op-status)) "There is no share by that name")
+          (fx-reset!) (fx-tree!) (fx-create! 0) (fx-qd-begin!) (fx-qd-entry! "x" 32 1) (fx-qd-end!) (fx-err! 14 -2147483642) (fx-close!) (fx-tdis!)
+          (fx-args! "Users" "") (nk-smb-list) (fx-scan-out!) (fx-run! (fx-build) 0 (fx-w 2) 0)
+          (sc-it! "and the next op lists the folder") (lb-equal (nk-smb-op-status) 0) (lb-equal (nk-smb-entry-count) 1)
+        (sc-end!)
+        (sc-context! "hostile replies")
+          (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0)
+          (fx-hdr! 14 0) (fx-16! 9) (fx-16! 72) (fx-32! 100000) (fx-zeros! 8) (fx-frame-end!) (fx-close!) (fx-tdis!)
+          (fx-run-built! 2 "Users" "")
+          (sc-it! "a folder page longer than its message: unusable, closed, still signed in")
+          (lb-equal (nk-smb-op-status) -1073741823) (lb-equal (nk-smb-files-phase) 2)
+          (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0)
+          (fx-at! (+ (sc-scratch) 720896)) (fx-zeros! 40) (dotimes [i 40] (store8! (+ (+ (sc-scratch) 720896) i) (* i 7)))
+          (fx-read! 0 (+ (sc-scratch) 720896) 40) (fx-close!) (fx-tdis!)
+          (fx-run-built! 3 "Users" "photo.jpg")
+          (sc-it! "a binary preview is flagged as not text") (lb-equal (nk-smb-preview-len) 40) (lb-equal (nk-smb-preview-is-text) 0)
+          (fx-reset!) (fx-signin!) (fx-tree!) (fx-create! 0) (fx-err! 8 -1073741807) (fx-close!) (fx-tdis!)
+          (fx-run-built! 3 "Users" "empty.txt")
+          (sc-it! "an empty file (END_OF_FILE) previews as nothing") (lb-equal (nk-smb-op-status) 0) (lb-equal (nk-smb-preview-len) 0)
+          (sc-it! "an op asked for while busy is refused") (fx-reset!) (fx-signin!) (fx-run-built! 2 "Users" "")
+          (lb-equal (nk-smb-files-phase) 3) (lb-equal (nk-smb-list) 0)
+        (sc-end!)
+      (sc-end!)))
+
+(defn fx-words-specs! [] : Unit
+  (do (sc-describe! "the words and conversions")
+        (sc-it! "Unix seconds -> FILETIME (2026-11-26 12:00:00)")
+        (fs-unix-filetime! 1795694400 (+ (sc-scratch) 4000)) (lb-hex-equal (+ (sc-scratch) 4000) 8 "00a09da99d7ddd01")
+        (sc-it! "and back") (lb-equal (nk-smb-filetime-unix (load32 (+ (sc-scratch) 4000)) (load32 (+ (sc-scratch) 4004))) 1795694400)
+        (sc-it! "UTF-8 -> UTF-16 with / -> \\ (2- and 3-byte forms)")
+        (sc-put! (+ (sc-scratch) 4100) "a/\u{e9}\u{20ac}") (store8! (+ (sc-scratch) 4107) 0)
+        (lb-equal (fs-u8to16 (+ (sc-scratch) 4200) (+ (sc-scratch) 4100) 100 1) 8) (lb-hex-equal (+ (sc-scratch) 4200) 8 "61005c00e900ac20")
+        (sc-it! "status words") (lb-str-equal (nk-smb-status-text-addr -1073741790) "Access denied")
+        (lb-have-prefix (nk-smb-status-text-addr -1073741714) "That account may not sign in this way")
+        (lb-str-equal (nk-smb-status-text-addr 12345) "The server refused (an unexpected status)")
+      (sc-end!)))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_smb_files")
+        (fx-nlmp-specs!) (fx-recorded-specs!) (fx-built-specs!) (fx-words-specs!)
+      (sc-end!)
+      (sc-finish!)))

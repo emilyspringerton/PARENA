@@ -10,6 +10,8 @@
       (set-hidden! "view-ssh" (!= name "ssh"))
       (set-hidden! "view-vnc" (!= name "vnc"))
       (set-hidden! "view-arcade" (!= name "arcade"))
+      (set-hidden! "view-files" (!= name "files"))
+      (let [fb (el "tab-files")] (when (not (js/null? fb)) (js/call (js/get fb "classList") "toggle" "on" (= name "files"))))
       (dotimes [i 5]
         (let [n (view-name i)
               b (el (str "tab-" n))]
@@ -59,8 +61,8 @@
         (let [c (js/aget all i)]
           (recur (+ i 1)
                  (str acc "<li class=\"saved\" data-i=\"" i "\"><div class=\"dev-main\"><div class=\"dev-name\">"
-                      (esc (if (= (js/get c "proto") "ssh") (str (js/get c "user") "@" (js/get c "host")) (js/get c "host")))
-                      "</div><div class=\"dev-sub\">" (if (= (js/get c "proto") "ssh") "SSH" "Screen") " - port " (js/get c "port")
+                      (esc (if (and (!= (js/get c "proto") "vnc") (!= (js/get c "user") "")) (str (js/get c "user") "@" (js/get c "host")) (js/get c "host")))
+                      "</div><div class=\"dev-sub\">" (proto-label (js/get c "proto")) " - port " (js/get c "port")
                       (if (= (js/get c "pw") "") "" " - password saved") "</div></div><div class=\"dev-actions\">"
                       "<button data-act=\"go\">Connect</button><button data-act=\"del\" title=\"Remove this saved connection\">Forget</button></div></li>")))
         acc)))
@@ -79,9 +81,11 @@
             c (js/aget (conns) i)]
         (cond
           (= act "del") (forget-connection! i)
-          (= act "go") (if (= (js/get c "proto") "ssh")
-                           (ssh-open! (js/get c "host") (js/get c "port") (js/get c "user") (js/get c "pw") false)
-                           (vnc-open! (js/get c "host") (js/get c "port") (js/get c "pw") false))
+          (= act "go") (cond (= (js/get c "proto") "ssh")
+                             (ssh-open! (js/get c "host") (js/get c "port") (js/get c "user") (js/get c "pw") false)
+                             (= (js/get c "proto") "smb")
+                             (files-open! (js/get c "host") (js/get c "port") (js/get c "user") (js/get c "pw") false)
+                             :else (vnc-open! (js/get c "host") (js/get c "port") (js/get c "pw") false))
           :else unit)))))
 
 ;; ---- the connect dialog ---------------------------------------------------------------------------------------------------------------------------
@@ -96,7 +100,8 @@
 (defn open-connect! [(proto : String) (host : String) (port : I32)] : Unit
   (let [saved (find-saved proto host port)]
     (do (set! conn-proto proto)
-        (set-text! "c-title" (if (= proto "ssh") (str "SSH to " host) (str "Screen of " host)))
+        (set-text! "c-title" (cond (= proto "ssh") (str "SSH to " host) (= proto "smb") (str "Shared files on " host) :else (str "Screen of " host)))
+        (set-text! "c-note" (if (= proto "smb") "A Windows account on that PC (DOMAIN\\user works too). Leave both empty to try without an account. Read only: nothing on the PC is changed." ""))
         (set-val! "c-host" host)
         (set-val! "c-port" port)
         (set-hidden! "c-user-row" (= proto "vnc"))
@@ -117,11 +122,12 @@
       (= host "") (set-text! "c-error" "Which device? Enter a name or address.")
       (not (and (> port 0) (< port 65536))) (set-text! "c-error" "The port must be a number from 1 to 65535.")
       (and (= conn-proto "ssh") (= user "")) (set-text! "c-error" "Enter the user name to log in as.")
+      (and (= conn-proto "smb") (and (= user "") (!= pw ""))) (set-text! "c-error" "Enter the user name that goes with this password.")
       :else (do (set-hidden! "dlg-connect" true)
-                (set! same-proto conn-proto) (set! same-host host) (set! same-port port) (set! same-user (if (= conn-proto "ssh") user ""))
-                (if (= conn-proto "ssh")
-                    (ssh-open! host port user pw save)
-                    (vnc-open! host port pw save))))))
+                (set! same-proto conn-proto) (set! same-host host) (set! same-port port) (set! same-user (if (= conn-proto "vnc") "" user))
+                (cond (= conn-proto "ssh") (ssh-open! host port user pw save)
+                      (= conn-proto "smb") (files-open! host port user pw save)
+                      :else (vnc-open! host port pw save))))))
 
 (defn on-connect-cancel [(e : Any)] : Unit (set-hidden! "dlg-connect" true))
 
@@ -134,6 +140,7 @@
             act (js/get (js/get b "dataset") "act")]
         (cond
           (= act "ssh") (open-connect! "ssh" ip 22)
+          (= act "files") (open-connect! "smb" ip 445)
           (= act "vnc") (open-connect! "vnc" ip (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "port") 10))
           (= act "pin") (do (toggle-pin! (js/get (js/get li "dataset") "key")) (render-devices!))
           (= act "name") (open-namer! (js/get (js/get li "dataset") "key") ip)
@@ -145,8 +152,10 @@
         (tool-say! "Type a host or address first.")
         (open-connect! (val "m-proto") host (tool-port)))))
 
+(defn proto-label [(p : Any)] : String (cond (= p "ssh") "SSH" (= p "smb") "Files" :else "Screen"))
+(defn proto-port [(p : Any)] : I32 (cond (= p "vnc") 5900 (= p "smb") 445 :else 22))
 (defn on-proto-change [(e : Any)] : Unit
-  (let [dflt (if (= (val "m-proto") "vnc") 5900 22)]
+  (let [dflt (proto-port (val "m-proto"))]
     (set-val! "m-port" dflt)))
 
 ;; ---- events from the native shell -------------------------------------------------------------------------------------------------------------------
@@ -158,6 +167,7 @@
                     (cond
                       (and (not (js/null? ssh)) (= id (js/get ssh "id"))) (ssh-on-tcp! ev)
                       (and (not (js/null? vnc)) (= id (js/get vnc "id"))) (vnc-on-tcp! ev)
+                      (and (not (js/null? files)) (= id (js/get files "id"))) (files-on-tcp! ev)
                       :else unit))
       (= t "probe") (let [job (js/get ev "job")]
                       (if (>= job 1000000)
@@ -183,6 +193,7 @@
     (not (js/get (el "dlg-name") "hidden")) (do (close-namer!) true)
     (and (not (js/null? ssh)) (not (js/get (el "view-ssh") "hidden"))) (do (ssh-close!) true)
     (and (not (js/null? vnc)) (not (js/get (el "view-vnc") "hidden"))) (do (vnc-close!) true)
+    (and (not (js/null? files)) (not (js/get (el "view-files") "hidden"))) (do (when (not (files-up!)) (files-close!)) true)
     :else (let [t (js/call scan-x "nk_garage_back" (cur-view))]
             (if (< t 0) false (do (show-view! (view-name t)) true)))))
 
@@ -230,6 +241,9 @@
     (on! "banner-close" "click" (callback hide-banner!))
     (on! "btn-ssh-close" "click" (callback on-ssh-close-click))
     (on! "btn-vnc-close" "click" (callback on-vnc-close-click))
+    (on! "btn-files-close" "click" (callback on-files-close-click))
+    (on! "btn-files-up" "click" (callback on-files-up-click))
+    (on! "files-list" "click" (callback on-files-click))
     (on! "btn-fit" "click" (callback on-fit-click))
     (on! "btn-1to1" "click" (callback on-actual-click))
     (on! "btn-copy" "click" (callback on-copy-click))

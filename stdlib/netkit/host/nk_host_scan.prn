@@ -111,6 +111,7 @@
          "</div></div><div class=\"dev-actions\">"
          (if ssh? (str "<button data-act=\"ssh\" data-port=\"22\">SSH</button>") "")
          (if (> vnc-port 0) (str "<button data-act=\"vnc\" data-port=\"" vnc-port "\">Screen</button>") "")
+         (if (= (js/call scan-x "nk_dev_has_port" i 445) 1) "<button data-act=\"files\" title=\"Windows file sharing\">Files</button>" "")
          "<button data-act=\"name\" title=\"Give this device your own name\">Name</button>"
          "<button data-act=\"pin\" title=\"Keep this device at the top\">" (if pin? "Unpin" "Pin") "</button>"
          "</div></li>")))
@@ -307,7 +308,7 @@
 (defn tool-host [] : String (js/call (str (val "m-host")) "trim"))
 (defn tool-port [] : I32
   (let [p (js/call-fn (js/global "parseInt") (val "m-port") 10)]
-    (if (and (> p 0) (< p 65536)) p (if (= (val "m-proto") "vnc") 5900 22))))
+    (if (and (> p 0) (< p 65536)) p (proto-port (val "m-proto")))))
 
 (defn on-check-click [(e : Any)] : Unit
   (let [host (tool-host)]

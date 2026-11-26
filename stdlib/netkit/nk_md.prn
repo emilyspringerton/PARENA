@@ -1,0 +1,108 @@
+;; stdlib/netkit/nk_md.prn -- MD4 (RFC 1320), MD5 (RFC 1321), HMAC-MD5 and HMAC-SHA256 (RFC 2104) in pure PARENA over linear memory.
+;;
+;; Why these, here: Windows file sharing signs people in with NTLMv2 (MS-NLMP), which is built from MD4 (the NT password hash) and
+;; HMAC-MD5 (every response and key), and SMB 2.x signs each message with HMAC-SHA256 (nk_smb.prn). Founder 2026-11-26: "can we get that
+;; working so we can explore what files are being shared? parena mods based"; root CLAUDE.md "Core Deps Are PARENA-First".
+;; MD4 and MD5 are broken as general-purpose hashes; they are here only because the protocol requires them, never for anything new.
+;; Checked by tests/netkit/md_spec.prn against the RFCs' own vectors (RFC 1320 / 1321 A.5, RFC 2202, RFC 4231) and MS-NLMP 4.2.4.
+;;
+;; Scratch: CRY+4096 state[4] | +4112 X[16] | +4176 tail[128]. HMAC builds its inner and outer messages in HM (0x274000, 112 KB),
+;; so it can hash a whole SMB message (up to ~70 KB) without copying it twice. No secret-dependent branches or lookups.
+
+(defn md-st [] : I32 (+ (cry-base) 4096))
+(defn md-x [] : I32 (+ (cry-base) 4112))
+(defn md-tail [] : I32 (+ (cry-base) 4176))
+(defn hm-buf [] : I32 2572288)            ; 0x274000
+(defn hm-cap [] : I32 114688)             ; 112 KB
+(defn hm-key [] : I32 (+ (cry-base) 4352)) ; the padded key block, 64 B
+(defn hm-inner [] : I32 (+ (cry-base) 4416)) ; the inner digest, up to 32 B
+
+(defn md-k-hex [] : String
+  "d76aa478e8c7b756242070dbc1bdceeef57c0faf4787c62aa8304613fd469501698098d88b44f7afffff5bb1895cd7be6b901122fd987193a679438e49b40821f61e2562c040b340265e5a51e9b6c7aad62f105d02441453d8a1e681e7d3fbc821e1cde6c33707d6f4d50d87455a14eda9e3e905fcefa3f8676f02d98d2a4c8afffa39428771f6816d9d6122fde5380ca4beea444bdecfa9f6bb4b60bebfbc70289b7ec6eaa127fad4ef308504881d05d9d4d039e6db99e51fa27cf8c4ac5665f4292244432aff97ab9423a7fc93a039655b59c38f0ccc92ffeff47d85845dd16fa87e4ffe2ce6e0a30143144e0811a1f7537e82bd3af2352ad7d2bbeb86d391")
+(defn md5-k [(i : I32)] : I32 (hexword (str-addr (md-k-hex)) i))
+(defn md5-s [(i : I32)] : I32
+  (let [r (shr i 4) j (bit-and i 3)]
+    (cond (= r 0) (case j 0 7 1 12 2 17 22)
+          (= r 1) (case j 0 5 1 9 2 14 20)
+          (= r 2) (case j 0 4 1 11 2 16 23)
+          :else (case j 0 6 1 10 2 15 21))))
+(defn md5-g [(i : I32)] : I32
+  (let [r (shr i 4)]
+    (cond (= r 0) i (= r 1) (bit-and (+ (* 5 i) 1) 15) (= r 2) (bit-and (+ (* 3 i) 5) 15) :else (bit-and (* 7 i) 15))))
+(defn md-xw [(k : I32)] : I32 (load32 (+ (md-x) (shl k 2))))
+
+(defn md5-block! [(a : I32)] : Unit
+  (do (dotimes [k 16] (store32! (+ (md-x) (shl k 2)) (le32 (+ a (shl k 2)))))
+      (let [s (md-st)]
+        (loop [i 0 va (load32 s) vb (load32 (+ s 4)) vc (load32 (+ s 8)) vd (load32 (+ s 12))]
+          (if (= i 64)
+              (do (store32! s (+ (load32 s) va)) (store32! (+ s 4) (+ (load32 (+ s 4)) vb))
+                  (store32! (+ s 8) (+ (load32 (+ s 8)) vc)) (store32! (+ s 12) (+ (load32 (+ s 12)) vd)))
+              (let [r (shr i 4)
+                    f (cond (= r 0) (bit-or (bit-and vb vc) (bit-and (bit-xor vb -1) vd))
+                            (= r 1) (bit-or (bit-and vb vd) (bit-and vc (bit-xor vd -1)))
+                            (= r 2) (bit-xor vb (bit-xor vc vd))
+                            :else (bit-xor vc (bit-or vb (bit-xor vd -1))))
+                    t (+ (+ va f) (+ (md5-k i) (md-xw (md5-g i))))]
+                (recur (+ i 1) vd (+ vb (rotl t (md5-s i))) vb vc)))))))
+
+;; MD4's three rounds: message word order and shifts
+(defn md4-g [(i : I32)] : I32
+  (let [r (shr i 4) j (bit-and i 15)]
+    (cond (= r 0) j
+          (= r 1) (+ (shl (bit-and j 3) 2) (shr j 2))
+          :else (case j 0 0 1 8 2 4 3 12 4 2 5 10 6 6 7 14 8 1 9 9 10 5 11 13 12 3 13 11 14 7 15))))
+(defn md4-s [(i : I32)] : I32
+  (let [r (shr i 4) j (bit-and i 3)]
+    (cond (= r 0) (case j 0 3 1 7 2 11 19)
+          (= r 1) (case j 0 3 1 5 2 9 13)
+          :else (case j 0 3 1 9 2 11 15))))
+
+(defn md4-block! [(a : I32)] : Unit
+  (do (dotimes [k 16] (store32! (+ (md-x) (shl k 2)) (le32 (+ a (shl k 2)))))
+      (let [s (md-st)]
+        (loop [i 0 va (load32 s) vb (load32 (+ s 4)) vc (load32 (+ s 8)) vd (load32 (+ s 12))]
+          (if (= i 48)
+              (do (store32! s (+ (load32 s) va)) (store32! (+ s 4) (+ (load32 (+ s 4)) vb))
+                  (store32! (+ s 8) (+ (load32 (+ s 8)) vc)) (store32! (+ s 12) (+ (load32 (+ s 12)) vd)))
+              (let [r (shr i 4)
+                    f (cond (= r 0) (bit-or (bit-and vb vc) (bit-and (bit-xor vb -1) vd))
+                            (= r 1) (+ (bit-or (bit-or (bit-and vb vc) (bit-and vb vd)) (bit-and vc vd)) 1518500249)
+                            :else (+ (bit-xor vb (bit-xor vc vd)) 1859775393))
+                    t (+ (+ va f) (md-xw (md4-g i)))]
+                (recur (+ i 1) vd (rotl t (md4-s i)) vb vc)))))))
+
+;; kind 4 = MD4, 5 = MD5. 16-byte digest at out.
+(defn md-hash [(kind : I32) (in : I32) (len : I32) (out : I32)] : Unit
+  (let [full (/ len 64) rem (- len (* full 64)) s (md-st)]
+    (do (store32! s 1732584193) (store32! (+ s 4) -271733879) (store32! (+ s 8) -1732584194) (store32! (+ s 12) 271733878)
+        (dotimes [b full] (if (= kind 4) (md4-block! (+ in (* b 64))) (md5-block! (+ in (* b 64)))))
+        (dotimes [i 128] (store8! (+ (md-tail) i) 0))
+        (dotimes [i rem] (store8! (+ (md-tail) i) (load8 (+ in (+ (* full 64) i)))))
+        (store8! (+ (md-tail) rem) 128)
+        (let [tl (if (< rem 56) 64 128)]
+          (do (put-le32! (+ (md-tail) (- tl 8)) (shl len 3))
+              (put-le32! (+ (md-tail) (- tl 4)) (ushr len 29))
+              (if (= kind 4) (md4-block! (md-tail)) (md5-block! (md-tail)))
+              (when (= tl 128) (if (= kind 4) (md4-block! (+ (md-tail) 64)) (md5-block! (+ (md-tail) 64))))))
+        (dotimes [i 4] (put-le32! (+ out (shl i 2)) (load32 (+ s (shl i 2))))))))
+(defn nk-md4 [(in : I32) (len : I32) (out : I32)] : Unit (md-hash 4 in len out))
+(defn nk-md5 [(in : I32) (len : I32) (out : I32)] : Unit (md-hash 5 in len out))
+
+;; kind 5 = HMAC-MD5 (16-byte tag), 256 = HMAC-SHA256 (32). Keys longer than 64 bytes are hashed first (RFC 2104).
+(defn hm-digest! [(kind : I32) (in : I32) (len : I32) (out : I32)] : Unit
+  (if (= kind 5) (md-hash 5 in len out) (nk-sha256 in len out)))
+(defn hm-dlen [(kind : I32)] : I32 (if (= kind 5) 16 32))
+(defn hmac [(kind : I32) (key : I32) (klen : I32) (msg : I32) (mlen : I32) (out : I32)] : I32
+  (if (> mlen (- (hm-cap) 64)) -1
+      (do (dotimes [i 64] (store8! (+ (hm-key) i) 0))
+          (if (> klen 64) (hm-digest! kind key klen (hm-key)) (dotimes [i klen] (store8! (+ (hm-key) i) (load8 (+ key i)))))
+          (dotimes [i 64] (store8! (+ (hm-buf) i) (bit-xor (load8 (+ (hm-key) i)) 54)))
+          (dotimes [i mlen] (store8! (+ (hm-buf) (+ 64 i)) (load8 (+ msg i))))
+          (hm-digest! kind (hm-buf) (+ 64 mlen) (hm-inner))
+          (dotimes [i 64] (store8! (+ (hm-buf) i) (bit-xor (load8 (+ (hm-key) i)) 92)))
+          (dotimes [i (hm-dlen kind)] (store8! (+ (hm-buf) (+ 64 i)) (load8 (+ (hm-inner) i))))
+          (hm-digest! kind (hm-buf) (+ 64 (hm-dlen kind)) out)
+          0)))
+(defn nk-hmac-md5 [(key : I32) (klen : I32) (msg : I32) (mlen : I32) (out : I32)] : I32 (hmac 5 key klen msg mlen out))
+(defn nk-hmac-sha256 [(key : I32) (klen : I32) (msg : I32) (mlen : I32) (out : I32)] : I32 (hmac 256 key klen msg mlen out))

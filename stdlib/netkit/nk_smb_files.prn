@@ -1,0 +1,842 @@
+;; stdlib/netkit/nk_smb_files.prn -- browse Windows file sharing: sign in, list the shares, list a folder, preview a file. Sans-IO, PARENA.
+;;
+;; Founder real-time 2026-11-26 (KIT-SMB S2): "ok the netkit doesnt do anything per the windows file sharing yet can we get that working
+;; so we can explore what files are being shared? parena mods based". nk_smb.prn's probe stops at the server's challenge; this file
+;; finishes the sign-in and then READS (never writes, renames or deletes -- there is no code here that sends SMB2 WRITE to a file, SET_INFO
+;; or a delete-on-close CREATE; the only WRITE-shaped traffic is the DCE/RPC call to the share list, which goes through an IOCTL).
+;;
+;; Protocol, all from the Microsoft documents:
+;;   * SMB 2.0.2 / 2.1 only for this session (MS-SMB2). 2.x signs with HMAC-SHA256 over the session key -- in PARENA (nk_md.prn). SMB 3.x
+;;     signs with AES-CMAC and keys from an SP800-108 KDF, which PARENA does not have yet (a named gap, EMILY KIT-SMB); Windows 10/11 and
+;;     Samba all still speak 2.1, and every request here is signed whenever the session is not a guest one, so a server that REQUIRES
+;;     signing (Windows 11 24H2 does by default) works too. Signed replies are checked; a bad signature ends the session.
+;;   * Sign-in: NTLMv2 (MS-NLMP 3.3.2) with the MIC over all three messages and MsvAvFlags = MIC present, inside SPNEGO with a mechListMIC
+;;     (RFC 4178; Samba insists on it when the NTLM MIC is there). No key exchange (no RC4): the session key is the NTLMv2 session base key.
+;;     An empty user name signs in anonymously (no password, no signing) -- Samba allows that, current Windows mostly does not.
+;;     User names are upper-cased as ASCII only (NTOWFv2 wants Unicode upper case): a name with non-ASCII letters may fail. Passwords may
+;;     be any UTF-8 (BMP).
+;;   * Share list: IPC$, the \srvsvc pipe, a DCE/RPC bind + NetrShareEnumAll level 1 (MS-SRVS 3.1.4.8) through FSCTL_PIPE_TRANSCEIVE,
+;;     with READs for the rest of a long answer; the reply may come in several fragments.
+;;   * A folder: CREATE (directory) + QUERY_DIRECTORY FileDirectoryInformation until STATUS_NO_MORE_FILES + CLOSE.
+;;   * A preview: CREATE (file, read only) + one READ of up to 60 KB + CLOSE.
+;;
+;; Host contract (same byte pipe as the probe):
+;;   TXT +0  16 random bytes (client GUID), +16 8 random (NTLM client challenge), +24 the host's clock as Unix seconds, u32 (used only
+;;           when the server sends no time), +64 "user\0domain\0password\0server\0" (UTF-8; domain may be empty: the server's own
+;;           NetBIOS domain is used; server = the name or address the host connected to). nk-smb-login copies them and wipes the TXT copy.
+;;   then feed/drain exactly like the probe; nk-smb-files-phase: 1 signing in, 2 ready, 3 working, 9 failed (nk-err-kind/msg say why).
+;;   when ready: write "share\0path\0" at TXT and call nk-smb-list / nk-smb-read, or call nk-smb-shares. When the phase is 2 again,
+;;   nk-smb-op-status is 0 (results below) or the NT status that stopped it (nk-smb-status-text-addr has the words). An op that fails
+;;   leaves the session signed in.
+;;
+;; Memory: FS area 0x290000: +0 creds (user, domain, password, server: 4 x 256) | +0x400 NTLM NEGOTIATE | +0x500 CHALLENGE (2 KB) |
+;;   +0xD00 AUTHENTICATE (4 KB) | +0x1D00 keys | +0x1E00 UTF-16 build (2 KB) | +0x2600 file id | +0x2800 RPC raw (64 KB) |
+;;   +0x12800 RPC stub (64 KB) | +0x22800 shares 256 x 128 B | +0x2A800 entries 2048 x 256 B | +0xAA800 preview 64 KB | +0xBA800 the
+;;   shared REPORT text (nk_smb.prn, 128 KB) | +0xDA800 end (0x36A800, inside the 8 MB lite module).
+;; G words 256..319 belong to this file.
+
+(defn fs-base [] : I32 2686976)                     ; 0x290000
+(defn fs-user [] : I32 2686976)
+(defn fs-domain [] : I32 2687232)
+(defn fs-pass [] : I32 2687488)
+(defn fs-server [] : I32 2687744)
+(defn fs-neg [] : I32 2688000)                      ; +0x400
+(defn fs-chal [] : I32 2688256)                     ; +0x500
+(defn fs-auth [] : I32 2690304)                     ; +0xD00
+(defn fs-keys [] : I32 2694400)                     ; +0x1D00: +0 NT hash, +16 NTOWFv2, +32 session key, +48 sign key, +64 temp 64
+(defn fs-u16 [] : I32 2694656)                      ; +0x1E00
+(defn fs-fid [] : I32 2696704)                      ; +0x2600
+(defn fs-raw [] : I32 2697216)                      ; +0x2800
+(defn fs-stub [] : I32 2762752)                     ; +0x12800
+(defn fs-shares [] : I32 2828288)                   ; +0x22800
+(defn fs-entries [] : I32 2861056)                  ; +0x2A800
+(defn fs-preview [] : I32 3385344)                  ; +0xAA800
+(defn fs-raw-cap [] : I32 65536)
+(defn fs-max-entries [] : I32 2048)
+(defn fs-max-shares [] : I32 256)
+(defn fs-preview-cap [] : I32 61440)
+
+(defn g-fs-state [] : I32 256)
+(defn g-fs-mid [] : I32 257)
+(defn g-fs-sid-lo [] : I32 258)
+(defn g-fs-sid-hi [] : I32 259)
+(defn g-fs-tid [] : I32 260)
+(defn g-fs-sign [] : I32 261)
+(defn g-fs-op [] : I32 262)                         ; 1 shares, 2 list, 3 read
+(defn g-fs-opstatus [] : I32 263)
+(defn g-fs-nshares [] : I32 264)
+(defn g-fs-nentries [] : I32 265)
+(defn g-fs-rawlen [] : I32 266)
+(defn g-fs-stublen [] : I32 267)
+(defn g-fs-prevlen [] : I32 268)
+(defn g-fs-chal-len [] : I32 269)
+(defn g-fs-auth-len [] : I32 270)
+(defn g-fs-dialect [] : I32 271)
+(defn g-fs-sflags [] : I32 272)                     ; SESSION_SETUP SessionFlags: 1 guest, 2 anonymous
+(defn g-fs-anon [] : I32 273)
+(defn g-fs-havefile [] : I32 274)
+(defn g-fs-havetree [] : I32 275)
+(defn g-fs-truncated [] : I32 276)                  ; 1 when a folder had more entries than the table holds
+(defn g-fs-qd-first [] : I32 277)
+(defn g-fs-rpc-step [] : I32 278)                   ; 1 bind, 2 request
+(defn g-fs-fsize-lo [] : I32 279)
+(defn g-fs-fsize-hi [] : I32 280)
+(defn g-fs-total [] : I32 281)                      ; entries seen (including ones that did not fit)
+
+;; states
+(defn fst-idle [] : I32 0)
+(defn fst-neg [] : I32 10)
+(defn fst-ntlm1 [] : I32 11)
+(defn fst-auth [] : I32 12)
+(defn fst-ready [] : I32 20)
+(defn fst-tree [] : I32 30)
+(defn fst-create [] : I32 31)
+(defn fst-ioctl [] : I32 32)
+(defn fst-rpcread [] : I32 33)
+(defn fst-qd [] : I32 34)
+(defn fst-read [] : I32 35)
+(defn fst-close [] : I32 36)
+(defn fst-tdis [] : I32 37)
+(defn fst-failed [] : I32 99)
+
+(defn fs-fail! [(kind : I32) (msg : I32)] : Unit
+  (do (gi! (g-err-kind) kind) (gi! (g-err-msg) msg) (gi! (g-fs-state) (fst-failed))))
+
+;; ---- small helpers -------------------------------------------------------------------------------------------------------------------
+(defn fs-copy! [(dst : I32) (src : I32) (n : I32)] : Unit (dotimes [i n] (store8! (+ dst i) (load8 (+ src i)))))
+(defn fs-strlen [(a : I32)] : I32 (loop [i 0] (if (= (load8 (+ a i)) 0) i (recur (+ i 1)))))
+(defn out-at [(off : I32)] : I32 (+ (out-base) off))
+(defn store16le! [(a : I32) (v : I32)] : Unit (do (store8! a (bit-and v 255)) (store8! (+ a 1) (bit-and (shr v 8) 255))))
+
+;; UTF-8 (NUL-terminated at src) -> UTF-16LE at dst, at most cap bytes; "/" becomes "\" when slash is 1. Returns the byte count.
+;; 4-byte sequences (outside the BMP) become "?".
+(defn fs-u8to16 [(dst : I32) (src : I32) (cap : I32) (slash : I32)] : I32
+  (loop [i 0 o 0]
+    (let [c (load8 (+ src i))]
+      (if (or (= c 0) (> (+ o 2) cap)) o
+          (let [n (cond (< c 128) 1 (< c 224) 2 (< c 240) 3 :else 4)
+                u (cond (= n 1) (if (and (= slash 1) (= c 47)) 92 c)
+                        (= n 2) (bit-or (shl (bit-and c 31) 6) (bit-and (load8 (+ src (+ i 1))) 63))
+                        (= n 3) (bit-or (bit-or (shl (bit-and c 15) 12) (shl (bit-and (load8 (+ src (+ i 1))) 63) 6))
+                                        (bit-and (load8 (+ src (+ i 2))) 63))
+                        :else 63)]
+            (do (store16le! (+ dst o) u) (recur (+ i n) (+ o 2))))))))
+
+;; ---- requests ---------------------------------------------------------------------------------------------------------------------------
+;; every request starts at OUT[out-len] with a 4-byte NetBIOS header; fs-req-end! patches its length and signs it.
+(defn g-fs-reqat [] : I32 282)
+(defn fs-req! [(cmd : I32) (tree : I32)] : Unit
+  (let [mid (gi (g-fs-mid))]
+    (do (gi! (g-fs-reqat) (nk-out-len))
+        (put32le! 0)
+        (put8! 254) (put8! 83) (put8! 77) (put8! 66) (put16le! 64) (put16le! 1) (put32le! 0)
+        (put16le! cmd) (put16le! 31) (put32le! 0) (put32le! 0)
+        (put32le! mid) (put32le! 0)
+        (put32le! 65279) (put32le! tree)
+        (put32le! (gi (g-fs-sid-lo))) (put32le! (gi (g-fs-sid-hi)))
+        (put-zeros! 16)
+        (gi! (g-fs-mid) (+ mid 1)))))
+
+;; HMAC-SHA256(session key, the n-byte message at m with a zero signature), first 16 bytes -> at
+(defn fs-signature! [(m : I32) (n : I32) (at : I32)] : Unit
+  (let [t (+ (fs-keys) 64)]
+    (do (dotimes [i 16] (store8! (+ m (+ 48 i)) 0))
+        (nk-hmac-sha256 (+ (fs-keys) 32) 16 m n t)
+        (fs-copy! at t 16))))
+
+(defn fs-req-end! [] : Unit
+  (let [at (gi (g-fs-reqat)) n (- (- (nk-out-len) at) 4) m (out-at (+ at 4))]
+    (do (store8! (out-at at) 0) (store8! (out-at (+ at 1)) (bit-and (shr n 16) 255))
+        (store8! (out-at (+ at 2)) (bit-and (shr n 8) 255)) (store8! (out-at (+ at 3)) (bit-and n 255))
+        (when (= (gi (g-fs-sign)) 1)
+          (store8! (+ m 16) (bit-or (load8 (+ m 16)) 8))
+          (fs-signature! m n (+ (fs-keys) 64))
+          (fs-copy! (+ m 48) (+ (fs-keys) 64) 16)))))
+
+;; a reply's signature, if it carries one, must be ours: 1 ok, 0 bad
+(defn fs-reply-ok? [(m : I32) (n : I32)] : Bool
+  (if (or (= (gi (g-fs-sign)) 0) (= (bit-and (load8 (+ m 16)) 8) 0)) true
+      (let [save (+ (fs-keys) 112)]
+        (do (fs-copy! save (+ m 48) 16)
+            (fs-signature! m n (+ (fs-keys) 96))
+            (fs-copy! (+ m 48) save 16)
+            (= (ct-eq save (+ (fs-keys) 96) 16) 1)))))
+
+;; ---- sign-in ------------------------------------------------------------------------------------------------------------------------------
+;; our NTLM NEGOTIATE flags: unicode, OEM? no; request target, sign, NTLM, always sign, extended session security, target info,
+;; version, 128, 56 -- and NO key exchange (0xA2888215)
+(defn fs-ntlm-flags [] : I32 -1568111083)
+
+(defn fs-send-negotiate! [] : Unit
+  (do (fs-req! 0 0)
+      (put16le! 36) (put16le! 2) (put16le! 1) (put16le! 0) (put32le! 0)
+      (dotimes [i 16] (put8! (load8 (+ (txt-base) i))))
+      (put-zeros! 8)
+      (put16le! 514) (put16le! 528)
+      (fs-req-end!)))
+
+(defn fs-send-ntlm1! [] : Unit
+  (let [n (fs-neg)]
+    (do (fs-copy! n (str-addr "NTLMSSP") 8)
+        (put-le32! (+ n 8) 1) (put-le32! (+ n 12) (fs-ntlm-flags))
+        (dotimes [i 24] (store8! (+ n (+ 16 i)) 0))
+        (store8! (+ n 39) 15)
+        (fs-req! 1 0)
+        (put16le! 25) (put8! 0) (put8! 1) (put32le! 0) (put32le! 0) (put16le! 88) (put16le! 74) (put-zeros! 8)
+        (put-hex! "604806062b0601050502a03e303ca00e300c060a2b06010401823702020aa22a0428")
+        (dotimes [i 40] (put8! (load8 (+ n i))))
+        (fs-req-end!))))
+
+;; DER length of n, its own size
+(defn der-lsize [(n : I32)] : I32 (cond (< n 128) 1 (< n 256) 2 :else 3))
+(defn put-der! [(tag : I32) (n : I32)] : Unit
+  (do (put8! tag)
+      (cond (< n 128) (put8! n) (< n 256) (do (put8! 129) (put8! n)) :else (do (put8! 130) (put8! (shr n 8)) (put8! n)))))
+
+;; the NTLMSSP CHALLENGE inside the security blob at b (sl bytes): copy it to fs-chal; its exact length is the DER OCTET STRING's
+(defn fs-take-challenge! [(b : I32) (sl : I32)] : I32
+  (let [i (smb-find-challenge b sl)]
+    (if (< i 0) -1
+        (let [len (cond (and (>= i 2) (= (load8 (+ b (- i 2))) 4)) (load8 (+ b (- i 1)))
+                        (and (>= i 3) (and (= (load8 (+ b (- i 3))) 4) (= (load8 (+ b (- i 2))) 129))) (load8 (+ b (- i 1)))
+                        (and (>= i 4) (and (= (load8 (+ b (- i 4))) 4) (= (load8 (+ b (- i 3))) 130)))
+                        (bit-or (shl (load8 (+ b (- i 2))) 8) (load8 (+ b (- i 1))))
+                        :else (- sl i))
+              n (min-i (min-i len (- sl i)) 2048)]
+          (do (fs-copy! (fs-chal) (+ b i) n) (gi! (g-fs-chal-len) n) n)))))
+
+;; the challenge's target info (bounds-checked): start and length, or length -1
+(defn fs-ti-off [] : I32 (load32 (+ (fs-chal) 44)))
+(defn fs-ti-len [] : I32
+  (let [n (gi (g-fs-chal-len)) l (le16 (+ (fs-chal) 40)) o (fs-ti-off)]
+    (if (and (>= n 48) (and (>= o 0) (and (<= o n) (<= l (- n o))))) l -1)))
+;; the AV pair with this id inside the target info: its value's address, or -1
+(defn fs-av [(id : I32)] : I32
+  (let [t (+ (fs-chal) (fs-ti-off)) n (fs-ti-len)]
+    (loop [p 0]
+      (if (or (< n 0) (> (+ p 4) n)) -1
+          (let [k (le16 (+ t p)) l (le16 (+ t (+ p 2)))]
+            (cond (= k 0) -1 (> (+ (+ p 4) l) n) -1 (= k id) (+ t (+ p 4)) :else (recur (+ (+ p 4) l))))))))
+
+;; the target info's AV pairs up to (not including) its MsvAvEOL: their byte length
+(defn fs-ti-body [] : I32
+  (let [t (+ (fs-chal) (fs-ti-off)) tl (fs-ti-len)]
+    (loop [p 0]
+      (if (or (< tl 0) (> (+ p 4) tl)) (if (< tl 0) 0 p)
+          (let [id (le16 (+ t p)) l (le16 (+ t (+ p 2)))]
+            (if (or (= id 0) (> (+ (+ p 4) l) tl)) p (recur (+ (+ p 4) l))))))))
+
+;; UTF-16LE of the ASCII-upper-cased user then the domain, into fs-u16; returns the length
+(defn fs-userdom! [] : I32
+  (let [n (fs-u8to16 (fs-u16) (fs-user) 512 0)]
+    (do (dotimes [i (/ n 2)]
+          (let [c (le16 (+ (fs-u16) (* 2 i)))] (when (and (>= c 97) (<= c 122)) (store16le! (+ (fs-u16) (* 2 i)) (- c 32)))))
+        (+ n (fs-u8to16 (+ (fs-u16) n) (fs-domain) 512 0)))))
+
+;; payload helpers for the AUTHENTICATE being built at fs-auth: word g-fs-auth-len = bytes so far
+(defn au-put! [(src : I32) (n : I32)] : Unit
+  (let [k (gi (g-fs-auth-len))] (do (fs-copy! (+ (fs-auth) k) src n) (gi! (g-fs-auth-len) (+ k n)))))
+(defn au-u8! [(v : I32)] : Unit (let [k (gi (g-fs-auth-len))] (do (store8! (+ (fs-auth) k) v) (gi! (g-fs-auth-len) (+ k 1)))))
+(defn au-field! [(at : I32) (len : I32) (off : I32)] : Unit
+  (do (store16le! (+ (fs-auth) at) len) (store16le! (+ (fs-auth) (+ at 2)) len) (put-le32! (+ (fs-auth) (+ at 4)) off)))
+
+;; The NTLMv2 response and keys (MS-NLMP 3.3.2). Builds the AUTHENTICATE at fs-auth; returns its length.
+;; Keys area: +0 NT hash, +16 NTOWFv2, +32 session key, +48 sign key, +64 NTProofStr / temp, +80 LMv2 input, +96 LMv2.
+(defn fs-anon? [] : Bool (= (gi (g-fs-anon)) 1))
+
+;; header (88 bytes: signature, type 3, six fields, flags, version, MIC zero for now), then domain, user, workstation (UTF-16)
+(defn fs-auth-head! [] : Unit
+  (let [flags (bit-or (bit-and (load32 (+ (fs-chal) 20)) (fs-ntlm-flags)) (if (fs-anon?) 2048 0))]
+    (do (dotimes [i 88] (store8! (+ (fs-auth) i) 0))
+        (fs-copy! (fs-auth) (str-addr "NTLMSSP") 8) (put-le32! (+ (fs-auth) 8) 3)
+        (put-le32! (+ (fs-auth) 60) flags) (store8! (+ (fs-auth) 71) 15)
+        (gi! (g-fs-auth-len) 88)
+        (let [d0 (gi (g-fs-auth-len)) dl (fs-u8to16 (+ (fs-auth) d0) (fs-domain) 512 0)]
+          (do (au-field! 28 dl d0) (gi! (g-fs-auth-len) (+ d0 dl))))
+        (let [u0 (gi (g-fs-auth-len)) ul (fs-u8to16 (+ (fs-auth) u0) (fs-user) 512 0)]
+          (do (au-field! 36 ul u0) (gi! (g-fs-auth-len) (+ u0 ul))))
+        (let [w0 (gi (g-fs-auth-len)) wl (fs-u8to16 (+ (fs-auth) w0) (str-addr "NETKIT") 64 0)]
+          (do (au-field! 44 wl w0) (gi! (g-fs-auth-len) (+ w0 wl)))))))
+
+;; anonymous: LmChallengeResponse = one zero byte, no NT response, no key
+(defn fs-auth-anon! [] : Unit
+  (let [l0 (gi (g-fs-auth-len))]
+    (do (au-u8! 0) (au-field! 12 1 l0) (au-field! 20 0 (gi (g-fs-auth-len))) (au-field! 52 0 (gi (g-fs-auth-len)))
+        (dotimes [i 16] (store8! (+ (fs-keys) (+ 32 i)) 0)))))
+
+;; Unix seconds (unsigned 32-bit) -> FILETIME (8 bytes LE) at dst: (s + 11644473600) * 10^7, in 16-bit limbs
+(defn w64-mul! [(d : I32)] : Unit
+  (loop [i 0 c 0]
+    (when (< i 4)
+      (let [x (+ (* (w64-limb i) d) c)]
+        (do (store32! (+ (smb-w64) (shl i 2)) (bit-and x 65535)) (recur (+ i 1) (ushr x 16)))))))
+(defn fs-unix-filetime! [(s : I32) (dst : I32)] : Unit
+  (let [l0 (+ (bit-and s 65535) 37120) l1 (+ (+ (ushr s 16) 46608) (ushr l0 16)) l2 (+ 2 (ushr l1 16))]
+    (do (store32! (smb-w64) (bit-and l0 65535)) (store32! (+ (smb-w64) 4) (bit-and l1 65535))
+        (store32! (+ (smb-w64) 8) l2) (store32! (+ (smb-w64) 12) 0)
+        (w64-mul! 10000) (w64-mul! 1000)
+        (dotimes [i 4] (store16le! (+ dst (* 2 i)) (w64-limb i))))))
+
+;; the NTLMv2 blob at b: 01 01 Z(6) | time | client challenge | Z(4) | the server's AV pairs + MsvAvFlags (MIC present) + EOL | Z(4)
+;; returns its length
+;; MsvAvFlags + the MIC only when the server sent a time (MS-NLMP 3.1.5.1.2: that is when the MIC is required); the host's clock is
+;; used otherwise, and a clock of 0 means "no clock": a zero time (MS-NLMP 4.2.4's own example).
+(defn fs-mic? [] : Bool (and (not (fs-anon?)) (>= (fs-av 7) 0)))
+(defn fs-blob! [(b : I32)] : I32
+  (let [tx (txt-base) ts (fs-av 7) body (fs-ti-body) o (+ b 28) flags (if (fs-mic?) 8 0)]
+    (do (dotimes [i 28] (store8! (+ b i) 0))
+        (store8! b 1) (store8! (+ b 1) 1)
+        (cond (>= ts 0) (fs-copy! (+ b 8) ts 8)
+              (not (= (load32 (+ tx 24)) 0)) (fs-unix-filetime! (load32 (+ tx 24)) (+ b 8))
+              :else unit)
+        (fs-copy! (+ b 16) (+ tx 16) 8)
+        (fs-copy! o (+ (fs-chal) (fs-ti-off)) body)
+        (let [o2 (+ o body)]
+          (do (when (fs-mic?) (store16le! o2 6) (store16le! (+ o2 2) 4) (put-le32! (+ o2 4) 2))
+              (dotimes [i 8] (store8! (+ o2 (+ flags i)) 0))))
+        (+ 28 (+ body (+ flags 8))))))
+
+(defn fs-auth-ntlmv2! [] : Unit
+  (let [k (fs-keys) tx (txt-base) pl (fs-u8to16 (+ k 128) (fs-pass) 512 0) blob (+ (fs-u16) 1024)]
+    (do (nk-md4 (+ k 128) pl k)
+        (zero-mem! (+ k 128) pl)
+        (nk-hmac-md5 k 16 (fs-u16) (fs-userdom!) (+ k 16))
+        (fs-copy! blob (+ (fs-chal) 24) 8)
+        (let [bl (fs-blob! (+ blob 8))]
+          (do ;; NTProofStr = HMAC-MD5(NTOWFv2, server challenge | blob); session key = HMAC-MD5(NTOWFv2, NTProofStr)
+              (nk-hmac-md5 (+ k 16) 16 blob (+ 8 bl) (+ k 64))
+              (nk-hmac-md5 (+ k 16) 16 (+ k 64) 16 (+ k 32))
+              ;; LmChallengeResponse: Z(24) when the server sent a time, else LMv2 = HMAC-MD5(NTOWFv2, SC | CC) | CC
+              (let [l0 (gi (g-fs-auth-len))]
+                (do (if (< (fs-av 7) 0)
+                        (do (fs-copy! (+ k 80) (+ (fs-chal) 24) 8) (fs-copy! (+ k 88) (+ tx 16) 8)
+                            (nk-hmac-md5 (+ k 16) 16 (+ k 80) 16 (+ k 96))
+                            (au-put! (+ k 96) 16) (au-put! (+ tx 16) 8))
+                        (dotimes [i 24] (au-u8! 0)))
+                    (au-field! 12 24 l0)))
+              (let [n0 (gi (g-fs-auth-len))]
+                (do (au-put! (+ k 64) 16) (au-put! (+ blob 8) bl) (au-field! 20 (+ 16 bl) n0)))
+              (au-field! 52 0 (gi (g-fs-auth-len))))))))
+
+;; MIC = HMAC-MD5(session key, NEGOTIATE | CHALLENGE | AUTHENTICATE with the MIC field zero)
+(defn fs-auth-mic! [] : Unit
+  (let [cat (fs-stub) cl (gi (g-fs-chal-len)) al (gi (g-fs-auth-len))]
+    (do (fs-copy! cat (fs-neg) 40) (fs-copy! (+ cat 40) (fs-chal) cl) (fs-copy! (+ cat (+ 40 cl)) (fs-auth) al)
+        (nk-hmac-md5 (+ (fs-keys) 32) 16 cat (+ 40 (+ cl al)) (+ (fs-auth) 72))
+        unit)))
+
+(defn fs-build-auth! [] : I32
+  (do (fs-auth-head!)
+      (if (fs-anon?) (fs-auth-anon!) (do (fs-auth-ntlmv2!) (when (fs-mic?) (fs-auth-mic!))))
+      (gi (g-fs-auth-len))))
+
+;; the SPNEGO mechListMIC (RFC 4178 + MS-NLMP 3.4.4.2 with extended session security, no key exchange) over the mechTypes we sent
+(defn fs-mech-mic! [(out : I32)] : Unit
+  (let [k (fs-keys) t (+ (fs-u16) 1536)
+        magic "session key to client-to-server signing key magic constant"]
+    (do (fs-copy! t (+ k 32) 16)
+        (let [ml (fs-strlen (str-addr magic))]
+          (do (fs-copy! (+ t 16) (str-addr magic) (+ ml 1))
+              (nk-md5 t (+ 17 ml) (+ k 48))))
+        ;; HMAC-MD5(sign key, seq 0 | the DER mechTypes)
+        (put-le32! t 0)
+        (let [n (sc-free-hex! (+ t 4) "300c060a2b06010401823702020a")]
+          (nk-hmac-md5 (+ k 48) 16 t (+ 4 n) (+ k 80)))
+        (put-le32! out 1) (fs-copy! (+ out 4) (+ k 80) 8) (put-le32! (+ out 12) 0))))
+;; hex literal -> bytes at a; returns the count
+(defn sc-free-hex! [(a : I32) (h : String)] : I32
+  (let [s (str-addr h)]
+    (loop [i 0 o 0]
+      (if (= (load8 (+ s i)) 0) o
+          (do (store8! (+ a o) (bit-or (shl (smb-hexval (load8 (+ s i))) 4) (smb-hexval (load8 (+ s (+ i 1))))))
+              (recur (+ i 2) (+ o 1)))))))
+
+(defn fs-send-auth! [] : Unit
+  (let [al (fs-build-auth!) anon (= (gi (g-fs-anon)) 1) mic (+ (fs-keys) 192)
+        ntlm-tok (+ 1 (+ (der-lsize al) al))                     ; 04 L ntlm
+        a2 (+ 1 (+ (der-lsize ntlm-tok) ntlm-tok))               ; a2 L (04 L ntlm)
+        a3 (if anon 0 20)                                        ; a3 12 04 10 mic16
+        seq (+ a2 a3)
+        s30 (+ 1 (+ (der-lsize seq) seq))
+        total (+ 1 (+ (der-lsize s30) s30))]
+    (do (when (not anon) (fs-mech-mic! mic))
+        (fs-req! 1 0)
+        (put16le! 25) (put8! 0) (put8! 1) (put32le! 0) (put32le! 0) (put16le! 88) (put16le! total) (put-zeros! 8)
+        (put-der! 161 s30) (put-der! 48 seq) (put-der! 162 ntlm-tok) (put-der! 4 al)
+        (dotimes [i al] (put8! (load8 (+ (fs-auth) i))))
+        (when (not anon) (put8! 163) (put8! 18) (put8! 4) (put8! 16) (dotimes [i 16] (put8! (load8 (+ mic i)))))
+        (fs-req-end!))))
+
+(defn nk-smb-login [] : Unit
+  (let [tx (txt-base)]
+    (do (nk-reset-common!)
+        (dotimes [k 30] (gi! (+ 256 k) 0))
+        (zero-mem! (fs-base) 2304)
+        ;; the four strings, each at most 255 bytes
+        (let [p0 (+ tx 64) n0 (min-i (fs-strlen p0) 255)
+              p1 (+ p0 (+ (fs-strlen p0) 1)) n1 (min-i (fs-strlen p1) 255)
+              p2 (+ p1 (+ (fs-strlen p1) 1)) n2 (min-i (fs-strlen p2) 255)
+              p3 (+ p2 (+ (fs-strlen p2) 1)) n3 (min-i (fs-strlen p3) 255)]
+          (do (fs-copy! (fs-user) p0 n0) (fs-copy! (fs-domain) p1 n1) (fs-copy! (fs-pass) p2 n2) (fs-copy! (fs-server) p3 n3)
+              (zero-mem! p0 (- (+ p3 (+ (fs-strlen p3) 1)) p0))
+              (fs-split-user!)
+              (gi! (g-fs-anon) (if (= (load8 (fs-user)) 0) 1 0))))
+        (dotimes [k 6] (store8! (smb-name k) 0))
+        (fs-send-negotiate!)
+        (gi! (g-fs-state) (fst-neg)))))
+
+;; "DOMAIN\user" (or "DOMAIN/user") typed in the user box: the part before the separator is the domain, unless one was given
+(defn fs-sep-at [(u : I32) (n : I32)] : I32
+  (loop [i 0] (cond (>= i n) -1 (or (= (load8 (+ u i)) 92) (= (load8 (+ u i)) 47)) i :else (recur (+ i 1)))))
+(defn fs-split-user! [] : Unit
+  (let [u (fs-user) n (fs-strlen u) at (fs-sep-at u n)]
+    (when (>= at 0)
+      (when (= (load8 (fs-domain)) 0) (fs-copy! (fs-domain) u at) (store8! (+ (fs-domain) at) 0))
+      (fs-copy! u (+ u (+ at 1)) (- n at))
+      (zero-mem! (+ u (- n at)) (+ at 1)))))
+
+;; ---- operations ---------------------------------------------------------------------------------------------------------------------------
+;; TREE_CONNECT to \\server\share (share NUL-terminated at s)
+(defn fs-send-tree! [(s : I32)] : Unit
+  (let [u (fs-u16)]
+    (do (store16le! u 92) (store16le! (+ u 2) 92)
+        (let [a (+ 4 (fs-u8to16 (+ u 4) (fs-server) 400 0))]
+          (do (store16le! (+ u a) 92)
+              (let [n (+ (+ a 2) (fs-u8to16 (+ u (+ a 2)) s 400 0))]
+                (do (fs-req! 3 0)
+                    (put16le! 9) (put16le! 0) (put16le! 72) (put16le! n)
+                    (dotimes [i n] (put8! (load8 (+ u i))))
+                    (fs-req-end!)
+                    (gi! (g-fs-state) (fst-tree)))))))))
+
+;; CREATE name (UTF-16 already at fs-u16, n bytes)
+(defn fs-send-create! [(n : I32) (access : I32) (options : I32)] : Unit
+  (do (fs-req! 5 (gi (g-fs-tid)))
+      (put16le! 57) (put8! 0) (put8! 0) (put32le! 2) (put-zeros! 16)
+      (put32le! access) (put32le! 0) (put32le! 7) (put32le! 1) (put32le! options)
+      (put16le! 120) (put16le! n) (put32le! 0) (put32le! 0)
+      (if (= n 0) (put8! 0) (dotimes [i n] (put8! (load8 (+ (fs-u16) i)))))
+      (fs-req-end!)
+      (gi! (g-fs-state) (fst-create))))
+
+(defn put-fid! [] : Unit (dotimes [i 16] (put8! (load8 (+ (fs-fid) i)))))
+
+(defn fs-send-ioctl! [(src : I32) (n : I32)] : Unit
+  (do (fs-req! 11 (gi (g-fs-tid)))
+      (put16le! 57) (put16le! 0) (put32le! 1163287) (put-fid!)          ; FSCTL_PIPE_TRANSCEIVE 0x0011C017
+      (put32le! 120) (put32le! n) (put32le! 0) (put32le! 120) (put32le! 0) (put32le! 61440) (put32le! 1) (put32le! 0)
+      (dotimes [i n] (put8! (load8 (+ src i))))
+      (fs-req-end!)
+      (gi! (g-fs-state) (fst-ioctl))))
+
+(defn fs-send-read! [(len : I32) (st : I32)] : Unit
+  (do (fs-req! 8 (gi (g-fs-tid)))
+      (put16le! 49) (put8! 80) (put8! 0) (put32le! len) (put32le! 0) (put32le! 0) (put-fid!)
+      (put32le! 0) (put32le! 0) (put32le! 0) (put16le! 0) (put16le! 0) (put8! 0)
+      (fs-req-end!)
+      (gi! (g-fs-state) st)))
+
+(defn fs-send-qd! [] : Unit
+  (do (fs-req! 14 (gi (g-fs-tid)))
+      (put16le! 33) (put8! 1) (put8! (if (= (gi (g-fs-qd-first)) 1) 1 0)) (put32le! 0) (put-fid!)
+      (put16le! 96) (put16le! 2) (put32le! 65536) (put16le! 42)
+      (gi! (g-fs-qd-first) 0)
+      (fs-req-end!)
+      (gi! (g-fs-state) (fst-qd))))
+
+(defn fs-send-close! [] : Unit
+  (do (fs-req! 6 (gi (g-fs-tid))) (put16le! 24) (put16le! 0) (put32le! 0) (put-fid!) (fs-req-end!)
+      (gi! (g-fs-havefile) 0) (gi! (g-fs-state) (fst-close))))
+
+(defn fs-send-tdis! [] : Unit
+  (do (fs-req! 4 (gi (g-fs-tid))) (put16le! 4) (put16le! 0) (fs-req-end!)
+      (gi! (g-fs-havetree) 0) (gi! (g-fs-state) (fst-tdis))))
+
+;; an op ends: close what is open, then ready. st = 0 ok, else the NT status that stopped it.
+(defn fs-finish! [(st : I32)] : Unit
+  (do (when (and (= (gi (g-fs-opstatus)) 0) (not (= st 0))) (gi! (g-fs-opstatus) st))
+      (cond (= (gi (g-fs-havefile)) 1) (fs-send-close!)
+            (= (gi (g-fs-havetree)) 1) (fs-send-tdis!)
+            :else (gi! (g-fs-state) (fst-ready)))))
+
+(defn fs-op-begin! [(op : I32)] : Bool
+  (if (not (= (gi (g-fs-state)) (fst-ready))) false
+      (do (gi! (g-fs-op) op) (gi! (g-fs-opstatus) 0) (gi! (g-fs-havefile) 0) (gi! (g-fs-havetree) 0) true)))
+
+;; the share and path the host wrote at TXT
+(defn fs-arg-share [] : I32 (txt-base))
+(defn fs-arg-path [] : I32 (+ (txt-base) (+ (fs-strlen (txt-base)) 1)))
+
+(defn nk-smb-shares [] : I32
+  (if (fs-op-begin! 1) (do (gi! (g-fs-nshares) 0) (fs-send-tree! (str-addr "IPC$")) 1) 0))
+(defn nk-smb-list [] : I32
+  (if (fs-op-begin! 2)
+      (do (gi! (g-fs-nentries) 0) (gi! (g-fs-total) 0) (gi! (g-fs-truncated) 0)
+          (fs-copy! (+ (fs-u16) 1024) (fs-arg-path) (min-i (+ (fs-strlen (fs-arg-path)) 1) 512))
+          (fs-send-tree! (fs-arg-share)) 1)
+      0))
+(defn nk-smb-read [] : I32
+  (if (fs-op-begin! 3)
+      (do (gi! (g-fs-prevlen) 0)
+          (fs-copy! (+ (fs-u16) 1024) (fs-arg-path) (min-i (+ (fs-strlen (fs-arg-path)) 1) 512))
+          (fs-send-tree! (fs-arg-share)) 1)
+      0))
+
+;; the path saved at fs-u16+1024 -> UTF-16 (with "\") at fs-u16, leading separators dropped; returns the byte count
+(defn fs-skip-seps [(p : I32)] : I32 (loop [i 0] (let [c (load8 (+ p i))] (if (or (= c 47) (= c 92)) (recur (+ i 1)) i))))
+(defn fs-path16! [] : I32
+  (let [p (+ (fs-u16) 1024)] (fs-u8to16 (fs-u16) (+ p (fs-skip-seps p)) 1000 1)))
+
+;; ---- DCE/RPC (srvsvc) --------------------------------------------------------------------------------------------------------------------
+;; bind to srvsvc 4b324fc8-1670-01d3-1278-5a47bf6ee188 v3.0 over NDR 8a885d04-1ceb-11c9-9fe8-08002b104860 v2
+(defn fs-rpc-bind! [] : Unit
+  (let [b (+ (fs-u16) 1536)
+        n (sc-free-hex! b "05000b03100000004800000001000000b810b810000000000100000000000100c84f324b7016d30112785a47bf6ee18803000000045d888aeb1cc9119fe808002b10486002000000")]
+    (do (gi! (g-fs-rpc-step) 1) (gi! (g-fs-rawlen) 0) (fs-send-ioctl! b n))))
+;; NetrShareEnumAll (opnum 15): ServerName NULL, level 1, an empty container, max length -1, resume handle 0
+(defn fs-rpc-enum! [] : Unit
+  (let [b (+ (fs-u16) 1536)
+        n (sc-free-hex! b "05000003100000003c000000020000002400000000000f00000000000100000001000000040002000000000000000000ffffffff0800020000000000")]
+    (do (gi! (g-fs-rpc-step) 2) (gi! (g-fs-rawlen) 0) (gi! (g-fs-stublen) 0) (fs-send-ioctl! b n))))
+
+;; append n bytes to RAW; then: 1 = the last fragment is in, 0 = need more, -1 = malformed
+(defn fs-raw-add! [(src : I32) (n : I32)] : I32
+  (let [r (gi (g-fs-rawlen)) k (min-i n (- (fs-raw-cap) r))]
+    (do (fs-copy! (+ (fs-raw) r) src k) (gi! (g-fs-rawlen) (+ r k))
+        (loop [p 0]
+          (cond (> (+ p 16) (gi (g-fs-rawlen))) 0
+                :else
+                (let [fl (le16 (+ (fs-raw) (+ p 8)))]
+                  (cond (or (< fl 16) (not (= (load8 (+ (fs-raw) p)) 5))) -1
+                        (> (+ p fl) (gi (g-fs-rawlen))) 0
+                        (not (= (bit-and (load8 (+ (fs-raw) (+ p 3))) 2) 0)) 1
+                        :else (recur (+ p fl)))))))))
+
+;; RAW's fragments: the bind ack's result (0 accepted), or the response stubs joined into STUB. Returns 0 ok, else a status for the op.
+(defn fs-rpc-done [] : I32
+  (let [r (fs-raw) ty (load8 (+ r 2))]
+    (cond
+      (= ty 3) (if (>= (gi (g-fs-rawlen)) 28) (load32 (+ r 24)) -1073741823)     ; fault: its status (else STATUS_UNSUCCESSFUL)
+      (= (gi (g-fs-rpc-step)) 1)
+      (if (not (= ty 12)) -1073741823
+          (let [sl (le16 (+ r 24)) p (bit-and (+ (+ 26 sl) 3) -4)]
+            (if (and (<= (+ p 8) (gi (g-fs-rawlen))) (= (le16 (+ r (+ p 4))) 0)) 0 -1073741823)))
+      :else
+      (loop [p 0]
+        (if (> (+ p 24) (gi (g-fs-rawlen))) 0
+            (let [fl (le16 (+ r (+ p 8))) al (le16 (+ r (+ p 10))) sl (- (- fl 24) (if (> al 0) (+ al 8) 0))]
+              (if (or (not (= (load8 (+ r (+ p 2))) 2)) (< sl 0)) -1073741823
+                  (do (let [s (gi (g-fs-stublen)) k (min-i sl (- 65536 s))]
+                        (do (fs-copy! (+ (fs-stub) s) (+ r (+ p 24)) k) (gi! (g-fs-stublen) (+ s k))))
+                      (if (not (= (bit-and (load8 (+ r (+ p 3))) 2) 0)) 0 (recur (+ p fl)))))))))))
+
+;; NDR: a conformant varying UTF-16 string at STUB[p]; stores it (UTF-8, <= cap) at dst; returns the offset after it, or -1
+(defn fs-ndr-str! [(p : I32) (dst : I32) (cap : I32)] : I32
+  (let [n (gi (g-fs-stublen)) q (bit-and (+ p 3) -4)]
+    (if (> (+ q 12) n) -1
+        (let [cnt (load32 (+ (fs-stub) (+ q 8))) bytes (* 2 cnt)]
+          (if (or (< cnt 0) (> (+ (+ q 12) bytes) n)) -1
+              (do (fs-u16to8! dst (+ (fs-stub) (+ q 12)) bytes cap) (+ (+ q 12) bytes)))))))
+
+;; UTF-16LE (n bytes) -> UTF-8 at d, at most cap-1 bytes, NUL-terminated; stops at a NUL; surrogates become "?"
+(defn fs-u16to8! [(d : I32) (a : I32) (n : I32) (cap : I32)] : Unit
+  (loop [i 0 o 0]
+    (if (or (> (+ i 2) n) (> (+ o 4) cap)) (store8! (+ d o) 0)
+        (let [c (le16 (+ a i))]
+          (cond
+            (= c 0) (store8! (+ d o) 0)
+            (< c 128) (do (store8! (+ d o) c) (recur (+ i 2) (+ o 1)))
+            (< c 2048) (do (store8! (+ d o) (bit-or 192 (shr c 6))) (store8! (+ d (+ o 1)) (bit-or 128 (bit-and c 63))) (recur (+ i 2) (+ o 2)))
+            (and (>= c 55296) (< c 57344)) (do (store8! (+ d o) 63) (recur (+ i 2) (+ o 1)))
+            :else (do (store8! (+ d o) (bit-or 224 (shr c 12))) (store8! (+ d (+ o 1)) (bit-or 128 (bit-and (shr c 6) 63)))
+                      (store8! (+ d (+ o 2)) (bit-or 128 (bit-and c 63))) (recur (+ i 2) (+ o 3))))))))
+
+;; share record (128 B): +0 type, +4 name (80), +84 remark (44)
+(defn fs-share [(k : I32)] : I32 (+ (fs-shares) (shl k 7)))
+
+;; the NetrShareEnumAll reply in STUB -> the share table. Returns 0 ok, else a status.
+(defn fs-parse-shares! [] : I32
+  (let [s (fs-stub) n (gi (g-fs-stublen))]
+    (if (< n 24) -1073741823
+        (let [cnt (load32 (+ s 12)) bufp (load32 (+ s 16))]
+          (if (or (= bufp 0) (= cnt 0)) (do (gi! (g-fs-nshares) 0) 0)
+              (let [m (load32 (+ s 20)) k (min-i cnt (fs-max-shares))]
+                (if (or (< cnt 0) (or (not (= m cnt)) (> (+ 24 (* 12 cnt)) n))) -1073741823
+                    (loop [i 0 p (+ 24 (* 12 cnt))]
+                      (if (>= i cnt)
+                          (do (gi! (g-fs-nshares) k)
+                              ;; then TotalEntries, ResumeHandle (pointer + value), WERROR
+                              (let [q (bit-and (+ p 3) -4)]
+                                (if (> (+ q 12) n) 0
+                                    (let [rp (load32 (+ s (+ q 4))) w (+ q (if (= rp 0) 8 12))]
+                                      (if (> (+ w 4) n) 0 (load32 (+ s w)))))))
+                          (let [e (+ s (+ 24 (* 12 i))) rec (fs-share (min-i i (- (fs-max-shares) 1)))
+                                np (load32 e) rmp (load32 (+ e 8))]
+                            (do (when (< i k) (store32! rec (load32 (+ e 4))) (store8! (+ rec 4) 0) (store8! (+ rec 84) 0))
+                                (let [p1 (if (= np 0) p (fs-ndr-str! p (if (< i k) (+ rec 4) (+ (fs-u16) 1800)) 80))]
+                                  (if (< p1 0) -1073741823
+                                      (let [p2 (if (= rmp 0) p1 (fs-ndr-str! p1 (if (< i k) (+ rec 84) (+ (fs-u16) 1800)) 44))]
+                                        (if (< p2 0) -1073741823 (recur (+ i 1) p2))))))))))))))))
+
+;; ---- folder entries ------------------------------------------------------------------------------------------------------------------------
+;; entry (256 B): +0 attributes, +4 size lo, +8 size hi, +12 last-write lo, +16 hi, +20 name (236, UTF-8)
+(defn fs-entry [(k : I32)] : I32 (+ (fs-entries) (shl k 8)))
+
+;; FileDirectoryInformation records at a (n bytes) -> the table; "." and ".." skipped
+(defn fs-take-entries! [(a : I32) (n : I32)] : Unit
+  (loop [p 0]
+    (when (<= (+ p 64) n)
+      (let [e (+ a p) next (load32 e) nl (load32 (+ e 60))]
+        (when (and (>= nl 0) (<= (+ (+ p 64) nl) n))
+          (let [dot (and (= nl 2) (= (le16 (+ e 64)) 46))
+                dotdot (and (= nl 4) (and (= (le16 (+ e 64)) 46) (= (le16 (+ e 66)) 46)))]
+            (when (not (or dot dotdot))
+              (gi! (g-fs-total) (+ (gi (g-fs-total)) 1))
+              (if (>= (gi (g-fs-nentries)) (fs-max-entries)) (gi! (g-fs-truncated) 1)
+                  (let [r (fs-entry (gi (g-fs-nentries)))]
+                    (do (store32! r (load32 (+ e 56))) (store32! (+ r 4) (load32 (+ e 40))) (store32! (+ r 8) (load32 (+ e 44)))
+                        (store32! (+ r 12) (load32 (+ e 24))) (store32! (+ r 16) (load32 (+ e 28)))
+                        (fs-u16to8! (+ r 20) (+ e 64) nl 236)
+                        (gi! (g-fs-nentries) (+ (gi (g-fs-nentries)) 1)))))))
+          (when (and (> next 0) (< next n)) (recur (+ p next))))))))
+
+;; ---- replies ------------------------------------------------------------------------------------------------------------------------------
+(defn st-more [] : I32 -1073741802)       ; STATUS_MORE_PROCESSING_REQUIRED
+(defn st-overflow [] : I32 -2147483643)   ; STATUS_BUFFER_OVERFLOW 0x80000005
+(defn st-nomore [] : I32 -2147483642)     ; STATUS_NO_MORE_FILES 0x80000006
+(defn st-eof [] : I32 -1073741807)        ; STATUS_END_OF_FILE 0xC0000011
+
+(defn fs-on-negotiate! [(m : I32) (n : I32) (st : I32)] : Unit
+  (let [b (+ m 64) d (le16 (+ b 4))]
+    (cond (or (not (= st 0)) (< n 128)) (fs-fail! (ek-protocol) 26)
+          (not (or (= d 514) (= d 528))) (fs-fail! (ek-protocol) 26)
+          :else (do (gi! (g-fs-dialect) d) (fs-send-ntlm1!) (gi! (g-fs-state) (fst-ntlm1))))))
+
+(defn fs-on-ntlm1! [(m : I32) (n : I32) (st : I32)] : Unit
+  (let [b (+ m 64)]
+    (if (or (not (= st (st-more))) (< n 72)) (fs-fail! (ek-protocol) 27)
+        (let [off (le16 (+ b 4)) sl (le16 (+ b 6))]
+          (if (or (< off 72) (> (+ off sl) n)) (fs-fail! (ek-protocol) 27)
+              (if (< (fs-take-challenge! (+ m off) sl) 48) (fs-fail! (ek-protocol) 27)
+                  (do (gi! (g-fs-sid-lo) (load32 (+ m 40))) (gi! (g-fs-sid-hi) (load32 (+ m 44)))
+                      ;; the server's names, for the screens (the probe's name slots)
+                      (let [tl (fs-ti-len)] (when (> tl 0) (smb-avpairs! (+ (fs-chal) (fs-ti-off)) tl)))
+                      ;; no domain given: the server's own NetBIOS domain (for a workgroup PC, its computer name)
+                      (when (= (load8 (fs-domain)) 0) (fs-copy! (fs-domain) (smb-name 2) 255))
+                      (fs-send-auth!)
+                      (gi! (g-fs-state) (fst-auth)))))))))
+
+(defn fs-on-auth! [(m : I32) (n : I32) (st : I32)] : Unit
+  (if (not (= st 0))
+      (do (gi! (g-smb-status) st) (fs-fail! (ek-auth-failed) 29))
+      (let [sf (le16 (+ m 66))]
+        (do (gi! (g-fs-sflags) sf)
+            (gi! (g-fs-sign) (if (or (= (gi (g-fs-anon)) 1) (not (= (bit-and sf 3) 0))) 0 1))
+            (zero-mem! (fs-pass) 256)
+            (if (fs-reply-ok? m n) (gi! (g-fs-state) (fst-ready)) (fs-fail! (ek-protocol) 30))))))
+
+(defn fs-on-tree! [(m : I32) (st : I32)] : Unit
+  (if (not (= st 0)) (fs-finish! st)
+      (do (gi! (g-fs-tid) (load32 (+ m 36))) (gi! (g-fs-havetree) 1)
+          (cond (= (gi (g-fs-op)) 1)
+                (do (store16le! (fs-u16) 115) (store16le! (+ (fs-u16) 2) 114) (store16le! (+ (fs-u16) 4) 118)  ; "srvsvc"
+                    (store16le! (+ (fs-u16) 6) 115) (store16le! (+ (fs-u16) 8) 118) (store16le! (+ (fs-u16) 10) 99)
+                    (fs-send-create! 12 1180063 0))                       ; 0x0012019F read/write the pipe
+                (= (gi (g-fs-op)) 2) (fs-send-create! (fs-path16!) 1048705 1) ; FILE_LIST_DIRECTORY|READ_ATTRIBUTES|SYNCHRONIZE, a directory
+                :else (fs-send-create! (fs-path16!) 1179785 64)))))      ; FILE_GENERIC_READ, not a directory
+
+(defn fs-on-create! [(m : I32) (n : I32) (st : I32)] : Unit
+  (if (or (not (= st 0)) (< n 152)) (fs-finish! (if (= st 0) -1073741823 st))
+      (do (fs-copy! (fs-fid) (+ m 128) 16) (gi! (g-fs-havefile) 1)
+          (gi! (g-fs-fsize-lo) (load32 (+ m 112))) (gi! (g-fs-fsize-hi) (load32 (+ m 116)))
+          (cond (= (gi (g-fs-op)) 1) (fs-rpc-bind!)
+                (= (gi (g-fs-op)) 2) (do (gi! (g-fs-qd-first) 1) (fs-send-qd!))
+                :else (fs-send-read! (fs-preview-cap) (fst-read))))))
+
+;; a pipe reply's data (IOCTL output or READ data) -> RAW; continue the RPC
+(defn fs-rpc-data! [(m : I32) (n : I32) (st : I32) (doff : I32) (dlen : I32)] : Unit
+  (if (and (not (= st 0)) (not (= st (st-overflow)))) (fs-finish! st)
+      (if (or (< doff 64) (or (< dlen 0) (> (+ doff dlen) n))) (fs-finish! -1073741823)
+          (let [r (fs-raw-add! (+ m doff) dlen)]
+            (cond (< r 0) (fs-finish! -1073741823)
+                  (or (= r 0) (= st (st-overflow))) (fs-send-read! 61440 (fst-rpcread))
+                  :else
+                  (let [res (fs-rpc-done)]
+                    (cond (not (= res 0)) (fs-finish! res)
+                          (= (gi (g-fs-rpc-step)) 1) (fs-rpc-enum!)
+                          :else (fs-finish! (fs-parse-shares!)))))))))
+
+(defn fs-on-qd! [(m : I32) (n : I32) (st : I32)] : Unit
+  (cond (= st (st-nomore)) (fs-finish! 0)
+        (not (= st 0)) (fs-finish! st)
+        :else (let [off (le16 (+ m 66)) len (load32 (+ m 68))]
+                (if (or (< off 72) (or (< len 0) (> (+ off len) n))) (fs-finish! -1073741823)
+                    (do (fs-take-entries! (+ m off) len)
+                        (if (>= (gi (g-fs-total)) 100000) (fs-finish! 0) (fs-send-qd!)))))))
+
+(defn fs-on-read! [(m : I32) (n : I32) (st : I32)] : Unit
+  (cond (= st (st-eof)) (fs-finish! 0)
+        (and (not (= st 0)) (not (= st (st-overflow)))) (fs-finish! st)
+        :else (let [off (load8 (+ m 66)) len (load32 (+ m 68))]
+                (if (or (< off 64) (or (< len 0) (> (+ off len) n))) (fs-finish! -1073741823)
+                    (let [k (min-i len (fs-preview-cap))]
+                      (do (fs-copy! (fs-preview) (+ m off) k) (gi! (g-fs-prevlen) k) (fs-finish! 0)))))))
+
+;; one reply message m (n bytes) for the state we are in
+(defn fs-on-reply! [(m : I32) (n : I32)] : Unit
+  (let [st (load32 (+ m 8)) cmd (le16 (+ m 12)) s (gi (g-fs-state))]
+    (cond
+      (not (fs-reply-ok? m n)) (fs-fail! (ek-protocol) 30)
+      (= s (fst-neg)) (if (= cmd 0) (fs-on-negotiate! m n st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-ntlm1)) (if (= cmd 1) (fs-on-ntlm1! m n st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-auth)) (if (= cmd 1) (fs-on-auth! m n st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-tree)) (if (= cmd 3) (fs-on-tree! m st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-create)) (if (= cmd 5) (fs-on-create! m n st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-ioctl)) (if (= cmd 11)
+                            (fs-rpc-data! m n st (if (< n 104) 0 (load32 (+ m 96))) (if (< n 104) -1 (load32 (+ m 100))))
+                            (fs-fail! (ek-protocol) 24))
+      (= s (fst-rpcread)) (if (= cmd 8)
+                              (fs-rpc-data! m n st (if (< n 72) 0 (load8 (+ m 66))) (if (< n 72) -1 (load32 (+ m 68))))
+                              (fs-fail! (ek-protocol) 24))
+      (= s (fst-qd)) (if (= cmd 14) (fs-on-qd! m n st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-read)) (if (= cmd 8) (fs-on-read! m n st) (fs-fail! (ek-protocol) 24))
+      (= s (fst-close)) (if (= (gi (g-fs-havetree)) 1) (fs-send-tdis!) (gi! (g-fs-state) (fst-ready)))
+      (= s (fst-tdis)) (gi! (g-fs-state) (fst-ready))
+      :else unit)))
+
+(defn fs-step [] : I32
+  (if (< (avail) 4) 0
+      (let [ty (pk8 0) len (bit-or (shl (pk8 1) 16) (pk16 2))]
+        (cond
+          (= ty 133) (do (consume! 4) 1)
+          (not (= ty 0)) (do (fs-fail! (ek-protocol) 24) 0)
+          (> len 131072) (do (fs-fail! (ek-protocol) 24) 0)
+          (< (avail) (+ 4 len)) 0
+          :else
+          (let [m (+ (in-base) (+ (gi (g-in-rd)) 4))]
+            (do (consume! (+ 4 len))
+                (cond
+                  (smb1? m len) (fs-fail! (ek-protocol) 25)
+                  (not (smb2? m len)) (fs-fail! (ek-protocol) 24)
+                  (= (bit-and (load32 (+ m 16)) 1) 0) unit
+                  (= (load32 (+ m 8)) 259) unit                         ; STATUS_PENDING interim reply
+                  :else (fs-on-reply! m len))
+                1))))))
+
+(defn nk-smb-files-feed [(n : I32)] : Unit
+  (let [k (min-i n (nk-in-space))]
+    (do (gi! (g-in-used) (+ (gi (g-in-used)) k))
+        (gi! (g-bytes-in) (+ (gi (g-bytes-in)) k))
+        (loop [go 1]
+          (when (= go 1)
+            (recur (if (= (gi (g-fs-state)) (fst-failed)) 0 (fs-step)))))
+        (when (= (gi (g-fs-state)) (fst-failed)) (gi! (g-in-rd) (gi (g-in-used)))))))
+
+(defn nk-smb-files-closed [] : Unit
+  (when (not (= (gi (g-fs-state)) (fst-failed)))
+    (fs-fail! (ek-protocol) (if (< (gi (g-fs-state)) (fst-ready)) 28 21))))
+
+;; ---- what the host reads -------------------------------------------------------------------------------------------------------------------
+;; 1 signing in, 2 ready, 3 working, 9 failed (0 before login)
+(defn nk-smb-files-phase [] : I32
+  (let [s (gi (g-fs-state))]
+    (cond (= s 0) 0 (< s 20) 1 (= s 20) 2 (= s 99) 9 :else 3)))
+(defn nk-smb-op-status [] : I32 (gi (g-fs-opstatus)))
+(defn nk-smb-signed [] : I32 (gi (g-fs-sign)))
+(defn nk-smb-guest [] : I32 (if (= (gi (g-fs-anon)) 1) 2 (bit-and (gi (g-fs-sflags)) 3)))
+(defn nk-smb-session-dialect [] : I32 (gi (g-fs-dialect)))
+(defn nk-smb-share-count [] : I32 (gi (g-fs-nshares)))
+(defn nk-smb-share-type [(k : I32)] : I32 (load32 (fs-share k)))
+(defn nk-smb-share-name-addr [(k : I32)] : I32 (+ (fs-share k) 4))
+(defn nk-smb-share-remark-addr [(k : I32)] : I32 (+ (fs-share k) 84))
+;; 1 for a folder share people browse (disk, not hidden), 0 for the rest (IPC$, printers, admin shares like C$)
+(defn nk-smb-share-browsable [(k : I32)] : I32
+  (let [t (nk-smb-share-type k)] (if (and (= (bit-and t 255) 0) (= (bit-and t -2147483648) 0)) 1 0)))
+(defn nk-smb-entry-count [] : I32 (gi (g-fs-nentries)))
+(defn nk-smb-entry-total [] : I32 (gi (g-fs-total)))
+(defn nk-smb-entry-truncated [] : I32 (gi (g-fs-truncated)))
+(defn nk-smb-entry-name-addr [(k : I32)] : I32 (+ (fs-entry k) 20))
+(defn nk-smb-entry-attrs [(k : I32)] : I32 (load32 (fs-entry k)))
+(defn nk-smb-entry-is-dir [(k : I32)] : I32 (if (= (bit-and (load32 (fs-entry k)) 16) 16) 1 0))
+(defn nk-smb-entry-size-lo [(k : I32)] : I32 (load32 (+ (fs-entry k) 4)))
+(defn nk-smb-entry-size-hi [(k : I32)] : I32 (load32 (+ (fs-entry k) 8)))
+(defn nk-smb-entry-mtime [(k : I32)] : I32 (nk-smb-filetime-unix (load32 (+ (fs-entry k) 12)) (load32 (+ (fs-entry k) 16))))
+(defn nk-smb-preview-addr [] : I32 (fs-preview))
+(defn nk-smb-preview-len [] : I32 (gi (g-fs-prevlen)))
+(defn nk-smb-file-size-lo [] : I32 (gi (g-fs-fsize-lo)))
+(defn nk-smb-file-size-hi [] : I32 (gi (g-fs-fsize-hi)))
+
+;; 1 when the preview looks like text (no NUL bytes, few control characters), 0 for binary
+(defn nk-smb-preview-is-text [] : I32
+  (let [n (gi (g-fs-prevlen))]
+    (loop [i 0 bad 0]
+      (if (>= i n) (if (<= (* bad 50) n) 1 0)
+          (let [c (load8 (+ (fs-preview) i))]
+            (if (= c 0) 0 (recur (+ i 1) (if (and (< c 32) (not (or (= c 9) (or (= c 10) (= c 13))))) (+ bad 1) bad))))))))
+
+(defn nk-smb-status-text-addr [(st : I32)] : I32
+  (cond (= st 0) (str-addr "OK")
+        (= st -1073741790) (str-addr "Access denied")                                  ; 0xC0000022
+        (= st -1073741620) (str-addr "There is no share by that name")                 ; 0xC00000CC BAD_NETWORK_NAME
+        (= st -1073741772) (str-addr "There is no file or folder by that name")       ; 0xC0000034
+        (= st -1073741766) (str-addr "That folder path does not exist")               ; 0xC000003A
+        (= st -1073741565) (str-addr "That is a file, not a folder")                   ; 0xC0000103 NOT_A_DIRECTORY
+        (= st -1073741638) (str-addr "That is a folder, not a file")                   ; 0xC00000BA FILE_IS_A_DIRECTORY
+        (= st -1073741757) (str-addr "Another program has that file open")             ; 0xC0000043 SHARING_VIOLATION
+        (= st -1073741622) (str-addr "The server refused access over the network")     ; 0xC00000CA NETWORK_ACCESS_DENIED
+        (= st -1073741715) (str-addr "Wrong username or password")                     ; 0xC000006D LOGON_FAILURE
+        (= st -1073741714) (str-addr "That account may not sign in this way (a blank password is not allowed over the network)") ; 0xC000006E
+        (= st -1073741711) (str-addr "The password has expired: change it on the PC first") ; 0xC0000071
+        (= st -1073741710) (str-addr "That account is turned off")                     ; 0xC0000072
+        (= st -1073741309) (str-addr "The session ended: sign in again")               ; 0xC0000203 USER_SESSION_DELETED
+        (= st -1073741823) (str-addr "The server's answer was unusable")               ; 0xC0000001
+        :else (str-addr "The server refused (an unexpected status)")))
+
+;; ---- text listings (the command-line host prints these; the tablet draws from the fields above) --------------------------------------------
+(defn rp-size! [(lo : I32) (hi : I32)] : Unit
+  (cond (> hi 0) (do (rp-int! (+ (shl hi 2) (ushr lo 30))) (rp-str! " GB"))
+        (< lo 0) (do (rp-int! (ushr lo 30)) (rp-str! " GB"))
+        (>= lo 1073741824) (do (rp-int! (shr lo 30)) (rp-str! " GB"))
+        (>= lo 1048576) (do (rp-int! (shr lo 20)) (rp-str! " MB"))
+        (>= lo 1024) (do (rp-int! (shr lo 10)) (rp-str! " KB"))
+        :else (do (rp-int! lo) (rp-str! " B"))))
+
+(defn nk-smb-shares-report [] : I32
+  (do (gi! (g-smb-rlen) 0) (store8! (smb-report) 0)
+      (dotimes [k (gi (g-fs-nshares))]
+        (let [t (nk-smb-share-type k)]
+          (do (rp-str! (cond (not (= (bit-and t 255) 0))
+                             (case (bit-and t 255) 1 "printer  " 2 "device   " 3 "ipc      " "other    ")
+                             (not (= (bit-and t -2147483648) 0)) "admin    "
+                             :else "folders  "))
+              (rp-cstr! (nk-smb-share-name-addr k))
+              (when (not (= (load8 (nk-smb-share-remark-addr k)) 0)) (rp-str! "  -- ") (rp-cstr! (nk-smb-share-remark-addr k)))
+              (rp-nl!))))
+      (gi (g-smb-rlen))))
+
+(defn nk-smb-list-report [] : I32
+  (do (gi! (g-smb-rlen) 0) (store8! (smb-report) 0)
+      (dotimes [k (gi (g-fs-nentries))]
+        (do (if (= (nk-smb-entry-is-dir k) 1) (rp-str! "[folder]  ")
+                (do (rp-size! (nk-smb-entry-size-lo k) (nk-smb-entry-size-hi k)) (rp-str! "  ")))
+            (let [t (nk-smb-entry-mtime k)] (when (>= t 0) (rp-date! t) (rp-str! "  ")))
+            (rp-cstr! (nk-smb-entry-name-addr k)) (rp-nl!)))
+      (when (= (gi (g-fs-truncated)) 1)
+        (rp-str! "... and ") (rp-int! (- (gi (g-fs-total)) (gi (g-fs-nentries)))) (rp-str! " more not shown\n"))
+      (gi (g-smb-rlen))))
+
+;; one entry's size and date as the screens show them (written into REPORT, read at once by the host)
+(defn nk-smb-entry-size-text-addr [(k : I32)] : I32
+  (do (gi! (g-smb-rlen) 0) (store8! (smb-report) 0)
+      (if (= (nk-smb-entry-is-dir k) 1) (rp-str! "folder") (rp-size! (nk-smb-entry-size-lo k) (nk-smb-entry-size-hi k)))
+      (smb-report)))
+(defn nk-smb-entry-date-text-addr [(k : I32)] : I32
+  (do (gi! (g-smb-rlen) 0) (store8! (smb-report) 0)
+      (let [t (nk-smb-entry-mtime k)]
+        (when (>= t 0) (rp-date! t)))
+      (smb-report)))
+(defn nk-smb-share-kind-addr [(k : I32)] : I32
+  (let [t (nk-smb-share-type k)]
+    (cond (not (= (bit-and t 255) 0)) (case (bit-and t 255) 1 (str-addr "printer") 2 (str-addr "device") 3 (str-addr "system (IPC)") (str-addr "other"))
+          (not (= (bit-and t -2147483648) 0)) (str-addr "hidden admin share")
+          :else (str-addr "shared folder"))))
