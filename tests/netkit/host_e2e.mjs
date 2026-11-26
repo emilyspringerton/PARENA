@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import { pathToFileURL } from 'node:url';
 
 const web = process.argv[2], htmlPath = process.argv[3], cfg = JSON.parse(process.argv[4] || '{}');
@@ -80,6 +81,7 @@ const OrigInstance = WebAssembly.Instance;
 WebAssembly.Instance = class extends OrigInstance { constructor(m, i) { super(m, i); instances.push(this); } };
 
 // ---- the Android shell, as sockets ---------------------------------------------------------------------------------------------------------------------------
+const udpAsked = [];
 const store = new Map(); const socks = new Map(); const sent = {}; const portOf = {}; let clip = '';
 const emit = o => setImmediate(() => globalThis.netkitEvent(JSON.stringify(o)));
 const codeOf = err => err.code === 'ECONNREFUSED' ? 1 : err.code === 'ETIMEDOUT' ? 2 : (err.code === 'EHOSTUNREACH' || err.code === 'ENETUNREACH') ? 3 : 4;
@@ -104,6 +106,16 @@ globalThis.NetkitNative = {
     s.setTimeout(timeout, () => fin(2)); s.once('connect', () => fin(0)); s.once('error', err => fin(err.code === 'ECONNREFUSED' ? 0 : codeOf(err)));
   },
   resolve(ip) { if (ip === '127.0.0.4') emit({ t: 'name', ip, name: 'imac.lan' }); },
+  // one real UDP question, one real answer (as Udp.java): NetBIOS's port 137 is privileged, so the test's responders sit on 10137
+  udpQuery(id, host, port, b64, timeout) {
+    udpAsked.push({ host, port, bytes: Buffer.from(b64, 'base64') });
+    const s = dgram.createSocket('udp4'); let done = false;
+    const fin = o => { if (done) return; done = true; clearTimeout(t); s.close(); emit({ t: 'udp', id, ...o }); };
+    const t = setTimeout(() => fin({ e: 'none' }), timeout);
+    s.on('message', (m, r) => { if (r.address === host) fin({ e: 'data', b: m.toString('base64') }); });
+    s.on('error', () => fin({ e: 'none' }));
+    s.send(Buffer.from(b64, 'base64'), port === 137 ? 10137 : port, host);
+  },
   arpText() { return ''; },
   localNets() { return JSON.stringify({ cidrs: ['127.0.0.0/29'], ips: ['127.0.0.1'] }); },
   storeGet(k) { return store.get(k) ?? ''; }, storeSet(k, v) { store.set(k, v); }, storeDel(k) { store.delete(k); },
@@ -126,6 +138,32 @@ const clickIn = (listId, attrs, act, extra = {}) => {
 };
 const savedClick = (i, act) => { const li = { dataset: { i: String(i) } }; const b = { dataset: { act }, closest: sel => sel === 'li' ? li : null }; $('saved-list').dispatch('click', { target: { closest: sel => sel === '[data-act]' ? b : null } }); };
 const visible = id => !$(id).hidden;
+
+// ---- real UDP name responders, written here from the RFCs (independent of the PARENA parser) ------------------------------------------------------------------
+// 127.0.0.5 is a Raspberry Pi whose avahi answers a reverse lookup with raspberrypi.local (RFC 6762 6.7 legacy unicast: reply to the sender);
+// 127.0.0.6 is a Windows PC answering NetBIOS node status (RFC 1002 4.2.18) with its name and an Apple-made network card.
+const dnsName = labels => Buffer.concat([...labels.map(l => Buffer.concat([Buffer.from([l.length]), Buffer.from(l)])), Buffer.from([0])]);
+const udpServers = [];
+async function udpServer(host, port, answer) {
+  const s = dgram.createSocket('udp4');
+  s.on('message', (q, r) => { const a = answer(q); if (a) s.send(a, r.port, r.address); });
+  await new Promise(res => { s.once('error', () => res()); s.bind(port, host, () => { udpServers.push(s); res(); }); });
+}
+await udpServer('127.0.0.5', 5353, q => {
+  const qd = q.readUInt16BE(4), name = q.subarray(12, q.length - 4);                  // echo the question, answer with a compressed owner
+  const rd = Buffer.concat([Buffer.from([11]), Buffer.from('raspberrypi'), Buffer.from([5]), Buffer.from('local'), Buffer.from([0])]);
+  const hdr = Buffer.alloc(12); hdr.writeUInt16BE(q.readUInt16BE(0), 0); hdr.writeUInt16BE(0x8400, 2); hdr.writeUInt16BE(qd, 4); hdr.writeUInt16BE(1, 6);
+  const rr = Buffer.alloc(10); rr.writeUInt16BE(12, 0); rr.writeUInt16BE(0x8001, 2); rr.writeUInt32BE(120, 4); rr.writeUInt16BE(rd.length, 8);
+  return Buffer.concat([hdr, name, Buffer.from([0, 12, 0, 1]), Buffer.from([0xc0, 0x0c]), rr, rd]);
+});
+await udpServer('127.0.0.6', 10137, q => {
+  const ent = (n, suf, fl) => { const b = Buffer.alloc(18, 0x20); b.write(n); b[15] = suf; b.writeUInt16BE(fl, 16); return b; };
+  const names = [ent('WORKGROUP', 0, 0x8400), ent('DESKTOP-7Q2', 0, 0x0400), ent('DESKTOP-7Q2', 0x20, 0x0400)];
+  const rd = Buffer.concat([Buffer.from([names.length]), ...names, Buffer.from('f01898aabbcc', 'hex'), Buffer.alloc(40)]);
+  const hdr = Buffer.alloc(12); hdr.writeUInt16BE(q.readUInt16BE(0), 0); hdr.writeUInt16BE(0x8400, 2); hdr.writeUInt16BE(1, 6);
+  const rr = Buffer.alloc(10); rr.writeUInt16BE(0x21, 0); rr.writeUInt16BE(1, 2); rr.writeUInt16BE(rd.length, 8);
+  return Buffer.concat([hdr, q.subarray(12, 46), rr, rd]);
+});
 
 // ---- some real listeners for the scanner to find ----------------------------------------------------------------------------------------------------------------------
 const listeners = [];
@@ -207,7 +245,36 @@ check(/data-ip="127\.0\.0\.4"/.test(list()) && /VNC 5901/.test(list()) && /VNC h
 check(/data-act="vnc" data-port="5900"/.test(list()) && /data-act="vnc" data-port="5901"/.test(list()), 'the Screen buttons carry the right ports (5900 and 5901)');
 check(['2', '5', '6'].every(n => new RegExp(`data-ip="127\\.0\\.0\\.${n}"`).test(list())), 'every other host that answers (even only to refuse) is listed: an RST proves it is there');
 check(!/data-ip="127\.0\.0\.1"/.test(list()), 'this tablet itself (127.0.0.1) is excluded from the sweep');
-check(await waitFor(() => /imac\.lan/.test(list()), 3000), 'a name resolved by the shell lands on the device card');
+check(await waitFor(() => /<div class="dev-name">imac<\/div>/.test(list()), 3000), 'a name resolved by the shell lands on the device card (the router\'s .lan suffix dropped)');
+
+// names and makers (SECTION 646 Drop One)
+const ask5 = udpAsked.filter(a => a.host === '127.0.0.5');
+check(ask5.some(a => a.port === 5353) && ask5.some(a => a.port === 137), 'every device found is asked its name over mDNS (5353) and NetBIOS (137)');
+check(ask5.find(a => a.port === 5353).bytes.includes(dnsName(['5', '0', '0', '127', 'in-addr', 'arpa'])), 'the mDNS question is the reverse name 5.0.0.127.in-addr.arpa');
+check(await waitFor(() => /<li class="dev pi" data-ip="127\.0\.0\.5"/.test(list()) && /<span class="pi-badge">Pi<\/span> raspberrypi</.test(list()), 3000),
+      'the device whose mDNS responder says raspberrypi.local is highlighted as the Pi');
+check(/^<li class="dev pi" data-ip="127\.0\.0\.5"/.test(list()), 'the Pi sorts to the top of the list');
+check(await waitFor(() => /data-ip="127\.0\.0\.6"[^]*?DESKTOP-7Q2[^]*?<div class="dev-maker">Apple  -  f0:18:98:aa:bb:cc<\/div>/.test(list()), 3000),
+      'NetBIOS gives the PC its name AND its MAC, so the maker shows without the ARP table (Android 10+)');
+check(!/data-ip="127\.0\.0\.3"[^<]*<div class="dev-main">[^]*?dev-maker/.test(list().split('</li>').find(x => /127\.0\.0\.3/.test(x)) || ''), 'a device with no MAC has no maker line (never a guessed one)');
+
+// naming a device: the label is kept between scans
+const li5 = /<li class="dev pi" data-ip="127\.0\.0\.5" data-key="([^"]*)">/.exec(list());
+clickIn('device-list', { ip: '127.0.0.5', key: li5[1] }, 'name');
+check(visible('dlg-name') && /127\.0\.0\.5/.test($('n-what').textContent) && /raspberrypi/.test($('n-what').textContent) && $('n-label').value === '', 'Name opens the dialog, saying which device it is');
+check(globalThis.netkitBack() === true && !visible('dlg-name'), "Android's back button closes the Name dialog");
+clickIn('device-list', { ip: '127.0.0.5', key: li5[1] }, 'name');
+$('n-label').value = '  Garage Pi  '; $('n-save').dispatch('click');
+check(!visible('dlg-name') && JSON.parse(store.get('labels'))[li5[1]] === 'Garage Pi', 'Save stores the label (trimmed) under the device key, in the encrypted store');
+check(/<span class="pi-badge">Pi<\/span> Garage Pi<\/div><div class="dev-sub">127\.0\.0\.5  -  Raspberry Pi  -  raspberrypi</.test(list()), 'the label is the title; the discovered name stays visible under it');
+$('btn-scan').dispatch('click');
+check(await waitFor(() => $('scan-status').textContent.startsWith('Scanned') && /Garage Pi/.test(list()), 20000), 'after a rescan the device is still called Garage Pi');
+clickIn('device-list', { ip: '127.0.0.5', key: li5[1] }, 'name');
+check($('n-label').value === 'Garage Pi', 'the dialog opens with the current label');
+$('n-clear').dispatch('click');
+check(!('ip:127.0.0.5' in JSON.parse(store.get('labels'))) && /<span class="pi-badge">Pi<\/span> raspberrypi</.test(list()), 'Remove name drops the label and the discovered name comes back');
+clickIn('device-list', { ip: '127.0.0.5', key: li5[1] }, 'name'); $('n-label').value = 'Garage Pi'; $('n-label').dispatch('keydown', { key: 'Enter' });
+check(!visible('dlg-name') && /Garage Pi/.test(list()), 'Enter in the name field saves');
 check(!/is-hidden/.test(list()) && $('empty-hint').hidden === true, 'the empty-state hint is hidden once devices exist');
 
 // pinning
@@ -352,5 +419,6 @@ check(await waitFor(() => /Nothing is listening on that port/.test($('banner-tex
 const missing = [...accessed].filter(id => !idInfo.has(id) && !dynamicIds.has(id));
 check(missing.length === 0, `every element id the generated page uses exists in index.html${missing.length ? ' -- missing: ' + missing.join(', ') : ''}`);
 for (const s of listeners) s.close();
+for (const s of udpServers) s.close();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

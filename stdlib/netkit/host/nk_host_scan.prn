@@ -9,6 +9,10 @@
 (def named null)               ; ip -> true once a name lookup has been asked for
 (def pins null)                ; JSON array of device keys the user pinned ("mac:aa:..", or "ip:a.b.c.d" when no MAC is known)
 (def tool-labels null)         ; tool job -> text prefix
+(def labels null)              ; device key -> the user's own name for it ("mac:.." / "ip:.."), kept in the encrypted store
+(def udp-jobs null)            ; udp query id -> {ip, kind: "mdns" | "nbns"}
+(def naming-key "")            ; the device the Name dialog is open for
+(def naming-ip "")
 (def scan-cidr-text "")
 
 (defn sx [] : Any scan-x)
@@ -32,6 +36,53 @@
         (if (>= k 0) (js/call pins "splice" k 1) (js/call pins "push" key)))
       (store-json! "pins" pins)))
 
+;; ---- the user's names for devices (kept between scans) ------------------------------------------------------------------------------------
+;; A label is saved under the device's key; a device first seen by address and later by MAC (NetBIOS, ARP) still finds its old label.
+(defn label-for [(i : I32)] : String
+  (let [k (dev-key i)
+        ipk (str "ip:" (ip-str (js/call scan-x "nk_dev_ip" i)))]
+    (cond (js/call labels "hasOwnProperty" k) (str (js/aget labels k))
+          (js/call labels "hasOwnProperty" ipk) (str (js/aget labels ipk))
+          :else "")))
+
+(defn apply-labels! [] : Unit
+  (dotimes [i (js/call scan-x "nk_dev_count")]
+    (let [l (label-for i)]
+      (js/call scan-x "nk_dev_set_label" i (if (= l "") 0 (put-text! scan-u8 (js/call scan-x "nk_txt_addr") (js/call l "slice" 0 31)))))))
+
+(defn namer-what [(ip : String) (i : I32)] : String
+  (let [found (cstr scan-u8 (js/call scan-x "nk_dev_name_addr" i))
+        mk (cstr scan-u8 (js/call scan-x "nk_dev_maker_text_addr" i))]
+    (str ip (if (= found "") "" (str "  -  " found)) (if (= mk "") "" (str "  -  " mk)))))
+
+(defn open-namer! [(key : String) (ip : String)] : Unit
+  (let [i (find-dev (ip-num ip))]
+    (do (set! naming-key key)
+        (set! naming-ip ip)
+        (set-text! "n-what" (if (< i 0) ip (namer-what ip i)))
+        (set-val! "n-label" (if (< i 0) "" (label-for i)))
+        (set-hidden! "dlg-name" false)
+        (js/call (el "n-label") "focus"))))
+
+(defn close-namer! [] : Unit (set-hidden! "dlg-name" true))
+
+;; save under the current key, and drop an older address-keyed label once the MAC is known (it would otherwise follow the address)
+(defn save-label! [(text : String)] : Unit
+  (do (let [ipk (str "ip:" naming-ip)]
+        (when (!= ipk naming-key) (js/call (js/global "Reflect") "deleteProperty" labels ipk)))
+      (if (= text "")
+          (js/call (js/global "Reflect") "deleteProperty" labels naming-key)
+          (js/aset! labels naming-key text))
+      (store-json! "labels" labels)
+      (close-namer!)
+      (render-devices!)))
+
+(defn on-name-save [(e : Any)] : Unit (save-label! (js/call (js/call (str (val "n-label")) "trim") "slice" 0 31)))
+(defn on-name-clear [(e : Any)] : Unit (save-label! ""))
+(defn on-name-cancel [(e : Any)] : Unit (close-namer!))
+(defn on-name-key [(e : Any)] : Unit
+  (when (= (js/get e "key") "Enter") (on-name-save e)))
+
 ;; ---- drawing the list ---------------------------------------------------------------------------------------------------------------------------
 (defn port-chip [(i : I32) (port : I32)] : String
   (if (= (js/call scan-x "nk_dev_has_port" i port) 1)
@@ -40,20 +91,27 @@
 
 (defn dev-html [(i : I32)] : String
   (let [ip (ip-str (js/call scan-x "nk_dev_ip" i))
-        name (cstr scan-u8 (js/call scan-x "nk_dev_name_addr" i))
+        name (cstr scan-u8 (js/call scan-x "nk_dev_title_addr" i))
+        found (cstr scan-u8 (js/call scan-x "nk_dev_name_addr" i))
+        labelled? (= (js/call scan-x "nk_dev_has_label" i) 1)
+        maker (cstr scan-u8 (js/call scan-x "nk_dev_maker_text_addr" i))
+        pi? (= (js/call scan-x "nk_dev_is_pi" i) 1)
         guess (cstr scan-u8 (js/call scan-x "nk_guess_label_addr" (js/call scan-x "nk_dev_guess" i)))
         ssh? (= (js/call scan-x "nk_dev_has_port" i 22) 1)
         vnc-port (if (= (js/call scan-x "nk_dev_has_port" i 5900) 1) 5900 (if (= (js/call scan-x "nk_dev_has_port" i 5901) 1) 5901 0))
         pin? (= (js/call scan-x "nk_dev_pinned" i) 1)
         mac (if (= (js/call scan-x "nk_dev_has_mac" i) 1) (str "  -  " (rep-all (dev-key i) "mac:" "")) "")]
-    (str "<li class=\"dev" (if pin? " pinned" "") "\" data-ip=\"" ip "\" data-key=\"" (esc (dev-key i)) "\">"
-         "<div class=\"dev-main\"><div class=\"dev-name\">" (esc (if (= name "") ip name)) "</div>"
-         "<div class=\"dev-sub\">" (if (= name "") "" (str ip "  -  ")) (esc guess) (esc mac) "</div>"
+    (str "<li class=\"dev" (if pin? " pinned" "") (if pi? " pi" "") "\" data-ip=\"" ip "\" data-key=\"" (esc (dev-key i)) "\">"
+         "<div class=\"dev-main\"><div class=\"dev-name\">" (if pi? "<span class=\"pi-badge\">Pi</span> " "") (esc (if (= name "") ip name)) "</div>"
+         "<div class=\"dev-sub\">" (if (= name "") "" (str ip "  -  ")) (esc guess)
+         (if (and labelled? (and (!= found "") (!= found name))) (str "  -  " (esc found)) "") "</div>"
+         (if (= maker "") "" (str "<div class=\"dev-maker\">" (esc maker) (esc mac) "</div>"))
          "<div class=\"chips\">"
          (port-chip i 22) (port-chip i 5900) (port-chip i 5901) (port-chip i 3389) (port-chip i 445) (port-chip i 80) (port-chip i 443) (port-chip i 8080)
          "</div></div><div class=\"dev-actions\">"
          (if ssh? (str "<button data-act=\"ssh\" data-port=\"22\">SSH</button>") "")
          (if (> vnc-port 0) (str "<button data-act=\"vnc\" data-port=\"" vnc-port "\">Screen</button>") "")
+         "<button data-act=\"name\" title=\"Give this device your own name\">Name</button>"
          "<button data-act=\"pin\" title=\"Keep this device at the top\">" (if pin? "Unpin" "Pin") "</button>"
          "</div></li>")))
 
@@ -68,6 +126,7 @@
 (defn render-devices! [] : Unit
   (let [n (js/call scan-x "nk_dev_count")]
     (do (apply-pins!)
+        (apply-labels!)
         (js/call scan-x "nk_dev_sort")
         (set-html! "device-list" (devices-html n))
         (set-hidden! "empty-hint" (> n 0))
@@ -177,11 +236,47 @@
   (loop [i 0 n (js/call scan-x "nk_dev_count")]
     (if (>= i n) -1 (if (= (js/call scan-x "nk_dev_ip" i) ip) i (recur (+ i 1) n)))))
 
+(defn udp-ask! [(ip : String) (kind : String) (port : I32) (n : I32)] : Unit
+  (let [id (new-id!)]
+    (do (js/aset! udp-jobs (str id) (js/obj "ip" ip "kind" kind))
+        (js/call nat "udpQuery" id ip port (get-b64 scan-u8 (js/call scan-x "nk_pkt_addr") n) 1500))))
+
+;; every way a device can tell us its name: the router's DNS, its own mDNS responder, NetBIOS (which also gives its MAC). Once each.
 (defn ask-name! [(i : I32)] : Unit
-  (let [ip (ip-str (js/call scan-x "nk_dev_ip" i))]
+  (let [ipn (js/call scan-x "nk_dev_ip" i)
+        ip (ip-str ipn)]
     (when (and (have-native?) (= (js/typeof (js/aget named ip)) "undefined"))
       (do (js/aset! named ip true)
-          (js/call nat "resolve" ip)))))
+          (js/call nat "resolve" ip)
+          (when (= (js/typeof (js/get nat "udpQuery")) "function")
+            (do (udp-ask! ip "mdns" 5353 (js/call scan-x "nk_mdns_query" ipn))
+                (udp-ask! ip "nbns" 137 (js/call scan-x "nk_nbns_query" ipn))))))))
+
+(defn on-udp! [(ev : Any)] : Unit
+  (let [k (str (js/get ev "id"))
+        job (js/aget udp-jobs k)]
+    (when (not (= (js/typeof job) "undefined"))
+      (do (js/call (js/global "Reflect") "deleteProperty" udp-jobs k)
+          (when (= (js/get ev "e") "data")
+            (let [i (find-dev (ip-num (js/get job "ip")))
+                  b64 (js/get ev "b")]
+              (when (and (>= i 0) (<= (* 3 (/ (js/get b64 "length") 4)) (js/call scan-x "nk_pkt_cap")))
+                (let [n (put-b64! scan-u8 (js/call scan-x "nk_pkt_addr") b64)
+                      got (if (= (js/get job "kind") "mdns")
+                              (js/call scan-x "nk_mdns_reply" i n)
+                              (js/call scan-x "nk_nbns_reply" i n))]
+                  (when (= got 1) (schedule-render!))))))))))
+
+;; the maker table (oui.bin, generated from the IEEE registry): optional -- without it the list simply has no maker lines
+(defn load-oui! [(buf : Any)] : Unit
+  (let [b (js/new "Uint8Array" buf)
+        n (js/get b "length")]
+    (when (<= n (js/call scan-x "nk_oui_cap"))
+      (do (js/call scan-u8 "set" b (js/call scan-x "nk_oui_addr"))
+          (js/call scan-x "nk_oui_load" n)
+          (schedule-render!)))))
+(defn oui-missing [(err : Any)] : Unit
+  (js/call (js/get (js/global "console") "warn") "call" (js/global "console") (str "maker table not loaded: " err)))
 
 (defn on-scan-result! [(job : I32) (code : I32) (ms : I32)] : Unit
   (let [i (js/call scan-x "nk_scan_result" job code ms)]

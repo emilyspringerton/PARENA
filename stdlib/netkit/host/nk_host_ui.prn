@@ -136,6 +136,7 @@
           (= act "ssh") (open-connect! "ssh" ip 22)
           (= act "vnc") (open-connect! "vnc" ip (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "port") 10))
           (= act "pin") (do (toggle-pin! (js/get (js/get li "dataset") "key")) (render-devices!))
+          (= act "name") (open-namer! (js/get (js/get li "dataset") "key") ip)
           :else unit)))))
 
 (defn on-manual-connect [(e : Any)] : Unit
@@ -163,6 +164,7 @@
                           (on-tool-result! job (js/get ev "code") (js/get ev "ms"))
                           (on-scan-result! job (js/get ev "code") (js/get ev "ms"))))
       (= t "name") (on-name! ev)
+      (= t "udp") (on-udp! ev)
       :else unit)))
 
 ;; Android's back button: close what is on top, else go up one level (devices and the arcade return to the garage -- nk_garage_back decides),
@@ -178,6 +180,7 @@
   (cond
     (not (js/get (el "dlg-hostkey") "hidden")) (do (on-hk-cancel null) true)
     (not (js/get (el "dlg-connect") "hidden")) (do (set-hidden! "dlg-connect" true) true)
+    (not (js/get (el "dlg-name") "hidden")) (do (close-namer!) true)
     (and (not (js/null? ssh)) (not (js/get (el "view-ssh") "hidden"))) (do (ssh-close!) true)
     (and (not (js/null? vnc)) (not (js/get (el "view-vnc") "hidden"))) (do (vnc-close!) true)
     :else (let [t (js/call scan-x "nk_garage_back" (cur-view))]
@@ -216,6 +219,10 @@
     (on! "btn-m-check" "click" (callback on-check-click))
     (on! "btn-m-ping" "click" (callback on-ping-click))
     (on! "m-proto" "change" (callback on-proto-change))
+    (on! "n-save" "click" (callback on-name-save))
+    (on! "n-clear" "click" (callback on-name-clear))
+    (on! "n-cancel" "click" (callback on-name-cancel))
+    (on! "n-label" "keydown" (callback on-name-key))
     (on! "c-go" "click" (callback on-connect-go))
     (on! "c-cancel" "click" (callback on-connect-cancel))
     (on! "hk-trust" "click" (callback on-hk-trust))
@@ -256,12 +263,16 @@
     (set! tool-labels (js/obj))
     (set! ptrs (js/obj))
     (set! pins (store-json "pins" (js/array)))
+    (set! labels (store-json "labels" (js/obj)))
+    (set! udp-jobs (js/obj))
     (wire-ui!)
     (render-saved!)
     (render-devices!)
     (show-view! "garage")
     (set! ready true)
     (status! (net-label (pick-cidr (local-info))))
+    (js/call (js/call (js/call (js/call-fn (js/global "fetch") "oui.bin") "then" (callback fetch-bytes)) "then" (callback load-oui!))
+             "catch" (callback oui-missing))
     (js/call (win) "requestAnimationFrame" (callback term-frame))
     (js/call (win) "requestAnimationFrame" (callback vnc-frame))
     (js/call-fn (js/global "setInterval") (callback blink!) 530)

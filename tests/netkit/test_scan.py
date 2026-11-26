@@ -101,7 +101,7 @@ j = result(23, 445, 0); k23 = [k for k in range(nk.nk_dev_count()) if u(nk.nk_de
 check(j == k23 and nk.nk_dev_has_mac(k23) == 1 and nk.nk_dev_has_port(k23, 445) == 1, "a scan result merges into the ARP-known device (same record)")
 
 # ---- names, pinning, ordering -------------------------------------------------------------------------------------------------------------------
-nk.write(TXT, b"imac.lan"); nk.nk_dev_set_name(k23, 8); check(nk.cstr(nk.nk_dev_name_addr(k23)) == "imac.lan", "device name stored")
+nk.write(TXT, b"imac.lan"); nk.nk_dev_set_name(k23, 8); check(nk.cstr(nk.nk_dev_name_addr(k23)) == "imac", "device name stored, the router's .lan suffix dropped")
 nk.write(TXT, b"x" * 60); nk.nk_dev_set_name(k23, 60); check(len(nk.cstr(nk.nk_dev_name_addr(k23))) == 31, "an over-long name is cut to 31 bytes, never overruns the record")
 nk.nk_scan_reset(); nk.nk_scan_begin(text("0.0.0.0/22"))
 for host in ("192.168.4.5", "10.0.0.2", "200.1.1.1", "128.0.0.9", "9.9.9.9"):

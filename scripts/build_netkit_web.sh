@@ -5,6 +5,7 @@
 #   <outdir>/nkterm.wasm        the SSH terminal emulator
 #   <outdir>/brawlpit.wasm      the arcade cabinet's game: WOTAN's zero-import BRAWLPIT web build (scripts/build_brawlpit_wasm.sh)
 #   <outdir>/duck.png, sprites.png   BRAWLPIT's art atlases (copied from ../WOTAN/BRAWLPIT: committed art, not build products)
+#   <outdir>/oui.bin            the maker table (MAC prefix -> maker) the scanner searches (stdlib/netkit/data/oui_brands.tsv)
 #   <outdir>/nk-host.js         the page host (stdlib/netkit/host/*.prn -> TypeScript -> JavaScript)
 #   <outdir>/nk-host.ts         the TypeScript the JS was stripped from (kept for review / tsc)
 # There is no hand-written JavaScript in the product: the .js is generated. Needs the LLVM toolchain (see build_netkit_wasm.sh)
@@ -25,6 +26,8 @@ for f in duck.png sprites.png; do
   [ -f "$ART/$f" ] || { echo "FAIL: $ART/$f not found (check out WOTAN beside PARENA, or set BRAWLPIT_ART_DIR)" >&2; exit 1; }
   cp "$ART/$f" "$OUT/$f"
 done
+# the maker table (IEEE MAC prefixes -> maker), packed from the checked-in TSV -- no network needed (tools/netkit_oui_gen.py)
+python3 tools/netkit_oui_gen.py bin stdlib/netkit/data/oui_brands.tsv "$OUT/oui.bin" >/dev/null
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 mapfile -t SRC < <(grep -v '^#' stdlib/netkit/host/MODULES | grep -v '^$')
 cat "${SRC[@]}" > "$W/nk_host_all.prn"

@@ -14,6 +14,8 @@
 ;;       events {t:"tcp", id, e:"open"} | {e:"data", b:base64} | {e:"closed"} | {e:"error", code}   code 1 refused 2 timeout 3 unreachable 4 other
 ;;   probe(job, ip, port, timeoutMs)  ping(job, host, timeoutMs)      event {t:"probe", job, code, ms}   code 0 open/up, else as above
 ;;   resolve(ip)                                                      event {t:"name", ip, name}
+;;   udpQuery(id, host, port, base64, timeoutMs)  one UDP question  event {t:"udp", id, e:"data", b:base64} | {t:"udp", id, e:"none"}
+;;       (the scanner's mDNS 5353 / NetBIOS 137 name lookups; the packet is built and parsed in nk_names.prn)
 ;;   arpText() -> string   localNets() -> JSON {"cidrs":["a.b.c.d/p"],"ips":["a.b.c.d"]}   (synchronous)
 ;;   storeGet(key) -> string ("" if none)   storeSet(key, value)   storeDel(key)      (the shell keeps these encrypted at rest)
 ;;   clipboardSet(text)   clipboardGet() -> string

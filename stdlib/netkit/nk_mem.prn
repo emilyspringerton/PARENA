@@ -19,7 +19,11 @@
 ;;   0x040000 TXT    64 KB      text exchange: page writes a CIDR / ARP table / a name here, then calls a nk-* fn
 ;;   0x050000 DEV    512 x 64 B device table (sorted by IP)           (nk_scan.prn)
 ;;   0x060000 CRY    64 KB      crypto scratch (SHA-256, ChaCha20, Poly1305, X25519 temporaries)
+;;   0x070000 OUI    64 KB      the manufacturer table (oui.bin)     (nk_names.prn)
 ;;   0x058000 PORTS  32 x 4 B   the port list being scanned           (nk_scan.prn)
+;;   0x05A000 ORD    512 x 4 B  display order                         (nk_scan.prn)
+;;   0x05B000 PKT    1536 B     one UDP name query / reply            (nk_names.prn)
+;;   0x05C000 LABEL  512 x 32 B the user's device labels              (nk_names.prn)
 ;;   0x080000 OUT    64 KB      bytes the module wants sent to the peer
 ;;   0x100000 IN     1 MB       bytes received from the peer (page appends at the tail)
 ;;   0x200000 SSH    2 MB       SSH transport state and buffers      (nk_ssh*.prn, later phases)
@@ -29,7 +33,8 @@
 ;;    0..15  common  (version, last error kind, last error message, in-used, in-read, out-len, counters)
 ;;   16..63  RFB     (nk_rfb.prn)
 ;;   64..127 SCAN    (nk_scan.prn)
-;;  128..255 SSH     (later)
+;;  128..191 SSH     (nk_ssh*.prn)
+;;  192..223 NAMES   (nk_names.prn)
 
 (module netkit/main)
 

@@ -27,8 +27,8 @@
 ;;
 ;; G words 64..127 belong to this file. Device record (64 bytes at DEV):
 ;;   +0 ip (I32 bits, a<<24|b<<16|c<<8|d)  +4 flags  +8 open-port bitmask (bit i = PORTS[i])  +12 best rtt ms (-1 none)
-;;   +16 mac[6]   +24 guess code   +32 name[32] NUL-terminated
-;;   flags: 1 seen, 2 seen-in-ARP, 4 host-answered (open or refused), 8 pinned, 16 has-mac, 32 has-name
+;;   +16 mac[6]   +22 maker index (nk_names.prn)   +24 guess code   +28 name rank (nk_names.prn)   +32 name[32] NUL-terminated
+;;   flags: 1 seen, 2 seen-in-ARP, 4 host-answered (open or refused), 8 pinned, 16 has-mac, 32 has-name, 64 has-user-label
 
 (defn g-sc-first [] : I32 64)       ; ip of host 0
 (defn g-sc-nhosts [] : I32 65)
@@ -208,17 +208,16 @@
     (do (store32! a (if (= v 1) (bit-or (load32 a) 8) (bit-and (load32 a) -9)))
         (nk-dev-reguess! i))))
 
-;; the page wrote a (reverse-DNS / NetBIOS / user-chosen) name at nk-txt-addr
+;; the page wrote a reverse-DNS name at nk-txt-addr. Rank 1: NetBIOS and mDNS names (nk_names.prn) outrank it, the user's own
+;; label (nk-dev-set-label) is kept apart and outranks everything.
 (defn nk-dev-set-name [(i : I32) (len : I32)] : Unit
-  (let [a (dev-addr i)]
-    (do (dotimes [k 31] (store8! (+ a (+ 32 k)) (if (< k len) (tx k) 0)))
-        (store8! (+ a 63) 0)
-        (store32! (+ a 4) (bit-or (load32 (+ a 4)) (if (> len 0) 32 0))))))
+  (do (dev-name-from! i (txt-base) len 1) unit))
 
 ;; ---- guessing what a device is ---------------------------------------------------------------------------------------------------
 (defn mac-byte [(i : I32) (k : I32)] : I32 (load8 (+ (dev-addr i) (+ 16 k))))
 
-;; Raspberry Pi Foundation / Trading OUIs
+;; Raspberry Pi Foundation / Trading OUIs (every MA-L block the IEEE lists for them, 2026-11; also in the maker table, but this
+;; check works before the table is loaded)
 (defn is-pi-oui [(i : I32)] : Bool
   (let [a (mac-byte i 0) b (mac-byte i 1) c (mac-byte i 2)]
     (and (= (nk-dev-has-mac i) 1)
@@ -227,7 +226,10 @@
                  (or (and (= a 228) (and (= b 95) (= c 1)))  ; e4:5f:01
                      (or (and (= a 216) (and (= b 58) (= c 221)))   ; d8:3a:dd
                          (or (and (= a 40) (and (= b 205) (= c 193)))   ; 28:cd:c1
-                             (and (= a 44) (and (= b 207) (= c 103))))))))))) ; 2c:cf:67
+                             (or (and (= a 44) (and (= b 207) (= c 103)))   ; 2c:cf:67
+                                 (or (and (= a 58) (and (= b 53) (= c 65)))     ; 3a:35:41
+                                     (or (and (= a 136) (and (= b 162) (= c 158)))   ; 88:a2:9e
+                                         (and (= a 152) (and (= b 254) (= c 84))))))))))))))  ; 98:fe:54
 
 ;; guess codes: 0 unknown, 1 Raspberry Pi, 2 Windows PC (VNC ready), 3 VNC host, 4 SSH device, 5 web device / router,
 ;; 6 Linux server, 7 device with no open services, 8 Windows PC
@@ -238,7 +240,7 @@
         ssh (nk-dev-has-port i 22)
         web (bit-or (nk-dev-has-port i 80) (bit-or (nk-dev-has-port i 443) (nk-dev-has-port i 8080)))]
     (cond
-      (is-pi-oui i) 1
+      (or (is-pi-oui i) (pi-name? i)) 1
       (and (= (bit-or rdp smb) 1) (= vnc 1)) 2
       (= (bit-or rdp smb) 1) 8
       (= vnc 1) 3
@@ -342,19 +344,20 @@
               (do
                 (when (>= i 0)
                   (let [a (dev-addr i)]
-                    (do (store32! (+ a 4) (bit-or (load32 (+ a 4)) 19))   ; seen + in-ARP + has-mac
-                        (dotimes [k 6] (store8! (+ a (+ 16 k)) (load8 (+ scr k))))
-                        (nk-dev-reguess! i))))
+                    (do (store32! (+ a 4) (bit-or (load32 (+ a 4)) 3))    ; seen + in-ARP
+                        (dev-set-mac! i scr))))                          ; has-mac + maker + guess (nk_names.prn)
                 ;; to the end of this line
                 (let [e (loop [q (gi (g-sc-cur))] (if (and (< q len) (!= (tx q) 10)) (recur (+ q 1)) q))]
                   (recur (+ e 1) (if (>= i 0) (+ touched 1) touched))))))))))
 
-;; ---- display order: pinned first, then by address (unsigned), computed on demand ---------------------------------------------
+;; ---- display order: pinned first, then Raspberry Pis (finding the Pi is why the scanner exists), then by address (unsigned) ----
 (defn ukey [(ip : I32)] : I32 (bit-xor ip (shl 1 31)))   ; flips the sign bit so signed compare == unsigned order
 (defn dev-before [(a : I32) (b : I32)] : Bool            ; does device a sort before device b?
-  (let [pa (nk-dev-pinned a) pb (nk-dev-pinned b)]
-    (if (!= pa pb) (> pa pb)
-        (< (ukey (nk-dev-ip a)) (ukey (nk-dev-ip b))))))
+  (let [pa (nk-dev-pinned a) pb (nk-dev-pinned b)
+        ra (nk-dev-is-pi a) rb (nk-dev-is-pi b)]
+    (cond (!= pa pb) (> pa pb)
+          (!= ra rb) (> ra rb)
+          :else (< (ukey (nk-dev-ip a)) (ukey (nk-dev-ip b))))))
 
 (defn nk-dev-sort [] : Unit
   (let [n (gi (g-sc-ndev))]

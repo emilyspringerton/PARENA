@@ -3,6 +3,7 @@ stdlib/netkit/nk_mem.prn
 stdlib/netkit/nk_des.prn
 stdlib/netkit/nk_rfb.prn
 stdlib/netkit/nk_scan.prn
+stdlib/netkit/nk_names.prn
 stdlib/netkit/nk_garage.prn
 stdlib/netkit/nk_crypto.prn
 stdlib/netkit/nk_x25519.prn

@@ -1,0 +1,295 @@
+;; stdlib/netkit/nk_names.prn -- "what is that device called, and who made it?" for the LAN scanner (SECTION 646, DROP1).
+;; PARENA, wasm32, no imports. Works with the device table in nk_scan.prn.
+;;
+;; Founder, 2026-11-26 (Drop One): "Look up each device's hardware address prefix to show the manufacturer ... show IP address,
+;; hostname when available ... highlight the Pi ... allow saving and naming devices so your network stays recognizable."
+;;
+;; Where a name or a MAC can come from, and why there are four sources:
+;;   * the ARP cache (/proc/net/arp, nk_scan.prn) -- MACs, but Android 10+ hides it from apps, so on a modern tablet it is empty;
+;;   * reverse DNS (the shell's resolve()) -- the router's DHCP names ("raspberrypi.lan"), rank 1;
+;;   * NetBIOS node status (UDP 137, this file) -- Windows PCs and Samba boxes answer with their name AND their MAC, rank 2,
+;;     which is how a modern tablet still learns a maker;
+;;   * mDNS reverse lookup (UDP 5353, unicast "legacy" query, this file) -- Raspberry Pi OS (avahi), macOS, iOS, printers and
+;;     most smart speakers answer "raspberrypi.local", rank 3 (the device's own idea of its name wins).
+;;   * the user's own label (nk-dev-set-label) beats them all and is what the page keeps between scans.
+;; The page sends the packets this file builds (window.NetkitNative.udpQuery) and hands each reply back; it decides nothing.
+;;
+;; Memory (inside the map in nk_mem.prn):
+;;   0x05B000 PKT    1536 B    one UDP packet: the query built here, or the reply the page wrote
+;;   0x05C000 LABEL  512 x 32  the user's label per device (NUL-terminated); device flag 64 says it is set
+;;   0x070000 OUI    64 KB     the manufacturer table (oui.bin from tools/netkit_oui_gen.py; the page loads it at boot)
+;; Device record bytes used here: +22 maker index (0 = unknown), +28 name rank (0 none .. 3 mDNS).
+;; G words 192..223 belong to this file.
+
+(defn g-oui-ok [] : I32 192)        ; 1 once a valid table is loaded
+(defn g-oui-n [] : I32 193)         ; entries
+(defn g-oui-m [] : I32 194)         ; makers (index 0 = unknown)
+(defn g-oui-names [] : I32 195)     ; byte offset of the name table inside OUI
+(defn g-pk-cur [] : I32 196)        ; read cursor while parsing PKT
+(defn g-pk-len [] : I32 197)
+
+(defn pkt-base [] : I32 372736)     ; 0x5B000
+(defn pkt-cap [] : I32 1536)
+(defn label-base [] : I32 376832)   ; 0x5C000
+(defn oui-base [] : I32 458752)     ; 0x070000
+(defn oui-cap [] : I32 65536)
+
+(defn nk-pkt-addr [] : I32 (pkt-base))
+(defn nk-pkt-cap [] : I32 (pkt-cap))
+(defn nk-oui-addr [] : I32 (oui-base))
+(defn nk-oui-cap [] : I32 (oui-cap))
+
+;; ---- the manufacturer table ------------------------------------------------------------------------------------------------------
+;; The page wrote oui.bin (len bytes) at nk-oui-addr. Returns the number of prefixes, or 0 if the blob is not a table.
+(defn nk-oui-load [(len : I32)] : I32
+  (let [b (oui-base)
+        n (load32 (+ b 4))
+        m (load32 (+ b 8))
+        off (load32 (+ b 12))
+        ok (and (= (load32 b) 1431259982)                        ; "NKOU" little-endian
+                (and (> n 0) (and (> m 0) (and (< m 256)
+                (and (= off (+ 16 (shl n 2))) (<= (+ off (* m 24)) (min-i len (oui-cap))))))))]
+    (if ok
+        (do (gi! (g-oui-ok) 1) (gi! (g-oui-n) n) (gi! (g-oui-m) m) (gi! (g-oui-names) off) n)
+        (do (gi! (g-oui-ok) 0) (gi! (g-oui-n) 0) 0))))
+(defn nk-oui-count [] : I32 (gi (g-oui-n)))
+
+;; maker index for the first three MAC bytes (p24 = a<<16|b<<8|c), 0 when the table does not list it
+(defn nk-oui-lookup [(p24 : I32)] : I32
+  (if (= (gi (g-oui-ok)) 0) 0
+      (loop [lo 0 hi (- (gi (g-oui-n)) 1)]
+        (if (> lo hi) 0
+            (let [mid (shr (+ lo hi) 1)
+                  e (load32 (+ (oui-base) (+ 16 (shl mid 2))))
+                  k (bit-and e 16777215)]
+              (cond (= k p24) (bit-and (ushr e 24) 255)
+                    (< k p24) (recur (+ mid 1) hi)
+                    :else (recur lo (- mid 1))))))))
+
+(defn nk-maker-name-addr [(m : I32)] : I32
+  (if (or (= (gi (g-oui-ok)) 0) (or (<= m 0) (>= m (gi (g-oui-m)))))
+      (str-addr "")
+      (+ (oui-base) (+ (gi (g-oui-names)) (* m 24)))))
+
+(defn nk-dev-maker [(i : I32)] : I32 (load8 (+ (dev-addr i) 22)))
+
+;; a locally-administered MAC (bit 1 of the first byte): phones, tablets and laptops make one up per Wi-Fi network,
+;; so there is no maker to look up -- the page says so instead of "unknown"
+(defn nk-dev-mac-private [(i : I32)] : I32
+  (if (and (= (nk-dev-has-mac i) 1) (= (bit-and (mac-byte i 0) 2) 2)) 1 0))
+
+;; what the page shows as "made by": the maker, the private-address note, or ""
+(defn nk-dev-maker-text-addr [(i : I32)] : I32
+  (cond (= (nk-dev-has-mac i) 0) (str-addr "")
+        (= (nk-dev-mac-private i) 1) (str-addr "Private Wi-Fi address (a phone, tablet or laptop)")
+        :else (nk-maker-name-addr (nk-dev-maker i))))
+
+;; record 6 MAC bytes at src for device i (from ARP or NetBIOS); looks the maker up and re-guesses
+(defn dev-set-mac! [(i : I32) (src : I32)] : Unit
+  (let [a (dev-addr i)]
+    (do (dotimes [k 6] (store8! (+ a (+ 16 k)) (load8 (+ src k))))
+        (store32! (+ a 4) (bit-or (load32 (+ a 4)) 16))
+        (store8! (+ a 22) (nk-oui-lookup (bit-or (shl (load8 src) 16) (bit-or (shl (load8 (+ src 1)) 8) (load8 (+ src 2))))))
+        (nk-dev-reguess! i))))
+
+;; ---- names: ranking and tidying -------------------------------------------------------------------------------------------------------
+(defn lower-c [(c : I32)] : I32 (if (and (>= c 65) (<= c 90)) (+ c 32) c))
+
+;; does the n-byte text at a end with the ASCII suffix at s (case-insensitive)?
+(defn ends-with-ci [(a : I32) (n : I32) (s : I32) (sn : I32)] : Bool
+  (and (> n sn)
+       (loop [k 0]
+         (if (= k sn) true
+             (if (= (lower-c (load8 (+ a (+ (- n sn) k)))) (load8 (+ s k))) (recur (+ k 1)) false)))))
+
+(defn cstr-n [(s : I32)] : I32 (loop [k 0] (if (= (load8 (+ s k)) 0) k (recur (+ k 1)))))
+
+;; drop the trailing dot and the home-network suffix a router or mDNS adds: "raspberrypi.local." -> "raspberrypi"
+(defn tidy-len [(a : I32) (n0 : I32)] : I32
+  (let [n (if (and (> n0 0) (= (load8 (+ a (- n0 1))) 46)) (- n0 1) n0)]
+    (loop [k 0]
+      (let [s (case k
+                0 (str-addr ".local")
+                1 (str-addr ".lan")
+                2 (str-addr ".home")
+                3 (str-addr ".localdomain")
+                4 (str-addr ".home.arpa")
+                5 (str-addr ".fritz.box")
+                (str-addr ""))
+            sn (cstr-n s)]
+        (if (= sn 0) n
+            (if (ends-with-ci a n s sn) (- n sn) (recur (+ k 1))))))))
+
+(defn nk-dev-name-rank [(i : I32)] : I32 (load8 (+ (dev-addr i) 28)))
+
+;; store a name from src (n bytes) if its source ranks at least as high as the name already held; 1 if stored.
+;; Control bytes become '?'; at most 31 bytes are kept (the page escapes everything it draws).
+(defn dev-name-from! [(i : I32) (src : I32) (n0 : I32) (rank : I32)] : I32
+  (let [a (dev-addr i)
+        n (min-i (tidy-len src n0) 31)]
+    (if (or (<= n 0) (< rank (nk-dev-name-rank i))) 0
+        (do (dotimes [k 32]
+              (let [c (if (< k n) (load8 (+ src k)) 0)]
+                (store8! (+ a (+ 32 k)) (if (and (< k n) (< c 32)) 63 c))))
+            (store8! (+ a 63) 0)
+            (store8! (+ a 28) rank)
+            (store32! (+ a 4) (bit-or (load32 (+ a 4)) 32))
+            (nk-dev-reguess! i)
+            1))))
+
+;; "raspberrypi" anywhere in the name (any case): the name Raspberry Pi OS ships with, and what most people keep
+(defn pi-name? [(i : I32)] : Bool
+  (let [a (+ (dev-addr i) 32)
+        s (str-addr "raspberry")]
+    (and (= (bit-and (nk-dev-flags i) 32) 32)
+         (loop [p 0]
+           (if (> (+ p 9) 31) false
+               (if (= (load8 (+ a p)) 0) false
+                   (if (loop [k 0]
+                         (if (= k 9) true
+                             (if (= (lower-c (load8 (+ a (+ p k)))) (load8 (+ s k))) (recur (+ k 1)) false)))
+                       true
+                       (recur (+ p 1)))))))))
+
+(defn nk-dev-is-pi [(i : I32)] : I32 (if (= (nk-dev-guess i) 1) 1 0))
+
+;; ---- the user's own label --------------------------------------------------------------------------------------------------------------
+;; the page wrote the label at nk-txt-addr (len 0 clears it). Kept up to 31 bytes; the page re-applies saved labels every render.
+(defn nk-dev-set-label [(i : I32) (len : I32)] : Unit
+  (let [a (dev-addr i)
+        l (+ (label-base) (shl i 5))
+        n (min-i len 31)]
+    (do (dotimes [k 32] (store8! (+ l k) (if (< k n) (let [c (tx k)] (if (< c 32) 63 c)) 0)))
+        (store32! (+ a 4) (if (> n 0) (bit-or (load32 (+ a 4)) 64) (bit-and (load32 (+ a 4)) -65))))))
+(defn nk-dev-has-label [(i : I32)] : I32 (if (= (bit-and (nk-dev-flags i) 64) 64) 1 0))
+(defn nk-dev-label-addr [(i : I32)] : I32 (+ (label-base) (shl i 5)))
+
+;; the device's title: the user's label, else the best discovered name, else "" (the page then shows the address)
+(defn nk-dev-title-addr [(i : I32)] : I32
+  (cond (= (nk-dev-has-label i) 1) (nk-dev-label-addr i)
+        (= (bit-and (nk-dev-flags i) 32) 32) (nk-dev-name-addr i)
+        :else (str-addr "")))
+
+;; ---- UDP packets ------------------------------------------------------------------------------------------------------------------------
+(defn nm-pk [(i : I32)] : I32 (load8 (+ (pkt-base) i)))
+(defn nm-pk16 [(i : I32)] : I32 (bit-or (shl (nm-pk i) 8) (nm-pk (+ i 1))))
+(defn nm-pk! [(i : I32) (v : I32)] : Unit (store8! (+ (pkt-base) i) (bit-and v 255)))
+(defn nm-pk16! [(i : I32) (v : I32)] : Unit (do (nm-pk! i (shr v 8)) (nm-pk! (+ i 1) v)))
+
+;; DNS-style header: id, flags, one question
+(defn pk-header! [(id : I32) (flags : I32)] : Unit
+  (do (nm-pk16! 0 id) (nm-pk16! 2 flags) (nm-pk16! 4 1) (nm-pk16! 6 0) (nm-pk16! 8 0) (nm-pk16! 10 0)))
+
+;; one decimal label (0..255) at p; returns the next position
+(defn put-dec-label! [(p : I32) (v : I32)] : I32
+  (let [n (cond (>= v 100) 3 (>= v 10) 2 :else 1)]
+    (do (nm-pk! p n)
+        (when (= n 3) (nm-pk! (+ p 1) (+ 48 (/ v 100))))
+        (when (>= n 2) (nm-pk! (+ p (- n 1)) (+ 48 (mod (/ v 10) 10))))
+        (nm-pk! (+ p n) (+ 48 (mod v 10)))
+        (+ p (+ n 1)))))
+
+(defn put-ascii-label! [(p : I32) (s : I32)] : I32
+  (let [n (cstr-n s)]
+    (do (nm-pk! p n)
+        (dotimes [k n] (nm-pk! (+ p (+ 1 k)) (load8 (+ s k))))
+        (+ p (+ n 1)))))
+
+(defn query-id [(ip : I32)] : I32 (bit-or (bit-and ip 65535) 1))
+
+;; mDNS reverse lookup for ip: "d.c.b.a.in-addr.arpa PTR?" -- sent to ip:5353 from an ordinary port (an RFC 6762 6.7 "legacy unicast"
+;; query), so the device answers straight back to us and no multicast lock is needed. Returns the packet length.
+(defn nk-mdns-query [(ip : I32)] : I32
+  (do (pk-header! (query-id ip) 0)
+      (let [p1 (put-dec-label! 12 (bit-and ip 255))
+            p2 (put-dec-label! p1 (bit-and (ushr ip 8) 255))
+            p3 (put-dec-label! p2 (bit-and (ushr ip 16) 255))
+            p4 (put-dec-label! p3 (bit-and (ushr ip 24) 255))
+            p5 (put-ascii-label! p4 (str-addr "in-addr"))
+            p6 (put-ascii-label! p5 (str-addr "arpa"))]
+        (do (nm-pk! p6 0)
+            (nm-pk16! (+ p6 1) 12)          ; PTR
+            (nm-pk16! (+ p6 3) 1)           ; IN
+            (+ p6 5)))))
+
+;; NetBIOS node status ("who are you?") for the wildcard name "*": 50 bytes, sent to ip:137
+(defn nk-nbns-query [(ip : I32)] : I32
+  (do (pk-header! (query-id ip) 0)
+      (nm-pk! 12 32)
+      (nm-pk! 13 67) (nm-pk! 14 75)                                   ; '*' = 0x2A -> "CK"
+      (dotimes [k 30] (nm-pk! (+ 15 k) 65))                        ; 15 NULs -> "AA" each
+      (nm-pk! 45 0)
+      (nm-pk16! 46 33)                                             ; NBSTAT
+      (nm-pk16! 48 1)
+      50))
+
+;; skip one (possibly compressed) DNS name starting at p; -1 if it runs off the packet
+(defn skip-name [(p0 : I32) (len : I32)] : I32
+  (loop [p p0]
+    (if (>= p len) -1
+        (let [b (nm-pk p)]
+          (cond (= b 0) (+ p 1)
+                (= (bit-and b 192) 192) (if (< (+ p 1) len) (+ p 2) -1)
+                (!= (bit-and b 192) 0) -1
+                :else (recur (+ p (+ b 1))))))))
+
+;; decode the name at p into SCR (labels joined by '.'), following at most 16 compression pointers. Returns its length (0 on error).
+(defn decode-name [(p0 : I32) (len : I32)] : I32
+  (let [dst (+ (scr-base) 1024)]
+    (loop [p p0 out 0 hops 0]
+      (if (or (>= p len) (> hops 16)) 0
+          (let [b (nm-pk p)]
+            (cond
+              (= b 0) out
+              (= (bit-and b 192) 192)
+                (if (< (+ p 1) len) (recur (bit-or (shl (bit-and b 63) 8) (nm-pk (+ p 1))) out (+ hops 1)) 0)
+              (!= (bit-and b 192) 0) 0
+              (or (> (+ p (+ b 1)) len) (> (+ out (+ b 1)) 200)) 0
+              :else (do (when (> out 0) (store8! (+ dst out) 46))
+                        (let [o (if (> out 0) (+ out 1) out)]
+                          (do (dotimes [k b] (store8! (+ dst (+ o k)) (nm-pk (+ p (+ 1 k)))))
+                              (recur (+ p (+ b 1)) (+ o b) hops))))))))))
+
+;; the device answered our mDNS query (len bytes at PKT). Takes the first PTR answer as its name. 1 if a name was stored.
+(defn nk-mdns-reply [(i : I32) (len : I32)] : I32
+  (if (or (< i 0) (or (>= i (nk-dev-count)) (or (< len 12) (> len (pkt-cap))))) 0
+      (if (or (= (bit-and (nm-pk 2) 128) 0) (!= (bit-and (nm-pk 3) 15) 0)) 0      ; not a response, or an error response
+          (let [qd (nm-pk16 4)
+                an (nm-pk16 6)
+                p0 (loop [q 0 p 12] (if (or (= q qd) (< p 0)) p (let [e (skip-name p len)] (recur (+ q 1) (if (< e 0) -1 (+ e 4))))))]
+            (loop [k 0 p p0]
+              (if (or (>= k an) (or (< p 0) (> (+ p 10) len))) 0
+                  (let [e (skip-name p len)]
+                    (if (or (< e 0) (> (+ e 10) len)) 0
+                        (let [typ (nm-pk16 e)
+                              rdlen (nm-pk16 (+ e 8))
+                              rd (+ e 10)]
+                          (if (and (= typ 12) (<= (+ rd rdlen) len))
+                              (let [n (decode-name rd len)]
+                                (if (> n 0) (dev-name-from! i (+ (scr-base) 1024) n 3) 0))
+                              (recur (+ k 1) (+ rd rdlen))))))))))))
+
+;; the device answered our NetBIOS node-status query. Takes its unique workstation name (suffix 0x00, not a group) and, when the
+;; tablet has no MAC for it yet, the MAC it reports (Samba sends zeros: ignored). Returns 1 if anything new was learned.
+(defn nk-nbns-reply [(i : I32) (len : I32)] : I32
+  (if (or (< i 0) (or (>= i (nk-dev-count)) (or (< len 57) (> len (pkt-cap))))) 0
+      (if (or (= (bit-and (nm-pk 2) 128) 0) (or (!= (bit-and (nm-pk 3) 15) 0) (= (nm-pk16 6) 0))) 0
+          (let [e (skip-name 12 len)]
+            (if (or (< e 0) (or (> (+ e 11) len) (!= (nm-pk16 e) 33))) 0
+                (let [cnt (nm-pk (+ e 10))
+                      base (+ e 11)
+                      macp (+ base (* cnt 18))]
+                  (if (> (+ macp 6) len) 0
+                      (let [named (loop [k 0]
+                                    (if (>= k cnt) 0
+                                        (let [r (+ base (* k 18))]
+                                          (if (and (= (nm-pk (+ r 15)) 0) (= (bit-and (nm-pk (+ r 16)) 128) 0))
+                                              ;; 15 name bytes, space-padded
+                                              (let [n (loop [q 15] (if (and (> q 0) (or (= (nm-pk (+ r (- q 1))) 32) (= (nm-pk (+ r (- q 1))) 0))) (recur (- q 1)) q))]
+                                                (if (> n 0) (dev-name-from! i (+ (pkt-base) r) n 2) 0))
+                                              (recur (+ k 1))))))
+                            nz (loop [k 0 acc 0] (if (= k 6) acc (recur (+ k 1) (bit-or acc (nm-pk (+ macp k))))))
+                            got-mac (if (and (> nz 0) (= (nk-dev-has-mac i) 0))
+                                        (do (dev-set-mac! i (+ (pkt-base) macp)) 1)
+                                        0)]
+                        (bit-or named got-mac)))))))))
