@@ -1,0 +1,183 @@
+;; stdlib/shankpit_survival/sv_trees.prn (mirror of GF gf/modes/survival/sv_trees.prn; GF is the home) -- SURVIVAL mods: trees, the resource-collection mod (wood), barricades.
+;;
+;; Founder real-time 2026-11-26: "Add trees to zombie survival modes ... ultra low poly models like our skins add resource collection
+;; mod parena based mods based dev". Every number comes from the shared rule file ../PARENA/stdlib/shankpit/tree_rules.prn (the OG
+;; C client uses the same file): the box model of each kind, where trees grow, toughness, chop damage per weapon, wood, regrowth,
+;; barricade cost and size. This file is the host side: placing bodies, the chop, drawing, the HUD.
+;;
+;; A tree's trunk (part 0) is a real map box, so it collides, stops bullets and zombies steer round it; the canopy boxes are drawn
+;; only. A felled tree's trunk box is moved out of the world and a stump is drawn until it grows back. A barricade is a map box too.
+;;
+;; Memory (the SV region, docs/GF_REWRITE_PLAN.md section 9): trees at sv-base + 6144 (48 x 32 bytes: kind, box, hp, x, z, scale,
+;; regrow-at ms, alive), barricades at sv-base + 7680 (16 x 16 bytes: box, hp). G words 622..627.
+
+(defn sv-tree-addr [(i : I32) (k : I32)] : I32 (+ (sv-base) (+ 6144 (+ (* i 32) (shl k 2)))))
+(defn sv-max-trees [] : I32 48)
+(defn sv-max-barricades [] : I32 16)
+(defn sv-box-reserve [] : I32 16)          ; boxes kept free for barricades
+(defn g-sv-wood [] : I32 622)
+(defn g-sv-trees-n [] : I32 623)
+(defn g-sv-barr-n [] : I32 624)
+(defn g-sv-build-t [] : I32 625)           ; ticks of the build notice
+(defn g-sv-build-msg [] : I32 626)         ; 1 built, 2 not enough wood, 3 no room
+(defn g-sv-felled [] : I32 627)
+(defn sv-forest-seed [] : I32 1337)
+
+(defn tk [(i : I32)] : I32 (load32 (sv-tree-addr i 0)))
+(defn tbox [(i : I32)] : I32 (load32 (sv-tree-addr i 1)))
+(defn thp [(i : I32)] : I32 (load32 (sv-tree-addr i 2)))
+(defn tx [(i : I32)] : F32 (loadf32 (sv-tree-addr i 3)))
+(defn tz [(i : I32)] : F32 (loadf32 (sv-tree-addr i 4)))
+(defn tsc [(i : I32)] : F32 (loadf32 (sv-tree-addr i 5)))
+(defn tregrow [(i : I32)] : I32 (load32 (sv-tree-addr i 6)))
+(defn talive [(i : I32)] : I32 (load32 (sv-tree-addr i 7)))
+
+;; part p of tree i, one axis, in world units
+(defn tpart [(i : I32) (p : I32) (axis : I32)] : F32
+  (* (milli (tree-part (tk i) p axis)) (tsc i)))
+
+(defn sv-trunk-set! [(i : I32)] : Unit
+  (map-set-box! (tbox i) (+ (tx i) (tpart i 0 0)) (tpart i 0 1) (+ (tz i) (tpart i 0 2)) (tpart i 0 3) (tpart i 0 4) (tpart i 0 5)))
+(defn sv-trunk-clear! [(i : I32)] : Unit
+  (map-set-box! (tbox i) (tx i) -500.0 (tz i) 0.0 0.0 0.0))
+
+(defn sv-near-road? [(v : F32)] : Bool
+  (< (fabs (- v (sv-road-snap v))) 11.0))
+
+;; grow the forest over the open ground of the city, on the rules' grid
+(defn sv-trees-grow! [] : Unit
+  (let [(cell : F32) (milli (tree-cell-milli))
+        (lim : F32) (- (sv-city-edge) 12.0)
+        n (/ (i32 (* 2.0 lim)) (i32 cell))
+        count 0]
+    (dotimes [a (* (sv-max-trees) 8)] (store32! (+ (sv-tree-addr 0 0) (shl a 2)) 0))
+    ;; ring by ring outward from the spawn, so the box budget is spent where the player is, not in a far corner
+    (dotimes [ring (+ (/ n 2) 1)]
+      (dotimes [ci (* (+ (* ring 2) 1) (+ (* ring 2) 1))]
+        (let [gx (- (mod ci (+ (* ring 2) 1)) ring)
+              gz (- (/ ci (+ (* ring 2) 1)) ring)
+              kind (if (= (max-i (abs-i gx) (abs-i gz)) ring) (tree-at gx gz (sv-forest-seed)) 0)]
+          (when (and (> kind 0) (and (< count (sv-max-trees)) (< (map-count) (- 127 (sv-box-reserve)))))
+            (let [(x : F32) (+ (* (f32 gx) cell) (milli (tree-jitter-milli gx gz (sv-forest-seed) 0)))
+                  (z : F32) (+ (* (f32 gz) cell) (milli (tree-jitter-milli gx gz (sv-forest-seed) 1)))]
+              (when (and (and (< (fabs x) lim) (< (fabs z) lim))
+                         (and (not (and (< (fabs x) 14.0) (< (fabs z) 14.0)))
+                              (and (not (or (sv-near-road? x) (sv-near-road? z)))
+                                   (not (sv-point-blocked? x z 4.0)))))
+                (store32! (sv-tree-addr count 0) kind)
+                (store32! (sv-tree-addr count 1) (map-count))
+                (store32! (sv-tree-addr count 2) (tree-max-hp kind))
+                (storef32! (sv-tree-addr count 3) x)
+                (storef32! (sv-tree-addr count 4) z)
+                (storef32! (sv-tree-addr count 5) (/ (f32 (tree-scale-permille gx gz (sv-forest-seed))) 1000.0))
+                (store32! (sv-tree-addr count 7) 1)
+                (store32! (sv-color-addr (map-count)) (rgb-of-hex (tree-part-color kind 0)))
+                (gi! (g-box-n) (+ (map-count) 1))
+                (sv-trunk-set! count)
+                (set! count (+ count 1))))))))
+    (gi! (g-sv-trees-n) count)))
+
+(defn rgb-of-hex [(h : I32)] : I32 (rgb (bit-and (shr h 16) 255) (bit-and (shr h 8) 255) (bit-and h 255)))
+
+;; a new run: every tree standing again, no wood, no barricades (their boxes are freed by the city rebuild)
+(defn sv-trees-reset! [] : Unit
+  (do (sv-trees-grow!)
+      (gi! (g-sv-wood) 0) (gi! (g-sv-barr-n) 0) (gi! (g-sv-build-t) 0) (gi! (g-sv-felled) 0)))
+
+(defn sv-wood-add! [(n : I32)] : Unit
+  (gi! (g-sv-wood) (min-i (res-cap 1) (+ (gi (g-sv-wood)) n))))
+
+;; the shot ray: returns true when a trunk took the hit (nothing behind it is hit then)
+(defn sv-trees-hit! [(p : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32) (reach : F32) (wall : F32)] : Bool
+  (let [best -1
+        (bt : F32) (fmin2 reach (+ wall 0.01))]
+    (dotimes [i (gi (g-sv-trees-n))]
+      (when (!= (talive i) 0)
+        (let [(t : F32) (ray-box (tbox i) ox oy oz dx dy dz bt)]
+          (when (< t bt) (set! bt t) (set! best i)))))
+    (if (< best 0)
+        false
+        (let [w (p-weapon p)
+              hp (- (thp best) (tree-chop-damage w))
+              kind (tk best)]
+          (fx-sparks! (+ ox (* dx bt)) (+ oy (* dy bt)) (+ oz (* dz bt)) 3 4)
+          (gi! (g-hitmark) 6)
+          (sv-wood-add! (tree-wood-per-hit kind))
+          (if (> hp 0)
+              (store32! (sv-tree-addr best 2) hp)
+              (do (store32! (sv-tree-addr best 7) 0)
+                  (store32! (sv-tree-addr best 6) (+ (sv-now) (tree-regrow-ms kind)))
+                  (sv-trunk-clear! best)
+                  (sv-wood-add! (tree-fell-bonus kind))
+                  (gi! (g-sv-felled) (+ (gi (g-sv-felled)) 1))
+                  (fx-sparks! (tx best) 2.0 (tz best) 4 14)
+                  (snd-at! 13 (tx best) 1.0 (tz best))))
+          true))))
+
+;; regrowth, and building
+(defn sv-trees-tick! [] : Unit
+  (do
+    (dotimes [i (gi (g-sv-trees-n))]
+      (when (and (= (talive i) 0) (> (tk i) 0))
+        (when (>= (sv-now) (tregrow i))
+          ;; do not grow a trunk into somebody
+          (let [clear true]
+            (dotimes [p (max-players)]
+              (when (and (alive? p) (< (len2 (- (p-x p) (tx i)) (- (p-z p) (tz i))) 3.0)) (set! clear false)))
+            (when clear
+              (store32! (sv-tree-addr i 7) 1)
+              (store32! (sv-tree-addr i 2) (tree-max-hp (tk i)))
+              (sv-trunk-set! i))))))
+    (when (> (gi (g-sv-build-t)) 0) (gi! (g-sv-build-t) (- (gi (g-sv-build-t)) 1)))
+    (when (and (alive? 0) (or (key-hit? 66) (any-pad-hit? (pb-y)))) (sv-build-barricade!))))
+
+;; B (or pad Y): a plank wall four units ahead, across the way you face, for barricade-cost wood
+(defn sv-build-msg! [(m : I32)] : Unit (do (gi! (g-sv-build-msg) m) (gi! (g-sv-build-t) 100)))
+(defn sv-build-barricade! [] : Unit
+  (let [(yaw : F32) (p-yaw 0)
+        (fx : F32) (fwd-x yaw)
+        (fz : F32) (fwd-z yaw)
+        (x : F32) (+ (p-x 0) (* fx 4.0))
+        (z : F32) (+ (p-z 0) (* fz 4.0))
+        (w : F32) (milli (barricade-dim 0))
+        (h : F32) (milli (barricade-dim 1))
+        (d : F32) (milli (barricade-dim 2))
+        along-x (> (fabs fz) (fabs fx))]
+    (cond
+      (< (gi (g-sv-wood)) (barricade-cost)) (sv-build-msg! 2)
+      (or (>= (gi (g-sv-barr-n)) (sv-max-barricades)) (>= (map-count) 127)) (sv-build-msg! 3)
+      (sv-point-blocked? x z 0.5) (sv-build-msg! 3)
+      :else
+        (let [b (map-count)]
+          (map-set-box! b x (/ h 2.0) z (if along-x w d) h (if along-x d w))
+          (store32! (sv-color-addr b) (rgb-of-hex (barricade-color)))
+          (gi! (g-box-n) (+ b 1))
+          (gi! (g-sv-barr-n) (+ (gi (g-sv-barr-n)) 1))
+          (gi! (g-sv-wood) (- (gi (g-sv-wood)) (barricade-cost)))
+          (sv-build-msg! 1)
+          (snd-at! 5 x 1.0 z)))))
+
+;; canopies and stumps (the trunk is drawn by the engine as a map box)
+(defn sv-trees-draw! [] : Unit
+  (dotimes [i (gi (g-sv-trees-n))]
+    (when (sv-near? (tx i) (tz i))
+      (if (!= (talive i) 0)
+          (loop [p 1]
+            (when (< p (tree-parts (tk i)))
+              (draw-aabb! (+ (tx i) (tpart i p 0)) (tpart i p 1) (+ (tz i) (tpart i p 2))
+                          (tpart i p 3) (tpart i p 4) (tpart i p 5) (rgb-of-hex (tree-part-color (tk i) p)) 1)
+              (recur (+ p 1))))
+          (draw-aabb! (tx i) 0.25 (tz i) (tpart i 0 3) 0.5 (tpart i 0 5) (shade (rgb-of-hex (tree-part-color (tk i) 0)) 200) 1)))))
+
+(defn sv-trees-hud! [] : Unit
+  (do
+    (panel 10 6 132 34)
+    (fill-rect 18 15 10 14 (rgb-of-hex (barricade-color)))
+    (draw-text "WOOD" 34 9 1 (ink-faint))
+    (draw-int (gi (g-sv-wood)) 34 19 2 (amber))
+    (draw-text-r "B build" 134 9 1 (ink-faint))
+    (draw-int-r (barricade-cost) 134 21 1 (if (>= (gi (g-sv-wood)) (barricade-cost)) (ink) (coral)))
+    (when (> (gi (g-sv-build-t)) 0)
+      (panel 236 296 168 20)
+      (draw-text-c (case (gi (g-sv-build-msg)) 1 "BARRICADE UP" 2 "NOT ENOUGH WOOD" "NO ROOM HERE") 320 300 1
+                   (if (= (gi (g-sv-build-msg)) 1) (amber) (coral))))))

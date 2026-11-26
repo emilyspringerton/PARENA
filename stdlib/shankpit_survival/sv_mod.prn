@@ -284,6 +284,7 @@
 (defn sv-start! [] : Unit
   (do
     (sv-city-init!)
+    (sv-trees-reset!)
     (clear-world!)
     (gi! (g-mode) 2)
     (gi! (g-me) 0)
@@ -332,7 +333,7 @@
     (snd-ui! 15)))
 
 ;; ======================= the hooks (contract: stdlib/shankpit460/sp_mods.prn) =======================
-(defn mod-init! [] : Unit (do (sv-city-init!) (sv-seed-street!)))
+(defn mod-init! [] : Unit (do (sv-city-init!) (sv-trees-reset!) (sv-seed-street!)))
 (defn mod-active? [] : Bool (and (!= (gi (g-sv-on)) 0) (= (gi (g-mode)) 2)))
 (defn mod-begin! [] : Bool (do (sv-start!) true))
 (defn mod-bounds [] : F32 (+ (sv-city-edge) 10.0))
@@ -341,7 +342,11 @@
 (defn mod-weapon-ok? [(p : I32) (w : I32)] : Bool
   (or (not (mod-active?)) (!= (bit-and (gi (g-sv-owned)) (shl 1 (clamp-i w 0 7))) 0)))
 (defn mod-hitscan! [(p : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit
-  (when (mod-active?) (sv-hitscan! p ox oy oz dx dy dz)))
+  (when (mod-active?)
+    (let [(reach : F32) (if (wpn-melee? (p-weapon p)) 4.5 600.0)]
+      ;; a trunk in the way takes the hit (sv_trees.prn); otherwise the chests get their chance
+      (when (not (sv-trees-hit! p ox oy oz dx dy dz reach (ray-world ox oy oz dx dy dz reach)))
+        (sv-hitscan! p ox oy oz dx dy dz)))))
 (defn mod-box-color [(i : I32)] : I32 (if (= (gi (g-map-id)) 3) (sv-box-color i) -1))
 
 (defn mod-tick! [] : Unit
@@ -351,6 +356,7 @@
     (when (> (gi (g-sv-wave-t)) 0) (gi! (g-sv-wave-t) (- (gi (g-sv-wave-t)) 1)))
     (sv-corpses!)
     (sv-pickups!)
+    (sv-trees-tick!)
     (if (alive? 0)
         (sv-waves!)
         (do (gi! (g-sv-dead-t) (+ (gi (g-sv-dead-t)) 1))
@@ -371,6 +377,7 @@
 
 (defn mod-draw-world! [] : Unit
   (when (= (gi (g-map-id)) 3)
+    (sv-trees-draw!)
     (let [(bob : F32) (* 0.25 (sinf (* (f32 (gi (g-ticker))) 0.004)))]
       (dotimes [i (sv-max-guns)]
         (let [a (sv-gun-addr i)]
@@ -392,6 +399,7 @@
 
 (defn mod-hud! [(me : I32)] : Unit
   (do
+    (sv-trees-hud!)
     (panel 238 6 164 34)
     (draw-text "WAVE" 248 9 1 (ink-faint))
     (draw-int (gi (g-sv-wave)) 248 19 2 (amber))

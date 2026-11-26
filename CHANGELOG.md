@@ -1,5 +1,16 @@
 ## 2026-11-26
 
+- **feat(shankpit): trees + the resource-collection mod (wood), one rule file for both engines** (founder: "Add trees to zombie survival
+  modes for shankpit og engine and shankpit wasm zombies ultra low poly models like our skins add resource collection mod parena based
+  mods based dev"). `stdlib/shankpit/tree_rules.prn` holds:
+  - the box model of pine, oak and birch (at most 4 boxes each);
+  - placement on a seeded grid, HP, chop damage per weapon, wood per hit plus a fell bonus, and regrowth;
+  - resource ids and the wood cap;
+  - the barricade's cost, size and colour.
+  It is written in the C-emitter subset, so the OG client generates C from it. SURVIVAL (`stdlib/shankpit_survival/sv_trees.prn`,
+  mirrored from GF) has trunks as real colliding map boxes, chopping on the shot ray, stumps and regrowth, a WOOD HUD and B / pad Y to
+  build a barricade for 5 wood. survival 40/40. SHANKPHONE: touch button 7 "Build" (`nk-survival-touch-key 7` = B); garage_spec
+  48/48, browser 30/30. (sess-20261126-1643-452c2f1a)
 - **feat(redgarden): the web client gets the camera back, and SHANKPIT 460's palette.** Founder, 2026-11-26: *"the WOTAN
   version is basically just like little icons on a grid it doesnt allow for camera zoom in and out and moving the camera
   etc can we give the REDGARDEN wasm the features we lost in the rewrite as well as match the art style and pallette from

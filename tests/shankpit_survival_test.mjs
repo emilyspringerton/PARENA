@@ -159,6 +159,38 @@ ok(g.gi(G.spawned) === 1, 'the next one waits out the 15 s spawn gap');
   ok(g.gi(G.phase) === 1 && g.gi(G.wave) === 1 && g.pi(0, 'state') === 0 && g.pi(0, 'weapon') === 0, 'AGAIN starts a fresh run with the knife');
 }
 
+// ---- trees and wood (sv_trees.prn + tree_rules.prn) ---------------------------------------------------------------------------
+{
+  const T = SV + 6144, tw = (i, k) => g.i32(T + i * 32 + k * 4), tf = (i, k) => g.f32(T + i * 32 + k * 4);
+  const n = g.gi(623);
+  ok(n >= 15 && n <= 48, `a forest grows in the city (${n} trees)`);
+  const kinds = new Set(); for (let i = 0; i < n; i++) kinds.add(tw(i, 0));
+  ok(kinds.size === 3, `pine, oak and birch all grow (${[...kinds].join(',')})`);
+  ok(g.gi(G.boxN) <= 127 - 16, `the forest leaves room for barricades (${g.gi(G.boxN)} boxes)`);
+  // walk up to a birch (80 hp, knife 40 a stab) and chop it
+  let b = -1; for (let i = 0; i < n; i++) if (tw(i, 0) === 3 && tw(i, 7) === 1) { b = i; break; }
+  if (b < 0) for (let i = 0; i < n; i++) if (tw(i, 7) === 1) { b = i; break; }
+  const kind = tw(b, 0), x = tf(b, 3), z = tf(b, 4), wood0 = g.gi(622);
+  g.tap(49);
+  g.x.sp_t_place(0, x, 0, z + 2.2, 0, 0);
+  for (let k = 0; k < 8 && tw(b, 7) === 1; k++) { g.x.sp_button(0, 1); g.frame(24); g.x.sp_button(0, 0); g.frame(2); }
+  ok(tw(b, 7) === 0, `the knife fells a tree (kind ${kind})`);
+  const bonus = { 1: 4, 2: 6, 3: 3 }[kind];
+  ok(g.gi(622) - wood0 >= bonus + 2, `chopping gives wood: a log per hit plus the fell bonus (${wood0} -> ${g.gi(622)})`);
+  ok(g.f32(163840 + tw(b, 1) * 32 + 4) < -100, 'the felled trunk leaves the world (no collision)');
+  // build: wood buys a barricade (a box), and without wood there is none
+  const boxes = g.gi(G.boxN), w = g.gi(622);
+  g.x.sp_t_place(0, x, 0, z + 2.2, 180, 0);
+  g.tap(66); g.frame(2);
+  ok(g.gi(G.boxN) === boxes + 1 && g.gi(622) === w - 5, `B builds a barricade for 5 wood (${w} -> ${g.gi(622)})`);
+  g.x.sp_t_poke(622, 2); g.tap(66); g.frame(2);
+  ok(g.gi(G.boxN) === boxes + 1 && g.gi(626) === 2, 'with 2 wood nothing is built (NOT ENOUGH WOOD)');
+  // regrowth (birch 60 s, oak 120 s): step past it
+  g.x.sp_t_place(0, x + 20, 0, z + 20, 0, 0);
+  g.frame(Math.ceil(125000 / 16));
+  ok(tw(b, 7) === 1 || g.gi(G.phase) !== 1, 'a felled tree grows back');
+}
+
 // ---- a frame of the city costs little enough for a phone -------------------------------------------------------------------------
 {
   const t0 = performance.now(); g.frame(120); const ms = (performance.now() - t0) / 120;
