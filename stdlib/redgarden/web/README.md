@@ -53,5 +53,6 @@ Build: `scripts/build_redgarden_web.sh <outdir>` -> `redgarden.wasm` + `rg-host.
 ## Limits (honest)
 
 No audio, no touch controls (a tap moves/attacks, but there is no on-screen shop button or scoreboard), no fog of war (the server
-sends everything), no replay, one top-down camera. Verified in headless Chromium against the real stack
+sends everything), no replay, one top-down camera (wheel zooms one step per notch, arrow keys pan and freeze it,
+space hands it back to the hero). The palette is SHANKPIT 460's (slate, cream ink, amber, sage, coral, sky-blue). Verified in headless Chromium against the real stack
 (`WOTAN/scripts/redgarden-browser-test.mjs`); **not** verified in Firefox, Safari or on a phone.

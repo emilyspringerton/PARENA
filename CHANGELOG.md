@@ -1,5 +1,21 @@
 ## 2026-11-26
 
+- **feat(redgarden): the web client gets the camera back, and SHANKPIT 460's palette.** Founder, 2026-11-26: *"the WOTAN
+  version is basically just like little icons on a grid it doesnt allow for camera zoom in and out and moving the camera
+  etc can we give the REDGARDEN wasm the features we lost in the rewrite as well as match the art style and pallette from
+  shankpit 460"*. The zoom was never really there: `rg_ui.prn` read the wheel word every frame and nothing consumed it, so
+  one notch re-zoomed until it hit a clamp; and no key could move the view at all (`g-cam-lock` was only ever set by the
+  screenshot hook). Now a wheel notch is one step (5.5..18 px/unit) and the word is cleared; arrow keys pan the frozen
+  camera (`g-cam-lock` 1, the same word `rg-t-cam` uses), clamped to the arena's +-51.777; space hands the camera back to
+  the hero, which glides home with the existing follow lerp. The help panel says so. The palette in `rg_gfx.prn` is 460's
+  own (`gf/engine/sp_hud.prn`): HUD black, slate ground, cream ink, amber, sage, coral and sky-blue instead of the garden
+  green. Verified: `scripts/build_redgarden_wasm.sh` (126,246 bytes, 0 imports, no allocator, fixed 8 MB) and the new
+  `tests/redgarden_camera_test.mjs` -- **17/17**: one notch = one step and no second zoom, clamps, pan freezes and stays,
+  space resumes the follow and moves the view back, panning stops at the map edge, and the five 460 palette colours read
+  back exactly. NOT done, named: no browser here, so this is the wasm driven headlessly, not a seen frame; the art is the
+  palette only -- the client still draws tokens with initials, not 460's characters; and the OG C client itself is not in
+  this checkout, so the camera feel is standard MOBA (wheel/arrows/space), not a pixel match to it.
+
 - **feat(shankpit_survival): SHANKPIT SURVIVAL in PARENA -- the SHANKPHONE's survival button** (founder: "the shankphone itself can have a
   button for survival that launches OG shankpit as a level and collection of mods"; PARENA rewrite chosen over porting the C client's GL).
   - `stdlib/shankpit460/sp_mods.prn`: the engine's mod surface (14 no-op hooks), wired at their call sites in sp_sim/sp_phys/sp_view/sp_hud/

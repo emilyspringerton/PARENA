@@ -307,7 +307,8 @@
     (draw-text-s "left or right click: move, or attack the hero you click" (+ x 16) (+ y 214) 1 (c-ink))
     (draw-text-s "Q W E: abilities, aimed at the pointer    `: blink / glide" (+ x 16) (+ y 232) 1 (c-dim))
     (draw-text-s "A then click: attack-move    S: stop" (+ x 16) (+ y 250) 1 (c-dim))
-    (draw-text-s "B: shop   1-9: buy   Tab: scores   wheel: zoom   Esc: close" (+ x 16) (+ y 268) 1 (c-dim))
+    (draw-text-s "B: shop   1-9: buy   Tab: scores   Esc: close" (+ x 16) (+ y 268) 1 (c-dim))
+    (draw-text-s "wheel: zoom   arrows: pan the camera   space: back to your hero" (+ x 16) (+ y 282) 1 (c-dim))
     (draw-text-s "Take the five nodes and hold them: first team to 2000 wins." (+ x 16) (+ y 296) 1 (c-moss))))
 
 (defn over-hud? [] : Bool

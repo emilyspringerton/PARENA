@@ -170,10 +170,23 @@
   (let [a (my-hero)
         alive (= (h-alive a) 1)]
     (camera-follow! false)
-    ;; zoom
+    ;; zoom: one step per wheel event, then the word is consumed -- it used to stay set, so a single notch
+    ;; re-zoomed every frame until it hit a clamp
     (let [w (wheel-dir)]
       (when (!= w 0)
-        (gf! (g-scale) (clamp-f (* (gf (g-scale)) (if (> w 0) 0.9 1.1)) 5.5 18.0))))
+        (gf! (g-scale) (clamp-f (* (gf (g-scale)) (if (> w 0) 0.9 1.1)) 5.5 18.0))
+        (in-wheel! 0)))
+    ;; pan: arrow keys freeze the view where you push it (g-cam-lock 1 is the frozen camera, the same word
+    ;; rg-t-cam uses) and space hands it back to the hero (0 = follow)
+    (let [(kx : F32) (cond (key-down? (kc-left)) -1.0 (key-down? (kc-right)) 1.0 :else 0.0)
+          (kz : F32) (cond (key-down? (kc-up)) -1.0 (key-down? (kc-down)) 1.0 :else 0.0)]
+      (when (or (!= kx 0.0) (!= kz 0.0))
+        (gi! (g-cam-lock) 1)
+        (let [(sp : F32) (/ 7.0 (gf (g-scale)))
+              (h : F32) (map-half)]
+          (gf! (g-cam-x) (clamp-f (+ (gf (g-cam-x)) (* kx sp)) (- 0.0 h) h))
+          (gf! (g-cam-z) (clamp-f (+ (gf (g-cam-z)) (* kz sp)) (- 0.0 h) h)))))
+    (when (key-hit? (kc-space)) (gi! (g-cam-lock) 0))
     ;; the leave prompt eats the keyboard
     (if (= (gi (g-leave-ask)) 1)
         (do (when (key-hit? (kc-esc)) (gi! (g-leave-ask) 0))
