@@ -35,6 +35,7 @@
 ;;   64..127 SCAN    (nk_scan.prn)
 ;;  128..191 SSH     (nk_ssh*.prn)
 ;;  192..223 NAMES   (nk_names.prn)
+;;  224..255 SMB     (nk_smb.prn; its region is 0x270000, 16 KB)
 
 (module netkit/main)
 
@@ -194,4 +195,9 @@
     21 (str-addr "The server disconnected")
     22 (str-addr "The server could not prove it owns its host key")
     23 (str-addr "Output buffer overflow")
+    24 (str-addr "That isn't a Windows file-sharing (SMB) server")
+    25 (str-addr "This server only speaks SMB1 (old and unsafe; current Windows has it turned off)")
+    26 (str-addr "The file-sharing server refused to agree on a protocol version")
+    27 (str-addr "The file-sharing server's sign-in challenge was missing or unreadable")
+    28 (str-addr "The file-sharing server hung up before answering (SMB2 turned off?)")
     (str-addr "")))

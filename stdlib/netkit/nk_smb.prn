@@ -1,0 +1,433 @@
+;; stdlib/netkit/nk_smb.prn -- "what is this Windows box?": a credential-free SMB2 probe, as a sans-IO state machine in PARENA.
+;;
+;; Founder real-time 2026-11-26 (KIT-SMB): "windows file sharing is open on 445 can we add tools to the netkit for exploring those
+;; capabilities? parena first mods first". This is drop S0: everything a file-sharing server says about itself BEFORE anyone logs in.
+;;   1. SMB2 NEGOTIATE (dialects 2.0.2 .. 3.1.1, with 3.1.1's preauth / encryption / signing contexts) -> the dialect it picked,
+;;      whether signing is enabled / required, its capabilities, server GUID, its clock, the cipher and signing algorithm it chose;
+;;   2. SESSION_SETUP carrying an NTLMSSP NEGOTIATE (SPNEGO-wrapped) -> the server's NTLM CHALLENGE, whose target info names the
+;;      machine (NetBIOS + DNS computer name, workgroup or domain) and whose version field gives the Windows version and build.
+;; It stops there: no password is ever sent, no AUTHENTICATE message is built, nothing is read or written on the server. The same
+;; bytes are what `nmap --script smb-os-discovery` or Windows' own Explorer send at the start of every connection.
+;;
+;; Transport: TCP 445, "direct hosting" -- each message has a 4-byte NetBIOS session header (0x00 + 24-bit big-endian length).
+;; The host moves bytes exactly as for RFB / SSH (nk_mem.prn):
+;;     write 48 random bytes at nk-txt-addr (client GUID 16 + preauth salt 32); nk-smb-begin -> OUT holds NEGOTIATE
+;;     socket bytes -> p = nk-in-reserve(); write n bytes at p; nk-smb-feed(n); OUT non-empty -> send it; nk-out-clear()
+;;     nk-smb-phase = 3 -> done: close the socket and show the text at nk-smb-report-addr (or read the fields one by one)
+;;
+;; Safety: every offset and length the server sends is checked against the message before a byte is read; a message over 64 KB
+;; fails the probe; strings are cut at 255 bytes. Specs: tests/netkit/smb_spec.prn (hand-built replies + a reply recorded from a
+;; real Samba 4.19 server).
+;;
+;; Memory: SMB region 0x270000 (16 KB): +0 server GUID (16) | +64 64-bit scratch | +256 six name slots x 256 B | +4096 REPORT 8 KB.
+;; G words 224..255 belong to this file.
+
+(defn smb-base [] : I32 2555904)           ; 0x270000
+(defn smb-guid [] : I32 2555904)
+(defn smb-w64 [] : I32 2555968)            ; +64: four 16-bit limbs as I32 words (little limb first)
+(defn smb-names [] : I32 2556160)          ; +256
+(defn smb-report [] : I32 2560000)         ; +4096
+(defn smb-report-cap [] : I32 8191)
+
+(defn g-smb-state [] : I32 224)
+(defn g-smb-dialect [] : I32 225)
+(defn g-smb-secmode [] : I32 226)
+(defn g-smb-caps [] : I32 227)
+(defn g-smb-cipher [] : I32 228)           ; -1 = none chosen / not offered
+(defn g-smb-sigalg [] : I32 229)           ; -1 = implied by the dialect
+(defn g-smb-time-lo [] : I32 230)          ; server SystemTime, FILETIME
+(defn g-smb-time-hi [] : I32 231)
+(defn g-smb-nflags [] : I32 232)           ; NTLM challenge flags
+(defn g-smb-hasver [] : I32 233)
+(defn g-smb-vmaj [] : I32 234)
+(defn g-smb-vmin [] : I32 235)
+(defn g-smb-vbuild [] : I32 236)
+(defn g-smb-vrev [] : I32 237)
+(defn g-smb-status [] : I32 238)           ; the NT status of the last reply (for failure text)
+(defn g-smb-rlen [] : I32 239)             ; bytes in REPORT
+(defn g-smb-ts-lo [] : I32 240)            ; NTLM target-info timestamp
+(defn g-smb-ts-hi [] : I32 241)
+(defn g-smb-maxrd [] : I32 242)
+(defn g-smb-maxwr [] : I32 243)
+
+;; states
+(defn smbs-idle [] : I32 0)
+(defn smbs-negotiate [] : I32 1)
+(defn smbs-session [] : I32 2)
+(defn smbs-done [] : I32 90)
+(defn smbs-failed [] : I32 99)
+
+;; name slots
+(defn sn-target [] : I32 0)
+(defn sn-nb-computer [] : I32 1)
+(defn sn-nb-domain [] : I32 2)
+(defn sn-dns-computer [] : I32 3)
+(defn sn-dns-domain [] : I32 4)
+(defn sn-dns-tree [] : I32 5)
+(defn smb-name [(k : I32)] : I32 (+ (smb-names) (shl k 8)))
+
+;; message codes 24.. (nk_mem.prn's nk-msg-text-addr has the words)
+(defn smb-fail! [(kind : I32) (msg : I32)] : Unit
+  (do (gi! (g-err-kind) kind) (gi! (g-err-msg) msg) (gi! (g-smb-state) (smbs-failed))))
+
+;; ---- little-endian bytes ---------------------------------------------------------------------------------------------------------
+(defn le16 [(a : I32)] : I32 (bit-or (load8 a) (shl (load8 (+ a 1)) 8)))
+(defn put16le! [(v : I32)] : Unit (do (put8! v) (put8! (shr v 8))))
+(defn put32le! [(v : I32)] : Unit (do (put8! v) (put8! (shr v 8)) (put8! (shr v 16)) (put8! (ushr v 24))))
+(defn put-zeros! [(n : I32)] : Unit (dotimes [i n] (put8! 0)))
+;; OUT bytes from a hex literal (fixed templates)
+(defn put-hex! [(h : String)] : Unit
+  (let [a (str-addr h)]
+    (loop [i 0]
+      (when (not (= (load8 (+ a i)) 0))
+        (put8! (bit-or (shl (smb-hexval (load8 (+ a i))) 4) (smb-hexval (load8 (+ a (+ i 1))))))
+        (recur (+ i 2))))))
+(defn smb-hexval [(c : I32)] : I32
+  (cond (and (>= c 48) (<= c 57)) (- c 48) (and (>= c 97) (<= c 102)) (- c 87) (and (>= c 65) (<= c 70)) (- c 55) :else 0))
+
+;; the 64-byte SMB2 header of a request (credit charge 1, credits asked 31, no session yet)
+(defn smb-hdr! [(cmd : I32) (mid : I32)] : Unit
+  (do (put8! 254) (put8! 83) (put8! 77) (put8! 66)       ; 0xFE 'S' 'M' 'B'
+      (put16le! 64) (put16le! 1) (put32le! 0)            ; StructureSize, CreditCharge, Status
+      (put16le! cmd) (put16le! 31) (put32le! 0) (put32le! 0) ; Command, CreditRequest, Flags, NextCommand
+      (put32le! mid) (put32le! 0)                        ; MessageId (64-bit)
+      (put32le! 65279) (put32le! 0)                      ; ProcessId 0xFEFF, TreeId
+      (put-zeros! 8) (put-zeros! 16)))                   ; SessionId, Signature
+
+;; NEGOTIATE: 64 header + 36 body + 5 dialects (10) + 2 pad + contexts at 112: preauth (46) pad 2, encryption (18) pad 6, signing (16)
+(defn smb-negotiate-len [] : I32 200)
+(defn smb-send-negotiate! [] : Unit
+  (let [rnd (txt-base)]
+    (do (put8! 0) (put8! 0) (put8! 0) (put8! (smb-negotiate-len))
+        (smb-hdr! 0 0)
+        (put16le! 36) (put16le! 5) (put16le! 1) (put16le! 0)  ; StructureSize, DialectCount, SecurityMode = signing enabled
+        (put32le! 0)                                         ; Capabilities: none asked for
+        (dotimes [i 16] (put8! (load8 (+ rnd i))))           ; ClientGuid
+        (put32le! 112) (put16le! 3) (put16le! 0)             ; NegotiateContextOffset / Count
+        (put16le! 514) (put16le! 528) (put16le! 768) (put16le! 770) (put16le! 785) ; 2.0.2 2.1 3.0 3.0.2 3.1.1
+        (put16le! 0)
+        ;; SMB2_PREAUTH_INTEGRITY_CAPABILITIES: 1 hash (SHA-512), 32-byte salt
+        (put16le! 1) (put16le! 38) (put32le! 0) (put16le! 1) (put16le! 32) (put16le! 1)
+        (dotimes [i 32] (put8! (load8 (+ rnd (+ 16 i)))))
+        (put16le! 0)
+        ;; SMB2_ENCRYPTION_CAPABILITIES: AES-256-GCM, AES-128-GCM, AES-256-CCM, AES-128-CCM
+        (put16le! 2) (put16le! 10) (put32le! 0) (put16le! 4) (put16le! 4) (put16le! 2) (put16le! 3) (put16le! 1)
+        (put-zeros! 6)
+        ;; SMB2_SIGNING_CAPABILITIES: AES-GMAC, AES-CMAC, HMAC-SHA256
+        (put16le! 8) (put16le! 8) (put32le! 0) (put16le! 3) (put16le! 2) (put16le! 1) (put16le! 0))))
+
+;; SESSION_SETUP: 64 header + 24 body + the 74-byte SPNEGO NegTokenInit around a 40-byte NTLMSSP NEGOTIATE (flags 0xE2088297:
+;; unicode, request target, sign, seal, NTLM, always sign, extended session security, target info, version, 128, key exch, 56)
+(defn smb-send-session! [] : Unit
+  (do (put8! 0) (put8! 0) (put8! 0) (put8! 162)
+      (smb-hdr! 1 1)
+      (put16le! 25) (put8! 0) (put8! 1) (put32le! 0) (put32le! 0) ; StructureSize, Flags, SecurityMode, Capabilities, Channel
+      (put16le! 88) (put16le! 74) (put-zeros! 8)                  ; SecurityBuffer offset/length, PreviousSessionId
+      (put-hex! "604806062b0601050502a03e303ca00e300c060a2b06010401823702020aa22a0428")
+      (put-hex! "4e544c4d5353500001000000978208e2000000000000000000000000000000000000000000000000")))
+
+(defn nk-smb-begin [] : Unit
+  (do (nk-reset-common!)
+      (dotimes [k 20] (gi! (+ 224 k) 0))
+      (gi! (g-smb-cipher) -1) (gi! (g-smb-sigalg) -1)
+      (zero-mem! (smb-base) 12288)
+      (smb-send-negotiate!)
+      (gi! (g-smb-state) (smbs-negotiate))))
+
+;; ---- replies -----------------------------------------------------------------------------------------------------------------------
+;; m = the SMB2 message (header first), n its length
+(defn smb2? [(m : I32) (n : I32)] : Bool
+  (and (>= n 64) (and (= (load8 m) 254) (and (= (load8 (+ m 1)) 83) (and (= (load8 (+ m 2)) 77) (= (load8 (+ m 3)) 66))))))
+(defn smb1? [(m : I32) (n : I32)] : Bool
+  (and (>= n 4) (and (= (load8 m) 255) (and (= (load8 (+ m 1)) 83) (and (= (load8 (+ m 2)) 77) (= (load8 (+ m 3)) 66))))))
+
+;; the negotiate contexts of a 3.1.1 reply: offset from the header, count; each is 8-aligned
+(defn smb-contexts! [(m : I32) (n : I32) (off : I32) (cnt : I32)] : Unit
+  (loop [p off k 0]
+    (when (and (< k cnt) (<= (+ p 8) n))
+      (let [ty (le16 (+ m p)) dl (le16 (+ m (+ p 2))) d (+ m (+ p 8))]
+        (when (<= (+ (+ p 8) dl) n)
+          (when (and (= ty 2) (>= dl 4)) (when (>= (le16 d) 1) (gi! (g-smb-cipher) (le16 (+ d 2)))))
+          (when (and (= ty 8) (>= dl 4)) (when (>= (le16 d) 1) (gi! (g-smb-sigalg) (le16 (+ d 2)))))
+          (recur (bit-and (+ (+ p 8) (+ dl 7)) -8) (+ k 1)))))))
+
+(defn smb-on-negotiate! [(m : I32) (n : I32)] : Unit
+  (let [st (load32 (+ m 8)) b (+ m 64)]
+    (do (gi! (g-smb-status) st)
+        (cond
+          (not (= (le16 (+ m 12)) 0)) (smb-fail! (ek-protocol) 26)
+          (not (= st 0)) (smb-fail! (ek-protocol) 26)
+          (< n 128) (smb-fail! (ek-protocol) 26)          ; header + the 64 fixed body bytes
+          (not (= (le16 b) 65)) (smb-fail! (ek-protocol) 26)
+          :else
+          (let [dialect (le16 (+ b 4))]
+            (do (gi! (g-smb-dialect) dialect)
+                (gi! (g-smb-secmode) (le16 (+ b 2)))
+                (dotimes [i 16] (store8! (+ (smb-guid) i) (load8 (+ b (+ 8 i)))))
+                (gi! (g-smb-caps) (load32 (+ b 24)))
+                (gi! (g-smb-maxrd) (load32 (+ b 32)))
+                (gi! (g-smb-maxwr) (load32 (+ b 36)))
+                (gi! (g-smb-time-lo) (load32 (+ b 40)))
+                (gi! (g-smb-time-hi) (load32 (+ b 44)))
+                (when (= dialect 785) (smb-contexts! m n (load32 (+ b 60)) (le16 (+ b 6))))
+                (if (= dialect 767)
+                    (smb-fail! (ek-protocol) 26)         ; 0x02FF: only for SMB1-style multi-protocol negotiates
+                    (do (smb-send-session!) (gi! (g-smb-state) (smbs-session))))))))))
+
+;; UTF-16LE (n bytes at a) -> UTF-8, NUL-terminated, at most 255 bytes, into slot k. Surrogate pairs become "?".
+(defn smb-utf16! [(k : I32) (a : I32) (n : I32)] : Unit
+  (let [d (smb-name k)]
+    (loop [i 0 o 0]
+      (if (or (> (+ i 2) n) (> o 251))
+          (store8! (+ d o) 0)
+          (let [c (le16 (+ a i))]
+            (cond
+              (< c 128) (do (store8! (+ d o) c) (recur (+ i 2) (+ o 1)))
+              (< c 2048) (do (store8! (+ d o) (bit-or 192 (shr c 6))) (store8! (+ d (+ o 1)) (bit-or 128 (bit-and c 63)))
+                             (recur (+ i 2) (+ o 2)))
+              (and (>= c 55296) (< c 57344)) (do (store8! (+ d o) 63) (recur (+ i 2) (+ o 1)))
+              :else (do (store8! (+ d o) (bit-or 224 (shr c 12))) (store8! (+ d (+ o 1)) (bit-or 128 (bit-and (shr c 6) 63)))
+                        (store8! (+ d (+ o 2)) (bit-or 128 (bit-and c 63))) (recur (+ i 2) (+ o 3)))))))))
+
+;; AV pairs of the challenge's target info (t = start, n = length)
+(defn smb-avpairs! [(t : I32) (n : I32)] : Unit
+  (loop [p 0]
+    (when (<= (+ p 4) n)
+      (let [id (le16 (+ t p)) len (le16 (+ t (+ p 2))) v (+ t (+ p 4))]
+        (when (and (not (= id 0)) (<= (+ (+ p 4) len) n))
+          (when (and (>= id 1) (<= id 5)) (smb-utf16! id v len))
+          (when (and (= id 7) (= len 8)) (do (gi! (g-smb-ts-lo) (load32 v)) (gi! (g-smb-ts-hi) (load32 (+ v 4)))))
+          (recur (+ (+ p 4) len)))))))
+
+;; find "NTLMSSP\0" followed by message type 2 inside [a, a+n); -1 if absent
+(defn smb-find-challenge [(a : I32) (n : I32)] : I32
+  (loop [i 0]
+    (cond (> (+ i 12) n) -1
+          (and (= (load32 (+ a i)) 1296847950) (and (= (load32 (+ a (+ i 4))) 5264211) (= (load32 (+ a (+ i 8))) 2))) i
+          :else (recur (+ i 1)))))
+
+;; the NTLM CHALLENGE at c, with len bytes available
+(defn smb-on-challenge! [(c : I32) (len : I32)] : Unit
+  (if (< len 48)
+      (smb-fail! (ek-protocol) 27)
+      (let [tn (le16 (+ c 12)) to (load32 (+ c 16)) fl (load32 (+ c 20)) il (le16 (+ c 40)) io (load32 (+ c 44))]
+        (do (gi! (g-smb-nflags) fl)
+            (when (and (>= to 0) (and (<= to len) (<= tn (- len to)))) (smb-utf16! (sn-target) (+ c to) tn))
+            (when (and (>= io 0) (and (<= io len) (<= il (- len io)))) (smb-avpairs! (+ c io) il))
+            (when (and (not (= (bit-and fl 33554432) 0)) (>= len 56))
+              (do (gi! (g-smb-hasver) 1) (gi! (g-smb-vmaj) (load8 (+ c 48))) (gi! (g-smb-vmin) (load8 (+ c 49)))
+                  (gi! (g-smb-vbuild) (le16 (+ c 50))) (gi! (g-smb-vrev) (load8 (+ c 55)))))
+            (smb-build-report!)
+            (gi! (g-smb-state) (smbs-done))))))
+
+(defn smb-on-session! [(m : I32) (n : I32)] : Unit
+  (let [st (load32 (+ m 8)) b (+ m 64)]
+    (do (gi! (g-smb-status) st)
+        (if (or (not (= st -1073741802)) (< n 72))          ; STATUS_MORE_PROCESSING_REQUIRED 0xC0000016
+            (smb-fail! (ek-protocol) 27)
+            (let [off (le16 (+ b 4)) sl (le16 (+ b 6))]
+              (if (or (< off 72) (> (+ off sl) n))
+                  (smb-fail! (ek-protocol) 27)
+                  (let [i (smb-find-challenge (+ m off) sl)]
+                    (if (< i 0) (smb-fail! (ek-protocol) 27) (smb-on-challenge! (+ m (+ off i)) (- sl i))))))))))
+
+;; one NetBIOS session frame at the read cursor: 1 = consumed something, 0 = need more bytes
+(defn smb-step [] : I32
+  (if (< (avail) 4) 0
+      (let [ty (pk8 0) len (bit-or (shl (pk8 1) 16) (pk16 2))]
+        (cond
+          (= ty 133) (do (consume! 4) 1)                     ; keep-alive
+          (not (= ty 0)) (do (smb-fail! (ek-protocol) 24) 0)
+          (> len 65536) (do (smb-fail! (ek-protocol) 24) 0)
+          (< (avail) (+ 4 len)) 0
+          :else
+          (let [m (+ (in-base) (+ (gi (g-in-rd)) 4))]
+            (do (consume! (+ 4 len))
+                (cond
+                  (smb1? m len) (smb-fail! (ek-protocol) 25)
+                  (not (smb2? m len)) (smb-fail! (ek-protocol) 24)
+                  (not (= (bit-and (load32 (+ m 16)) 1) 1)) unit  ; not a response: ignore
+                  (= (load32 (+ m 8)) 259) unit                    ; STATUS_PENDING interim reply: the real one follows
+                  (= (gi (g-smb-state)) (smbs-negotiate))
+                  (if (= (le16 (+ m 12)) 0) (smb-on-negotiate! m len) (smb-fail! (ek-protocol) 24))
+                  (= (gi (g-smb-state)) (smbs-session))
+                  (if (= (le16 (+ m 12)) 1) (smb-on-session! m len) (smb-fail! (ek-protocol) 24))
+                  :else unit)
+                1))))))
+
+(defn nk-smb-feed [(n : I32)] : Unit
+  (let [k (min-i n (nk-in-space))]
+    (do (gi! (g-in-used) (+ (gi (g-in-used)) k))
+        (gi! (g-bytes-in) (+ (gi (g-bytes-in)) k))
+        (loop [go 1]
+          (when (= go 1)
+            (recur (if (< (gi (g-smb-state)) 90) (smb-step) 0))))
+        (when (>= (gi (g-smb-state)) 90) (gi! (g-in-rd) (gi (g-in-used)))))))
+
+;; the server hung up before the probe finished
+(defn nk-smb-closed [] : Unit
+  (when (< (gi (g-smb-state)) 90) (smb-fail! (ek-protocol) (if (= (gi (g-smb-state)) (smbs-negotiate)) 28 27))))
+
+;; 0 idle, 1 negotiating, 2 asking for the challenge, 3 done, 9 failed
+(defn nk-smb-phase [] : I32
+  (let [s (gi (g-smb-state))] (cond (= s 0) 0 (= s 1) 1 (= s 2) 2 (= s 90) 3 :else 9)))
+(defn nk-smb-dialect [] : I32 (gi (g-smb-dialect)))
+(defn nk-smb-secmode [] : I32 (gi (g-smb-secmode)))
+(defn nk-smb-caps [] : I32 (gi (g-smb-caps)))
+(defn nk-smb-cipher [] : I32 (gi (g-smb-cipher)))
+(defn nk-smb-sigalg [] : I32 (gi (g-smb-sigalg)))
+(defn nk-smb-has-version [] : I32 (gi (g-smb-hasver)))
+(defn nk-smb-ver-major [] : I32 (gi (g-smb-vmaj)))
+(defn nk-smb-ver-minor [] : I32 (gi (g-smb-vmin)))
+(defn nk-smb-ver-build [] : I32 (gi (g-smb-vbuild)))
+(defn nk-smb-status [] : I32 (gi (g-smb-status)))
+(defn nk-smb-name-addr [(k : I32)] : I32 (smb-name k))
+(defn nk-smb-guid-addr [] : I32 (smb-guid))
+(defn nk-smb-report-addr [] : I32 (smb-report))
+(defn nk-smb-report-len [] : I32 (gi (g-smb-rlen)))
+
+;; ---- what it means (the words every front end shows) -------------------------------------------------------------------------------
+(defn nk-smb-dialect-text-addr [(d : I32)] : I32
+  (case d 514 (str-addr "2.0.2") 528 (str-addr "2.1") 768 (str-addr "3.0") 770 (str-addr "3.0.2") 785 (str-addr "3.1.1")
+    (str-addr "unknown")))
+(defn nk-smb-cipher-text-addr [(c : I32)] : I32
+  (case c 1 (str-addr "AES-128-CCM") 2 (str-addr "AES-128-GCM") 3 (str-addr "AES-256-CCM") 4 (str-addr "AES-256-GCM")
+    (str-addr "none")))
+(defn nk-smb-sigalg-text-addr [(s : I32)] : I32
+  (case s 0 (str-addr "HMAC-SHA256") 1 (str-addr "AES-CMAC") 2 (str-addr "AES-GMAC") (str-addr "unknown")))
+
+;; the Windows release an NTLM version (major.minor build) belongs to. Samba and other non-Windows servers send a made-up
+;; version (Samba 4 says 6.1 build 0), so the report always shows the raw numbers too.
+(defn nk-smb-windows-text-addr [(maj : I32) (mi : I32) (b : I32)] : I32
+  (cond
+    (and (= maj 10) (= mi 0))
+    (cond (= b 10240) (str-addr "Windows 10 1507") (= b 10586) (str-addr "Windows 10 1511")
+          (= b 14393) (str-addr "Windows 10 1607 / Server 2016") (= b 15063) (str-addr "Windows 10 1703")
+          (= b 16299) (str-addr "Windows 10 1709") (= b 17134) (str-addr "Windows 10 1803")
+          (= b 17763) (str-addr "Windows 10 1809 / Server 2019") (= b 18362) (str-addr "Windows 10 1903")
+          (= b 18363) (str-addr "Windows 10 1909") (= b 19041) (str-addr "Windows 10 2004")
+          (= b 19042) (str-addr "Windows 10 20H2") (= b 19043) (str-addr "Windows 10 21H1")
+          (= b 19044) (str-addr "Windows 10 21H2") (= b 19045) (str-addr "Windows 10 22H2")
+          (= b 20348) (str-addr "Windows Server 2022") (= b 22000) (str-addr "Windows 11 21H2")
+          (= b 22621) (str-addr "Windows 11 22H2") (= b 22631) (str-addr "Windows 11 23H2")
+          (= b 26100) (str-addr "Windows 11 24H2 / Server 2025")
+          (> b 22000) (str-addr "Windows 11 or newer")
+          :else (str-addr "Windows 10 / Server"))
+    (and (= maj 6) (= mi 3)) (str-addr "Windows 8.1 / Server 2012 R2")
+    (and (= maj 6) (= mi 2)) (str-addr "Windows 8 / Server 2012")
+    (and (= maj 6) (= mi 1)) (if (= b 0) (str-addr "not Windows: Samba or another non-Windows server") (str-addr "Windows 7 / Server 2008 R2"))
+    (and (= maj 6) (= mi 0)) (str-addr "Windows Vista / Server 2008")
+    (= maj 5) (str-addr "Windows XP / Server 2003")
+    :else (str-addr "unknown")))
+
+;; ---- FILETIME (100 ns since 1601, unsigned 64-bit) -> Unix seconds, with I32 only ---------------------------------------------
+(defn w64! [(lo : I32) (hi : I32)] : Unit
+  (do (store32! (smb-w64) (bit-and lo 65535)) (store32! (+ (smb-w64) 4) (ushr lo 16))
+      (store32! (+ (smb-w64) 8) (bit-and hi 65535)) (store32! (+ (smb-w64) 12) (ushr hi 16))))
+(defn w64-limb [(i : I32)] : I32 (load32 (+ (smb-w64) (shl i 2))))
+;; divide the 64-bit value by d (d < 16384), in place
+(defn w64-div! [(d : I32)] : Unit
+  (loop [i 3 r 0]
+    (when (>= i 0)
+      (let [x (+ (shl r 16) (w64-limb i))]
+        (do (store32! (+ (smb-w64) (shl i 2)) (/ x d)) (recur (- i 1) (- x (* (/ x d) d))))))))
+;; subtract 11644473600 (seconds 1601 -> 1970) = limbs 0x0000 0x0002 0xB610 0x9100; 1 if the result is >= 0
+(defn w64-sub-epoch! [] : I32
+  (let [s0 (- (w64-limb 0) 37120)
+        b0 (if (< s0 0) 1 0)
+        s1 (- (- (w64-limb 1) 46608) b0)
+        b1 (if (< s1 0) 1 0)
+        s2 (- (- (w64-limb 2) 2) b1)
+        b2 (if (< s2 0) 1 0)
+        s3 (- (w64-limb 3) b2)]
+    (do (store32! (smb-w64) (bit-and s0 65535)) (store32! (+ (smb-w64) 4) (bit-and s1 65535))
+        (store32! (+ (smb-w64) 8) (bit-and s2 65535)) (store32! (+ (smb-w64) 12) (bit-and s3 65535))
+        (if (< s3 0) 0 1))))
+;; Unix seconds for a FILETIME, or -1 when it is before 1970 or after 2038 (or zero: "not given")
+(defn nk-smb-filetime-unix [(lo : I32) (hi : I32)] : I32
+  (if (and (= lo 0) (= hi 0)) -1
+      (do (w64! lo hi) (w64-div! 10000) (w64-div! 1000)
+          (if (= (w64-sub-epoch!) 0) -1
+              (if (or (not (= (w64-limb 3) 0)) (or (not (= (w64-limb 2) 0)) (>= (w64-limb 1) 32768))) -1
+                  (bit-or (shl (w64-limb 1) 16) (w64-limb 0)))))))
+
+;; ---- the report ---------------------------------------------------------------------------------------------------------------------
+(defn rp! [(c : I32)] : Unit
+  (let [n (gi (g-smb-rlen))]
+    (when (< n (smb-report-cap)) (store8! (+ (smb-report) n) c) (store8! (+ (smb-report) (+ n 1)) 0) (gi! (g-smb-rlen) (+ n 1)))))
+(defn rp-cstr! [(a : I32)] : Unit (loop [i 0] (when (not (= (load8 (+ a i)) 0)) (rp! (load8 (+ a i))) (recur (+ i 1)))))
+(defn rp-str! [(s : String)] : Unit (rp-cstr! (str-addr s)))
+(defn rp-int! [(v : I32)] : Unit
+  (if (< v 10) (rp! (+ 48 v)) (do (rp-int! (/ v 10)) (rp! (+ 48 (mod v 10))))))
+(defn rp-uint! [(v : I32)] : Unit
+  (if (< v 0) (do (rp-int! (/ (ushr v 1) 5)) (rp! (+ 48 (- v (* (* (/ (ushr v 1) 5) 5) 2))))) (rp-int! v)))
+(defn rp-2! [(v : I32)] : Unit (do (rp! (+ 48 (/ v 10))) (rp! (+ 48 (mod v 10)))))
+(defn rp-hexdig! [(v : I32)] : Unit (rp! (if (< v 10) (+ 48 v) (+ 87 v))))
+(defn rp-hex8! [(v : I32)] : Unit (do (rp-hexdig! (shr v 4)) (rp-hexdig! (bit-and v 15))))
+(defn rp-hex32! [(v : I32)] : Unit (dotimes [i 4] (rp-hex8! (bit-and (ushr v (- 24 (* i 8))) 255))))
+(defn rp-nl! [] : Unit (rp! 10))
+(defn rp-guid-byte! [(i : I32)] : Unit (rp-hex8! (load8 (+ (smb-guid) i))))
+
+;; a GUID the way Windows prints it (first three fields little-endian)
+(defn rp-guid! [] : Unit
+  (do (rp-guid-byte! 3) (rp-guid-byte! 2) (rp-guid-byte! 1) (rp-guid-byte! 0) (rp! 45)
+      (rp-guid-byte! 5) (rp-guid-byte! 4) (rp! 45) (rp-guid-byte! 7) (rp-guid-byte! 6) (rp! 45)
+      (rp-guid-byte! 8) (rp-guid-byte! 9) (rp! 45)
+      (dotimes [i 6] (rp-guid-byte! (+ 10 i)))))
+
+;; YYYY-MM-DD HH:MM:SS UTC for Unix seconds t >= 0 (days -> civil date, Howard Hinnant's algorithm)
+(defn rp-date! [(t : I32)] : Unit
+  (let [days (/ t 86400) sod (mod t 86400)
+        z (+ days 719468) era (/ z 146097) doe (- z (* era 146097))
+        yoe (/ (- (- (+ doe (/ doe 36524)) (/ doe 1460)) (/ doe 146096)) 365)
+        doy (- doe (- (+ (* 365 yoe) (/ yoe 4)) (/ yoe 100)))
+        mp (/ (+ (* 5 doy) 2) 153)
+        d (+ (- doy (/ (+ (* 153 mp) 2) 5)) 1)
+        m (if (< mp 10) (+ mp 3) (- mp 9))
+        y (+ (+ yoe (* era 400)) (if (<= m 2) 1 0))]
+    (do (rp-int! y) (rp! 45) (rp-2! m) (rp! 45) (rp-2! d) (rp! 32)
+        (rp-2! (/ sod 3600)) (rp! 58) (rp-2! (/ (mod sod 3600) 60)) (rp! 58) (rp-2! (mod sod 60)) (rp-str! " UTC"))))
+
+;; ASCII case-insensitive equality of two NUL-terminated strings
+(defn smb-lc [(c : I32)] : I32 (if (and (>= c 65) (<= c 90)) (+ c 32) c))
+(defn smb-same-name? [(a : I32) (b : I32)] : Bool
+  (loop [i 0]
+    (cond (not (= (smb-lc (load8 (+ a i))) (smb-lc (load8 (+ b i))))) false
+          (= (load8 (+ a i)) 0) true
+          :else (recur (+ i 1)))))
+(defn smb-has-name? [(k : I32)] : Bool (not (= (load8 (smb-name k)) 0)))
+
+(defn rp-line! [(label : String) (k : I32)] : Unit
+  (when (smb-has-name? k) (rp-str! label) (rp-cstr! (smb-name k)) (rp-nl!)))
+
+(defn smb-build-report! [] : Unit
+  (let [d (gi (g-smb-dialect)) sm (gi (g-smb-secmode)) caps (gi (g-smb-caps))]
+    (do (gi! (g-smb-rlen) 0) (store8! (smb-report) 0)
+        (rp-line! "Computer name: " (sn-nb-computer))
+        (rp-line! "DNS name: " (sn-dns-computer))
+        (when (smb-has-name? (sn-nb-domain))
+          (if (and (smb-has-name? (sn-nb-computer)) (smb-same-name? (smb-name (sn-nb-domain)) (smb-name (sn-nb-computer))))
+              (rp-str! "Not in a domain: it signs people in with its own local accounts\n")
+              (do (rp-str! "Workgroup / domain: ") (rp-cstr! (smb-name (sn-nb-domain))) (rp-nl!))))
+        (when (and (smb-has-name? (sn-dns-domain)) (not (smb-same-name? (smb-name (sn-dns-domain)) (smb-name (sn-dns-computer)))))
+          (rp-str! "DNS domain: ") (rp-cstr! (smb-name (sn-dns-domain))) (rp-nl!))
+        (when (= (gi (g-smb-hasver)) 1)
+          (rp-str! "System: ") (rp-cstr! (nk-smb-windows-text-addr (gi (g-smb-vmaj)) (gi (g-smb-vmin)) (gi (g-smb-vbuild))))
+          (rp-str! " (version ") (rp-int! (gi (g-smb-vmaj))) (rp! 46) (rp-int! (gi (g-smb-vmin)))
+          (rp-str! " build ") (rp-int! (gi (g-smb-vbuild))) (rp-str! ")\n"))
+        (rp-str! "File sharing: SMB ") (rp-cstr! (nk-smb-dialect-text-addr d)) (rp-nl!)
+        (rp-str! (if (= (bit-and sm 2) 2) "Signing: required\n"
+                     (if (= (bit-and sm 1) 1) "Signing: offered, not required (normal for a PC that is not a domain controller)\n"
+                         "Signing: off\n")))
+        (when (>= (gi (g-smb-sigalg)) 0)
+          (rp-str! "Signing algorithm: ") (rp-cstr! (nk-smb-sigalg-text-addr (gi (g-smb-sigalg)))) (rp-nl!))
+        (if (> (gi (g-smb-cipher)) 0)
+            (do (rp-str! "Encryption: available (") (rp-cstr! (nk-smb-cipher-text-addr (gi (g-smb-cipher)))) (rp-str! ")\n"))
+            (if (= (bit-and caps 64) 64) (rp-str! "Encryption: available (AES-128-CCM)\n")
+                (rp-str! "Encryption: not offered\n")))
+        (let [t (nk-smb-filetime-unix (gi (g-smb-time-lo)) (gi (g-smb-time-hi)))]
+          (when (>= t 0) (rp-str! "Its clock: ") (rp-date! t) (rp-nl!)))
+        (rp-str! "Server ID: ") (rp-guid!) (rp-nl!)
+        (rp-str! "Largest read / write: ") (rp-uint! (gi (g-smb-maxrd))) (rp-str! " / ") (rp-uint! (gi (g-smb-maxwr)))
+        (rp-str! " bytes\n")
+        (rp-str! "Nothing was logged in to: browsing shares or copying files needs an account on this computer.\n"))))

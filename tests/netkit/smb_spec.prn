@@ -1,0 +1,335 @@
+;; tests/netkit/smb_spec.prn -- SCARAB/LADYBUG suite for stdlib/netkit/nk_smb.prn, the credential-free SMB2 probe (KIT-SMB S0).
+;; Three sources of server bytes:
+;;   * a reply RECORDED from a real Samba 4.19 server (file 0, tests/netkit/vectors/smb_samba419.hex, written by
+;;     scripts/netkit_smb_probe.sh <host> <port> <trace>; the run that made it is in the CHANGELOG) -- the real-world check;
+;;   * replies built here from MS-SMB2 2.2.4 / 2.2.6 and MS-NLMP 2.2.1.2 / 2.2.2.1 -- the Windows shapes Samba does not produce
+;;     (a real NTLM version, an encryption context, a domain member, signing required) and every way a reply can be wrong;
+;;   * the exact request bytes, checked field by field against the same documents.
+;; Every good scenario is also fed one byte at a time: the parser must not care how TCP slices the stream.
+;; Run: scripts/scarab_wasm.sh tests/netkit/smb_spec.prn --modules stdlib/netkit/MODULES --file tests/netkit/vectors/smb_samba419.hex
+
+;; ---- memory the spec uses: scratch + 0 words | +0x10000 BUILD (the server's bytes) | +0x20000 CH (an NTLM challenge being built)
+;;      | +0x30000 TRACE (file 0 decoded)
+(defn sb-w [(k : I32)] : I32 (load32 (+ (sc-scratch) (* 4 k))))
+(defn sb-w! [(k : I32) (v : I32)] : Unit (store32! (+ (sc-scratch) (* 4 k)) v))
+(defn sb-build [] : I32 (+ (sc-scratch) 65536))
+(defn sb-ch [] : I32 (+ (sc-scratch) 131072))
+(defn sb-trace [] : I32 (+ (sc-scratch) 196608))
+(defn sb-out [] : I32 524288)            ; OUT (0x80000)
+(defn sb-txt [] : I32 262144)            ; TXT (0x40000)
+
+;; ---- byte writers: word 0 = where (an absolute address), word 1 = how many written ---------------------------------------------
+(defn sb-at! [(a : I32)] : Unit (do (sb-w! 0 a) (sb-w! 1 0)))
+(defn sb-len [] : I32 (sb-w 1))
+(defn sb-b! [(v : I32)] : Unit (do (store8! (+ (sb-w 0) (sb-w 1)) (bit-and v 255)) (sb-w! 1 (+ (sb-w 1) 1))))
+(defn sb-16! [(v : I32)] : Unit (do (sb-b! v) (sb-b! (shr v 8))))
+(defn sb-32! [(v : I32)] : Unit (do (sb-b! v) (sb-b! (shr v 8)) (sb-b! (shr v 16)) (sb-b! (ushr v 24))))
+(defn sb-zeros! [(n : I32)] : Unit (dotimes [i n] (sb-b! 0)))
+(defn sb-hexb! [(h : String)] : Unit (sb-w! 1 (+ (sb-w 1) (sc-hex! (+ (sb-w 0) (sb-w 1)) h))))
+;; an ASCII literal as UTF-16LE
+(defn sb-u16! [(s : String)] : Unit (let [a (str-addr s)] (dotimes [i (sc-strlen a)] (sb-16! (load8 (+ a i))))))
+(defn sb-pad8! [(base : I32)] : Unit (loop [] (when (not (= (bit-and (- (sb-len) base) 7) 0)) (sb-b! 0) (recur))))
+
+;; the SMB2 header of a reply: FE 'SMB', 64, credit charge 1, status, command, 1 credit, flags = SERVER_TO_REDIR
+(defn sb-hdr! [(cmd : I32) (status : I32) (mid : I32) (flags : I32)] : Unit
+  (do (sb-b! 254) (sb-b! 83) (sb-b! 77) (sb-b! 66) (sb-16! 64) (sb-16! 1) (sb-32! status) (sb-16! cmd) (sb-16! 1)
+      (sb-32! flags) (sb-32! 0) (sb-32! mid) (sb-32! 0) (sb-32! 65279) (sb-32! 0) (sb-32! 4660) (sb-32! 0) (sb-zeros! 16)))
+
+;; frames go to BUILD back to back: word 2 = bytes in BUILD; a frame's 4-byte NetBIOS header is patched when it ends (word 3 = start)
+(defn sb-reset! [] : Unit (sb-w! 2 0))
+(defn sb-frame! [] : Unit (do (sb-w! 3 (sb-w 2)) (sb-at! (+ (sb-build) (sb-w 2))) (sb-zeros! 4)))
+(defn sb-frame-end! [] : Unit
+  (let [n (- (sb-len) 4) a (+ (sb-build) (sb-w 3))]
+    (do (store8! (+ a 1) (shr n 16)) (store8! (+ a 2) (bit-and (shr n 8) 255)) (store8! (+ a 3) (bit-and n 255))
+        (sb-w! 2 (+ (sb-w 3) (sb-len))))))
+
+;; 2026-11-26 12:00:00 UTC as FILETIME
+(defn sb-time-lo [] : I32 -1449287680)
+(defn sb-time-hi [] : I32 31292829)
+
+;; a NEGOTIATE reply. cipher / sigalg < 0: that context is left out (contexts only for 3.1.1). GUID bytes 01..10.
+(defn sb-negotiate! [(status : I32) (dialect : I32) (secmode : I32) (caps : I32) (cipher : I32) (sigalg : I32)] : Unit
+  (let [n311 (= dialect 785)
+        cnt (+ 1 (+ (if (>= cipher 0) 1 0) (if (>= sigalg 0) 1 0)))]
+    (do (sb-frame!)
+        (sb-hdr! 0 status 0 1)
+        (sb-16! 65) (sb-16! secmode) (sb-16! dialect) (sb-16! (if n311 cnt 0))
+        (dotimes [i 16] (sb-b! (+ i 1)))
+        (sb-32! caps) (sb-32! 8388608) (sb-32! 8388608) (sb-32! 8388608)
+        (sb-32! (sb-time-lo)) (sb-32! (sb-time-hi)) (sb-zeros! 8)
+        (sb-16! 128) (sb-16! 0) (sb-32! (if n311 128 0))
+        (when n311
+          (sb-16! 1) (sb-16! 38) (sb-32! 0) (sb-16! 1) (sb-16! 32) (sb-16! 1) (dotimes [i 32] (sb-b! (* i 7)))
+          (when (>= cipher 0) (sb-pad8! 4) (sb-16! 2) (sb-16! 4) (sb-32! 0) (sb-16! 1) (sb-16! cipher))
+          (when (>= sigalg 0) (sb-pad8! 4) (sb-16! 8) (sb-16! 4) (sb-32! 0) (sb-16! 1) (sb-16! sigalg)))
+        (sb-frame-end!))))
+
+;; an NTLM CHALLENGE into CH; returns its length. The AV pairs: domain, computer, DNS domain, DNS computer, timestamp, EOL.
+(defn sb-challenge! [(maj : I32) (mi : I32) (build : I32) (flags : I32) (nb : String) (dom : String) (dnsc : String) (dnsd : String)] : I32
+  (let [tl (* 2 (sc-strlen (str-addr dom)))
+        il (+ (+ (+ (* 2 (sc-strlen (str-addr dom))) (* 2 (sc-strlen (str-addr nb))))
+                 (+ (* 2 (sc-strlen (str-addr dnsd))) (* 2 (sc-strlen (str-addr dnsc)))))
+              (+ (* 5 4) 12))]
+    (do (sb-at! (sb-ch))
+        (sb-hexb! "4e544c4d53535000") (sb-32! 2)
+        (sb-16! tl) (sb-16! tl) (sb-32! 56)
+        (sb-32! flags) (sb-hexb! "0123456789abcdef") (sb-zeros! 8)
+        (sb-16! il) (sb-16! il) (sb-32! (+ 56 tl))
+        (sb-b! maj) (sb-b! mi) (sb-16! build) (sb-zeros! 3) (sb-b! 15)
+        (sb-u16! dom)
+        (sb-16! 2) (sb-16! (* 2 (sc-strlen (str-addr dom)))) (sb-u16! dom)
+        (sb-16! 1) (sb-16! (* 2 (sc-strlen (str-addr nb)))) (sb-u16! nb)
+        (sb-16! 4) (sb-16! (* 2 (sc-strlen (str-addr dnsd)))) (sb-u16! dnsd)
+        (sb-16! 3) (sb-16! (* 2 (sc-strlen (str-addr dnsc)))) (sb-u16! dnsc)
+        (sb-16! 7) (sb-16! 8) (sb-32! (sb-time-lo)) (sb-32! (sb-time-hi))
+        (sb-16! 0) (sb-16! 0)
+        (sb-len))))
+
+;; a SESSION_SETUP reply carrying CH (n bytes) after 25 bytes standing in for the SPNEGO NegTokenResp wrapper
+(defn sb-session! [(status : I32) (n : I32)] : Unit
+  (do (sb-frame!)
+      (sb-hdr! 1 status 1 1)
+      (sb-16! 9) (sb-16! 0) (sb-16! 72) (sb-16! (+ n 25))
+      (sb-hexb! "a181b03081ada0030a0101a10c060a2b06010401823702020a")
+      (dotimes [i n] (sb-b! (load8 (+ (sb-ch) i))))
+      (sb-frame-end!)))
+
+(defn sb-flags [] : I32 -494238187)       ; 0xE28A8215, NEGOTIATE_VERSION set
+(defn sb-more [] : I32 -1073741802)       ; STATUS_MORE_PROCESSING_REQUIRED
+
+;; ---- delivery: reserve, write, feed. mode 0 whole, 1 a byte at a time -------------------------------------------------------------
+(defn sb-feed-at [(src : I32) (n : I32) (mode : I32)] : Unit
+  (loop [i 0]
+    (when (< i n)
+      (let [k (if (= mode 0) (- n i) 1) p (nk-in-reserve)]
+        (do (dotimes [j k] (store8! (+ p j) (load8 (+ src (+ i j)))))
+            (nk-smb-feed k)
+            (recur (+ i k)))))))
+(defn sb-send! [(mode : I32)] : Unit (sb-feed-at (sb-build) (sb-w 2) mode))
+
+;; a fresh probe with known randomness (GUID a0..af, salt b0..cf), OUT drained after the NEGOTIATE was checked or ignored
+(defn sb-begin! [] : Unit
+  (do (dotimes [i 48] (store8! (+ (sb-txt) i) (+ 160 i)))
+      (nk-smb-begin)))
+
+;; the Windows 10 22H2 workgroup PC the founder's iMac (Boot Camp) should look like
+(defn sb-imac! [] : Unit
+  (do (sb-reset!)
+      (sb-negotiate! 0 785 1 47 2 1)
+      (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "IMAC" "IMAC" "iMac" "iMac"))))
+
+(defn sb-imac-report [] : String
+  "Computer name: IMAC\nDNS name: iMac\nNot in a domain: it signs people in with its own local accounts\nSystem: Windows 10 22H2 (version 10.0 build 19045)\nFile sharing: SMB 3.1.1\nSigning: offered, not required (normal for a PC that is not a domain controller)\nSigning algorithm: AES-CMAC\nEncryption: available (AES-128-GCM)\nIts clock: 2026-11-26 12:00:00 UTC\nServer ID: 04030201-0605-0807-090a-0b0c0d0e0f10\nLargest read / write: 8388608 / 8388608 bytes\nNothing was logged in to: browsing shares or copying files needs an account on this computer.\n")
+
+;; ---- the request ---------------------------------------------------------------------------------------------------------------
+(defn sb-request-specs! [] : Unit
+  (do (sc-describe! "what it sends")
+        (sb-begin!)
+        (sc-it! "one NEGOTIATE in one NetBIOS frame: 200 bytes after a 00 00 00 c8 header")
+        (lb-equal (nk-out-len) 204) (lb-hex-equal (sb-out) 8 "000000c8fe534d42")
+        (sc-it! "header: structure size 64, credit charge 1, command NEGOTIATE (0), message id 0, not a response")
+        (lb-hex-equal (+ (sb-out) 8) 4 "40000100") (lb-hex-equal (+ (sb-out) 16) 2 "0000")
+        (lb-hex-equal (+ (sb-out) 28) 8 "0000000000000000") (lb-equal (bit-and (load8 (+ (sb-out) 20)) 1) 0)
+        (sc-it! "body: structure size 36, five dialects, signing enabled, no capabilities asked for")
+        (lb-hex-equal (+ (sb-out) 68) 12 "240005000100000000000000")
+        (sc-it! "the client GUID is the host's 16 random bytes")
+        (lb-bytes-equal (+ (sb-out) 80) (sb-txt) 16)
+        (sc-it! "three negotiate contexts at offset 112")
+        (lb-hex-equal (+ (sb-out) 96) 8 "7000000003000000")
+        (sc-it! "dialects 2.0.2, 2.1, 3.0, 3.0.2, 3.1.1, then 2 bytes of padding")
+        (lb-hex-equal (+ (sb-out) 104) 12 "020210020003020311030000")
+        (sc-it! "preauth integrity: SHA-512 with the host's 32 random salt bytes")
+        (lb-hex-equal (+ (sb-out) 116) 14 "0100260000000000010020000100")
+        (lb-bytes-equal (+ (sb-out) 130) (+ (sb-txt) 16) 32)
+        (sc-it! "encryption: AES-256-GCM, AES-128-GCM, AES-256-CCM, AES-128-CCM")
+        (lb-hex-equal (+ (sb-out) 164) 18 "02000a000000000004000400020003000100")
+        (sc-it! "signing: AES-GMAC, AES-CMAC, HMAC-SHA256")
+        (lb-hex-equal (+ (sb-out) 188) 16 "08000800000000000300020001000000")
+        (sc-it! "it is negotiating") (lb-equal (nk-smb-phase) 1)
+        (nk-out-clear)
+        (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-send! 0)
+        (sc-it! "after the NEGOTIATE reply: one SESSION_SETUP, 162 bytes, message id 1")
+        (lb-equal (nk-out-len) 166) (lb-hex-equal (sb-out) 8 "000000a2fe534d42")
+        (lb-hex-equal (+ (sb-out) 16) 2 "0100") (lb-equal (load8 (+ (sb-out) 28)) 1)
+        (sc-it! "body: structure size 25, signing enabled, the security buffer at 88, 74 bytes")
+        (lb-hex-equal (+ (sb-out) 68) 24 "19000001000000000000000058004a000000000000000000")
+        (sc-it! "the buffer is SPNEGO NegTokenInit offering NTLMSSP, around an NTLM NEGOTIATE (type 1) with no name and no password")
+        (lb-hex-equal (+ (sb-out) 92) 74 "604806062b0601050502a03e303ca00e300c060a2b06010401823702020aa22a04284e544c4d5353500001000000978208e2000000000000000000000000000000000000000000000000")
+        (sc-it! "asking for the challenge") (lb-equal (nk-smb-phase) 2)
+        (nk-out-clear)
+        (sb-reset!) (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "IMAC" "IMAC" "iMac" "iMac")) (sb-send! 0)
+        (sc-it! "after the challenge it sends NOTHING: no AUTHENTICATE, no password, ever") (lb-equal (nk-out-len) 0)
+        (lb-equal (nk-smb-phase) 3)
+        (sc-it! "and more bytes after that change nothing") (sb-send! 0) (lb-equal (nk-out-len) 0) (lb-equal (nk-smb-phase) 3)
+      (sc-end!)))
+
+;; ---- the real Samba ------------------------------------------------------------------------------------------------------------
+;; file 0 as hex text -> TRACE; returns the byte count
+(defn sb-load-trace! [] : I32
+  (let [a (sc-file-addr 0) n (sc-file-len 0)]
+    (loop [i 0 o 0]
+      (if (>= (+ i 1) n) o
+          (let [h (sc-hexval (load8 (+ a i)))]
+            (if (< h 0) (recur (+ i 1) o)
+                (do (store8! (+ (sb-trace) o) (bit-or (shl h 4) (sc-hexval (load8 (+ a (+ i 1))))))
+                    (recur (+ i 2) (+ o 1)))))))))
+
+(defn sb-samba-report [] : String
+  "Computer name: SMBLAB\nDNS name: 234db6923fd0\nNot in a domain: it signs people in with its own local accounts\nSystem: not Windows: Samba or another non-Windows server (version 6.1 build 0)\nFile sharing: SMB 3.1.1\nSigning: offered, not required (normal for a PC that is not a domain controller)\nSigning algorithm: AES-GMAC\nEncryption: not offered\nIts clock: 2026-11-26 04:19:19 UTC\nServer ID: 6c626d73-6261-0000-0000-000000000000\nLargest read / write: 8388608 / 8388608 bytes\nNothing was logged in to: browsing shares or copying files needs an account on this computer.\n")
+
+(defn sb-samba! [(mode : I32)] : Unit
+  (let [n (sb-load-trace!)]
+    (do (sb-begin!) (nk-out-clear) (sb-feed-at (sb-trace) n mode))))
+
+(defn sb-samba-specs! [] : Unit
+  (do (sc-describe! "a real Samba 4.19 (recorded)")
+        (sc-it! "the recording holds both replies (268 + 251 bytes + two headers)") (lb-equal (sb-load-trace!) 527)
+        (sb-samba! 0)
+        (sc-it! "done") (lb-equal (nk-smb-phase) 3)
+        (sc-it! "SMB 3.1.1, signing enabled not required, AES-GMAC, no cipher chosen")
+        (lb-equal (nk-smb-dialect) 785) (lb-equal (nk-smb-secmode) 1) (lb-equal (nk-smb-sigalg) 2) (lb-equal (nk-smb-cipher) -1)
+        (sc-it! "names from the target info") (lb-str-equal (nk-smb-name-addr 1) "SMBLAB") (lb-str-equal (nk-smb-name-addr 2) "SMBLAB")
+        (lb-str-equal (nk-smb-name-addr 0) "SMBLAB")
+        (sc-it! "Samba's made-up NTLM version") (lb-equal (nk-smb-has-version) 1) (lb-equal (nk-smb-ver-major) 6)
+        (lb-equal (nk-smb-ver-minor) 1) (lb-equal (nk-smb-ver-build) 0)
+        (sc-it! "the report, word for word") (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (sb-samba-report))
+        (sb-samba! 1)
+        (sc-it! "fed one byte at a time: the same report") (lb-equal (nk-smb-phase) 3)
+        (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (sb-samba-report))
+      (sc-end!)))
+
+;; ---- Windows shapes ------------------------------------------------------------------------------------------------------------
+(defn sb-run! [(mode : I32)] : Unit (do (sb-begin!) (nk-out-clear) (sb-send! mode)))
+
+(defn sb-windows-specs! [] : Unit
+  (do (sc-describe! "Windows-shaped replies (built from MS-SMB2 / MS-NLMP)")
+        (sc-context! "a Windows 10 22H2 PC in a workgroup")
+          (sb-imac!) (sb-run! 0)
+          (sc-it! "the report") (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (sb-imac-report))
+          (sc-it! "version fields") (lb-equal (nk-smb-ver-major) 10) (lb-equal (nk-smb-ver-build) 19045)
+          (sc-it! "cipher and signing from the contexts") (lb-equal (nk-smb-cipher) 2) (lb-equal (nk-smb-sigalg) 1)
+          (sc-it! "capabilities as sent") (lb-equal (nk-smb-caps) 47)
+          (sb-imac!) (sb-run! 1)
+          (sc-it! "fed one byte at a time: the same report") (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (sb-imac-report))
+        (sc-end!)
+        (sc-context! "a domain member with signing required (Windows Server 2022)")
+          (sb-reset!) (sb-negotiate! 0 785 3 47 4 2)
+          (sb-session! (sb-more) (sb-challenge! 10 0 20348 (sb-flags) "FS01" "CORP" "fs01.corp.example" "corp.example")) (sb-run! 0)
+          (sc-it! "names the domain, says signing is required, AES-GMAC, AES-256-GCM")
+          (lb-have-prefix (nk-smb-report-addr) "Computer name: FS01\nDNS name: fs01.corp.example\nWorkgroup / domain: CORP\nDNS domain: corp.example\nSystem: Windows Server 2022 (version 10.0 build 20348)\nFile sharing: SMB 3.1.1\nSigning: required\nSigning algorithm: AES-GMAC\nEncryption: available (AES-256-GCM)\n")
+        (sc-end!)
+        (sc-context! "an SMB 3.0.2 server (Windows 8.1) that can encrypt")
+          (sb-reset!) (sb-negotiate! 0 770 1 64 -1 -1)
+          (sb-session! (sb-more) (sb-challenge! 6 3 9600 (sb-flags) "OLDPC" "OLDPC" "oldpc" "oldpc")) (sb-run! 0)
+          (sc-it! "no contexts read for 3.0.2") (lb-equal (nk-smb-cipher) -1) (lb-equal (nk-smb-sigalg) -1)
+          (sc-it! "the report names the release and AES-128-CCM from the capability bit")
+          (lb-have-prefix (nk-smb-report-addr) "Computer name: OLDPC\nDNS name: oldpc\nNot in a domain: it signs people in with its own local accounts\nSystem: Windows 8.1 / Server 2012 R2 (version 6.3 build 9600)\nFile sharing: SMB 3.0.2\nSigning: offered, not required (normal for a PC that is not a domain controller)\nEncryption: available (AES-128-CCM)\n")
+        (sc-end!)
+        (sc-context! "a challenge without a version (NEGOTIATE_VERSION clear)")
+          (sb-reset!) (sb-negotiate! 0 528 1 0 -1 -1)
+          (sb-session! (sb-more) (sb-challenge! 10 0 19045 (bit-and (sb-flags) -33554433) "NAS" "WORKGROUP" "nas" "nas")) (sb-run! 0)
+          (sc-it! "no System line, SMB 2.1, no encryption")
+          (lb-equal (nk-smb-has-version) 0)
+          (lb-have-prefix (nk-smb-report-addr) "Computer name: NAS\nDNS name: nas\nWorkgroup / domain: WORKGROUP\nFile sharing: SMB 2.1\nSigning: offered, not required (normal for a PC that is not a domain controller)\nEncryption: not offered\n")
+        (sc-end!)
+        (sc-context! "the stream's housekeeping")
+          (sb-reset!) (sb-w! 2 4) (store32! (sb-build) 133)        ; a NetBIOS keep-alive (0x85, length 0) first
+          (sb-negotiate! 0 785 1 47 2 1)
+          (sb-frame!) (sb-hdr! 1 259 1 1) (sb-16! 9) (sb-zeros! 6) (sb-frame-end!)   ; STATUS_PENDING interim reply
+          (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "IMAC" "IMAC" "iMac" "iMac")) (sb-run! 1)
+          (sc-it! "a keep-alive and an interim STATUS_PENDING reply are skipped")
+          (lb-equal (nk-smb-phase) 3) (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (sb-imac-report))
+        (sc-end!)
+        (sc-context! "a message without the reply flag (our own request echoed back, say)")
+          (sb-reset!) (sb-negotiate! 0 514 3 0 -1 -1)
+          (store8! (+ (sb-build) 20) 0)                             ; clear SMB2_FLAGS_SERVER_TO_REDIR on that first one
+          (sb-negotiate! 0 785 1 47 2 1)
+          (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "IMAC" "IMAC" "iMac" "iMac")) (sb-run! 0)
+          (sc-it! "is ignored: the real reply that follows decides") (lb-equal (nk-smb-dialect) 785) (lb-equal (nk-smb-secmode) 1)
+          (lb-text-equal (nk-smb-report-addr) (nk-smb-report-len) (sb-imac-report))
+        (sc-end!)
+        (sc-context! "names that are not ASCII")
+          (sb-reset!) (sb-negotiate! 0 785 1 47 2 1)
+          (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "PC" "PC" "pc" "pc"))
+          ;; overwrite the computer name "PC" (UTF-16 at its AV value) with U+00C9 U+20AC: E-acute, euro sign
+          (let [v (+ (sb-build) (+ (+ 4 (sb-w 3)) (+ 64 (+ 33 (+ 56 (+ 4 (+ 4 (+ 4 4))))))))]
+            (do (store8! v 201) (store8! (+ v 1) 0) (store8! (+ v 2) 172) (store8! (+ v 3) 32)))
+          (sb-run! 0)
+          (sc-it! "UTF-16 becomes UTF-8 (2- and 3-byte forms)") (lb-hex-equal (nk-smb-name-addr 1) 6 "c389e282ac00")
+        (sc-end!)
+      (sc-end!)))
+
+;; ---- failures ---------------------------------------------------------------------------------------------------------------------
+;; (OUT after a failure holds at most the SESSION_SETUP the NEGOTIATE reply had already queued: 0 or 166 bytes, never more)
+(defn sb-fails [(kind : I32) (msg : I32)] : Unit
+  (do (lb-equal (nk-smb-phase) 9) (lb-equal (nk-err-kind) kind) (lb-equal (nk-err-msg) msg)
+      (lb-be-true (or (= (nk-out-len) 0) (= (nk-out-len) 166)))))
+
+(defn sb-failure-specs! [] : Unit
+  (do (sc-describe! "replies it refuses (each fails cleanly and sends nothing more)")
+        (sc-it! "an SMB1-only server") (sb-reset!) (sb-frame!) (sb-hexb! "ff534d4272000000") (sb-zeros! 40) (sb-frame-end!) (sb-run! 0)
+        (sb-fails 5 25)
+        (sc-it! "something that is not NetBIOS framing (a web server)") (sb-reset!) (sb-at! (sb-build)) (sb-hexb! "485454502f312e31")
+        (sb-w! 2 8) (sb-run! 0) (sb-fails 5 24)
+        (sc-it! "a frame over 64 KB") (sb-reset!) (sb-at! (sb-build)) (sb-hexb! "00020000") (sb-w! 2 4) (sb-run! 0) (sb-fails 5 24)
+        (sc-it! "an SMB2 frame that is not SMB2") (sb-reset!) (sb-frame!) (sb-hexb! "fe534d43") (sb-zeros! 100) (sb-frame-end!)
+        (sb-run! 0) (sb-fails 5 24)
+        (sc-it! "NEGOTIATE refused (STATUS_NOT_SUPPORTED)") (sb-reset!) (sb-negotiate! -1073741637 785 1 0 -1 -1) (sb-run! 0)
+        (sb-fails 5 26)
+        (sc-it! "the SMB1-style wildcard dialect 2.???") (sb-reset!) (sb-negotiate! 0 767 1 0 -1 -1) (sb-run! 0) (sb-fails 5 26)
+        (sc-it! "a NEGOTIATE reply too short to hold its fields") (sb-reset!) (sb-frame!) (sb-hdr! 0 0 0 1) (sb-16! 65) (sb-zeros! 20)
+        (sb-frame-end!) (sb-run! 0) (sb-fails 5 26)
+        (sc-it! "a reply to a command it did not send") (sb-reset!) (sb-frame!) (sb-hdr! 3 0 0 1) (sb-zeros! 16) (sb-frame-end!)
+        (sb-run! 0) (sb-fails 5 24)
+        (sc-it! "session setup refused (STATUS_ACCESS_DENIED)")
+        (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-session! -1073741790 (sb-challenge! 10 0 19045 (sb-flags) "A" "A" "a" "a"))
+        (sb-run! 0) (sb-fails 5 27)
+        (sc-it! "a security buffer that runs past the message")
+        (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "A" "A" "a" "a"))
+        (store8! (+ (sb-build) (+ (sb-w 3) (+ 4 70))) 255) (sb-run! 0) (sb-fails 5 27)
+        (sc-it! "no NTLMSSP challenge inside it")
+        (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "A" "A" "a" "a"))
+        (store8! (+ (sb-build) (+ (sb-w 3) (+ 4 (+ 72 25)))) 120) (sb-run! 0) (sb-fails 5 27)
+        (sc-it! "target info and target name pointing outside the challenge: no names, no crash, still done")
+        (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "A" "A" "a" "a"))
+        (store32! (+ (sb-build) (+ (sb-w 3) (+ 4 (+ 97 44)))) 100000)
+        (store32! (+ (sb-build) (+ (sb-w 3) (+ 4 (+ 97 16)))) -8)
+        (sb-run! 0) (lb-equal (nk-smb-phase) 3) (lb-str-equal (nk-smb-name-addr 1) "") (lb-str-equal (nk-smb-name-addr 0) "")
+        (sc-it! "an AV pair longer than the target info: parsing stops there")
+        (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-session! (sb-more) (sb-challenge! 10 0 19045 (sb-flags) "AB" "AB" "a" "a"))
+        (store8! (+ (sb-build) (+ (sb-w 3) (+ 4 (+ 97 (+ 56 (+ 4 2)))))) 250)   ; the first pair (domain) says 250 bytes
+        (sb-run! 0) (lb-equal (nk-smb-phase) 3) (lb-str-equal (nk-smb-name-addr 2) "") (lb-str-equal (nk-smb-name-addr 1) "")
+        (sc-it! "hung up before the NEGOTIATE reply") (sb-begin!) (nk-out-clear) (nk-smb-closed) (sb-fails 5 28)
+        (sc-it! "hung up before the challenge") (sb-reset!) (sb-negotiate! 0 785 1 47 2 1) (sb-run! 0) (nk-out-clear) (nk-smb-closed)
+        (sb-fails 5 27)
+        (sc-it! "a hang-up after it is done is not a failure") (sb-imac!) (sb-run! 0) (nk-smb-closed) (lb-equal (nk-smb-phase) 3)
+      (sc-end!)))
+
+;; ---- the words -------------------------------------------------------------------------------------------------------------------
+(defn sb-words-specs! [] : Unit
+  (do (sc-describe! "FILETIME and the release table")
+        (sc-it! "1970-01-01 is 0") (lb-equal (nk-smb-filetime-unix -717324288 27111902) 0)
+        (sc-it! "one tick before 1970, and zero, are 'unknown'")
+        (lb-equal (nk-smb-filetime-unix -717324289 27111902) -1) (lb-equal (nk-smb-filetime-unix 0 0) -1)
+        (sc-it! "1700000000 (2023-11-14)") (lb-equal (nk-smb-filetime-unix -965935104 31070023) 1700000000)
+        (sc-it! "2026-11-26 12:00:00") (lb-equal (nk-smb-filetime-unix (sb-time-lo) (sb-time-hi)) 1795694400)
+        (sc-it! "2^31 seconds (2038) does not fit: unknown") (lb-equal (nk-smb-filetime-unix -717324288 32111902) -1)
+        (sc-it! "releases")
+        (lb-str-equal (nk-smb-windows-text-addr 10 0 19045) "Windows 10 22H2")
+        (lb-str-equal (nk-smb-windows-text-addr 10 0 22631) "Windows 11 23H2")
+        (lb-str-equal (nk-smb-windows-text-addr 10 0 27000) "Windows 11 or newer")
+        (lb-str-equal (nk-smb-windows-text-addr 10 0 19999) "Windows 10 / Server")
+        (lb-str-equal (nk-smb-windows-text-addr 6 1 7601) "Windows 7 / Server 2008 R2")
+        (lb-str-equal (nk-smb-windows-text-addr 3 0 0) "unknown")
+        (sc-it! "dialects, ciphers, signing")
+        (lb-str-equal (nk-smb-dialect-text-addr 514) "2.0.2") (lb-str-equal (nk-smb-dialect-text-addr 4) "unknown")
+        (lb-str-equal (nk-smb-cipher-text-addr 4) "AES-256-GCM") (lb-str-equal (nk-smb-sigalg-text-addr 0) "HMAC-SHA256")
+        (sc-it! "the failure words") (lb-have-prefix (nk-msg-text-addr 25) "This server only speaks SMB1")
+        (lb-have-prefix (nk-msg-text-addr 28) "The file-sharing server hung up")
+      (sc-end!)))
+
+(defn scarab-main [] : I32
+  (do (sc-describe! "nk_smb")
+        (sb-request-specs!) (sb-samba-specs!) (sb-windows-specs!) (sb-failure-specs!) (sb-words-specs!)
+      (sc-end!)
+      (sc-finish!)))

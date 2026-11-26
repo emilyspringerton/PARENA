@@ -9,6 +9,8 @@
 # Needs: the LLVM toolchain (see build_netkit_wasm.sh), node 24+ (SCARAB suites), python3 with wasmtime, asyncssh, pyte (the rest);
 #        openssh-server + libnss-wrapper for the real-OpenSSH leg (skipped, loudly, without them).
 #   VNC_ROOT=<dir>   an extracted libvncserver1+libvncserver-dev (dpkg -x) when it is not installed system-wide
+#   SAMBA_ROOT=<dir> an extracted samba + samba-libs + libldb2/libtalloc2/libtdb1/libtevent0t64/libwbclient0 + samba-common(-bin)
+#                    for the live SMB probe leg when samba is not installed
 set -euo pipefail
 cd "$(dirname "$0")/.."
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
@@ -39,6 +41,25 @@ echo "== rfb_spec.prn (nk_rfb.prn vs a scripted server; whole / byte / random-ch
 scripts/scarab_wasm.sh tests/netkit/rfb_spec.prn --modules stdlib/netkit/MODULES | tail -3
 echo "== oui_gen_spec.prn (nk_oui_gen.prn)"
 scripts/scarab_wasm.sh tests/netkit/oui_gen_spec.prn --module stdlib/netkit/nk_oui_gen.prn --file stdlib/netkit/data/oui_brands.tsv --file "$W/oui.bin" | tail -3
+echo "== smb_spec.prn (nk_smb.prn: the credential-free SMB2 probe; built replies + one recorded from a real Samba 4.19)"
+scripts/scarab_wasm.sh tests/netkit/smb_spec.prn --modules stdlib/netkit/MODULES --file $V/smb_samba419.hex | tail -3
+echo "== the SMB probe vs a live Samba (scripts/netkit_smb_probe.sh, the PARENA -> TS node host pumping a real socket)"
+SMBD="${SAMBA_ROOT:+$SAMBA_ROOT/usr/sbin/smbd}"; SMBD="${SMBD:-$(command -v smbd || true)}"
+if [ -z "$SMBD" ] || [ ! -x "$SMBD" ]; then echo "SKIP: smbd not found (apt install samba, or set SAMBA_ROOT to an extracted samba + samba-libs + deps)";
+else
+  SL=""; [ -n "${SAMBA_ROOT:-}" ] && SL="$SAMBA_ROOT/usr/lib/x86_64-linux-gnu:$SAMBA_ROOT/usr/lib/x86_64-linux-gnu/samba"
+  SP=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+  mkdir -p "$W/smb"/{lock,state,cache,private,pid,log,ncalrpc}
+  printf '[global]\n workgroup = NETKITLAB\n netbios name = NETKITTEST\n smb ports = %s\n interfaces = 127.0.0.1\n bind interfaces only = yes\n lock directory = %s/lock\n state directory = %s/state\n cache directory = %s/cache\n private dir = %s/private\n pid directory = %s/pid\n ncalrpc dir = %s/ncalrpc\n log file = %s/log/log.%%m\n passdb backend = tdbsam:%s/private/passdb.tdb\n load printers = no\n disable spoolss = yes\n' \
+    "$SP" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" "$W/smb" > "$W/smb/smb.conf"
+  LD_LIBRARY_PATH="$SL${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$SMBD" -F --debug-stdout -d0 -s "$W/smb/smb.conf" > "$W/smb/smbd.out" 2>&1 & SMBPID=$!
+  for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/$SP) 2>/dev/null && break; sleep 0.1; done
+  if scripts/netkit_smb_probe.sh 127.0.0.1 "$SP" > "$W/smb/report.txt" && grep -qx 'Computer name: NETKITTEST' "$W/smb/report.txt" \
+     && grep -qx 'File sharing: SMB 3.1.1' "$W/smb/report.txt" && grep -q '^Its clock: ' "$W/smb/report.txt"; then
+    echo "live Samba probe: OK ($(grep -c . "$W/smb/report.txt") report lines)"
+  else echo "FAIL: the SMB probe against a live Samba"; cat "$W/smb/report.txt" "$W/smb/smbd.out"; kill $SMBPID; exit 1; fi
+  kill $SMBPID 2>/dev/null || true
+fi
 for t in tests/netkit/test_*.py; do
   case "$t" in */test_rfb_interop.py|*/test_host_e2e.py|*/test_browser_e2e.py|*/test_browser_garage.py) continue;; esac
   echo "== $(basename "$t")"

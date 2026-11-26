@@ -1,5 +1,22 @@
 ## 2026-11-26
 
+- **feat(netkit): a Windows file-sharing (SMB) probe that needs no password** (founder: "windows file sharing is open on 445 can we add tools to
+  the netkit for exploring those capabilities? parena first mods first"). New module `stdlib/netkit/nk_smb.prn` (in `MODULES`; G words
+  224..255, region 0x270000). It is a sans-IO SMB2 client: NEGOTIATE (2.0.2..3.1.1, with the preauth, encryption and signing contexts),
+  then SESSION_SETUP with an SPNEGO-wrapped NTLM NEGOTIATE. From the replies it reads:
+  - the dialect, signing mode, capabilities, GUID, clock, cipher and signing algorithm;
+  - the NTLM CHALLENGE's NetBIOS and DNS names, and whether the box is in a workgroup or a domain;
+  - the Windows version and build, mapped to a release name in PARENA.
+
+  It sends no AUTHENTICATE message, so no password ever leaves the device. The report text is written by the wasm. The command-line
+  host is `stdlib/netkit/tools/nk_smb_probe.prn` (PARENA → TS, node `net`), run with `scripts/netkit_smb_probe.sh <host> [port] [trace]`.
+  Spec: `tests/netkit/smb_spec.prn`, 59 specs. It checks the request bytes field by field, a reply recorded from a real Samba 4.19
+  (`vectors/smb_samba419.hex`) fed whole and one byte at a time, and Windows-shaped replies built from MS-SMB2 and MS-NLMP: a Win10 22H2
+  workgroup PC, a Server 2022 domain member that requires signing, SMB 3.0.2, no-version, keep-alive/STATUS_PENDING and UTF-16 names.
+  It also covers 15 malformed or hostile replies. It was mutation-checked: one gap, the reply flag being ignored, was found and closed.
+  `test_netkit.sh` gains the spec and a live-Samba leg (`SAMBA_ROOT` for an extracted Samba). Not yet run against a real Windows PC,
+  and not yet in the tablet page (KIT-SMB S1).
+
 - **feat(test): the VNC/RFB tests are a SCARAB spec, and they now cover the Hextile foreground path.** `test_rfb.py` ->
   `tests/netkit/rfb_spec.prn` (84 specs, 151 expectations): every handshake variant, failures and their words, Raw / Hextile / CopyRect in
   whole, byte-at-a-time and random-chunk delivery (a seeded xorshift in the spec), DesktopSize and the other server messages, hostile
