@@ -281,6 +281,8 @@
     (on! "term-canvas" "pointerup" (callback on-term-up))
     (on! "term-canvas" "dblclick" (callback on-term-dbl))
     (on! "term-canvas" "wheel" (callback on-term-wheel))
+    (on! "term-canvas" "pointercancel" (callback on-term-cancel))
+    (on! "btn-term-live" "click" (callback on-term-live))
     (on! "vnc-wrap" "pointerdown" (callback on-vnc-down))
     (on! "vnc-wrap" "pointermove" (callback on-vnc-move))
     (on! "vnc-wrap" "pointerup" (callback on-vnc-up))

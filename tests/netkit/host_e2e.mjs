@@ -340,6 +340,33 @@ check(/WELCOME/.test(clip), `dragging across the first line and tapping Copy put
 // paste
 clip = 'echo pasted-text-ok\n'; $('btn-paste').dispatch('click');
 check(await waitFor(() => /got: echo pasted-text-ok/.test(termScreen()), 8000), 'Paste sends the clipboard to the server as typed text');
+// scrollback on a phone: a quick swipe scrolls the history, the view holds while output arrives, Live returns to the bottom
+for (let i = 0; i < 60; i++) typeText(`line-${i}\n`);
+check(await waitFor(() => /got: line-59/.test(termScreen()), 10000), 'sixty lines of output scroll the screen');
+const tview = () => termInst().exports.term_view();
+termInst().exports.term_mouse(4, 0, 0);     // drop the selection the copy test left
+$('term-canvas').dispatch('pointerdown', { clientX: 400, clientY: 100, pointerId: 2, pointerType: 'touch', timeStamp: 1000 });
+$('term-canvas').dispatch('pointermove', { clientX: 400, clientY: 120, pointerId: 2, pointerType: 'touch', timeStamp: 1040 });
+$('term-canvas').dispatch('pointermove', { clientX: 400, clientY: 260, pointerId: 2, pointerType: 'touch', timeStamp: 1100 });
+$('term-canvas').dispatch('pointerup', { clientX: 400, clientY: 260, pointerId: 2, pointerType: 'touch', timeStamp: 1120 });
+check(tview() === 10, `a quick finger swipe down 160 px (10 rows) scrolls 10 lines back into the history (view ${tview()})`);
+check(await waitFor(() => visible('btn-term-live') && /10 lines back/.test($('btn-term-live').textContent), 2000), `scrolled back, the Live button shows how far (${$('btn-term-live').textContent})`);
+check(termInst().exports.term_has_sel() === 0, 'the swipe did not select anything');
+// output arriving while scrolled back: injected straight at the terminal, the way ssh-pump-data! feeds it (no key, so the view is not reset)
+{ const t = termInst().exports, u8 = new Uint8Array(t.memory.buffer), b = new TextEncoder().encode('more-1\r\nmore-2\r\nmore-3\r\n'); u8.set(b, t.term_in_addr()); t.term_feed(b.length); }
+check(tview() === 13, `new output does not yank the view: it stays on the same lines, 13 back now (view ${tview()})`);
+check(await waitFor(() => /13 lines back/.test($('btn-term-live').textContent), 2000), 'the Live button follows the count');
+const liveBtn = $('btn-term-live'); liveBtn.dispatch('click');
+check(tview() === 0, 'tapping Live returns to the newest output');
+check(await waitFor(() => !visible('btn-term-live'), 2000), '...and the Live button goes away');
+$('term-canvas').dispatch('pointerdown', { clientX: 0, clientY: 8, pointerId: 3, pointerType: 'touch', timeStamp: 5000 });
+$('term-canvas').dispatch('pointermove', { clientX: 400, clientY: 8, pointerId: 3, pointerType: 'touch', timeStamp: 5600 });
+$('term-canvas').dispatch('pointerup', { clientX: 400, clientY: 8, pointerId: 3, pointerType: 'touch', timeStamp: 5650 });
+check(tview() === 0 && termInst().exports.term_has_sel() === 1, 'press-and-hold, then drag, still selects text on a touchscreen');
+// Git Bash, from cmd or PowerShell: one line, no spaces in the path
+const bashBtn = { dataset: { key: 'bash' }, closest: s => s === 'button' ? bashBtn : null };
+$('keybar').dispatch('click', { target: bashBtn });
+check(await waitFor(() => /got: C:\\PROGRA~1\\Git\\bin\\bash\.exe --login -i/.test(termScreen()), 8000), 'the Bash key types the Git Bash command line and Enter');
 check(JSON.parse(store.get('hostkeys'))[`127.0.0.1:${sshPort}`] === cfg.ssh.fpB64, 'the trusted fingerprint is remembered per host:port');
 check(JSON.parse(store.get('conns')).some(c => c.proto === 'ssh' && c.user === 'tester' && c.pw === 's3cret'), 'Remember saved the connection');
 check(store.get('last-user') === 'tester', 'the last user name is remembered');

@@ -141,6 +141,9 @@
           (= k "slash") (ssh-key! 47 0)
           (= k "dash") (ssh-key! 45 0)
           (= k "under") (ssh-key! 95 0)
+          ;; Git for Windows' bash, from cmd or PowerShell alike: the 8.3 short path has no space, so the same line needs no
+          ;; shell-specific quoting. (The default install location; a per-user install lives elsewhere.)
+          (= k "bash") (ssh-text! "C:\\PROGRA~1\\Git\\bin\\bash.exe --login -i\n")
           :else unit)))))
 
 (defn on-copy-click [(e : Any)] : Unit
@@ -156,39 +159,74 @@
   (when (have-native?) (ssh-paste! (js/call nat "clipboardGet"))))
 
 ;; ---- selection and scrolling on the terminal canvas -------------------------------------------------------------------------------------------------
-(defn term-col-of [(e : Any)] : I32
+;; canvas pixel position -> grid cell (the canvas is always fitted whole inside #term-wrap, so its rect is the grid)
+(defn term-col-at [(x : F64)] : I32
   (let [r (js/call (el "term-canvas") "getBoundingClientRect")]
-    (math/floor (/ (* (- (js/get e "clientX") (js/get r "left")) 100.0) (js/get r "width")))))
-(defn term-row-of [(e : Any)] : I32
+    (math/floor (/ (* (- x (js/get r "left")) 100.0) (js/get r "width")))))
+(defn term-row-at [(y : F64)] : I32
   (let [r (js/call (el "term-canvas") "getBoundingClientRect")]
-    (math/floor (/ (* (- (js/get e "clientY") (js/get r "top")) 34.0) (js/get r "height")))))
+    (math/floor (/ (* (- y (js/get r "top")) 34.0) (js/get r "height")))))
+(defn term-col-of [(e : Any)] : I32 (term-col-at (js/get e "clientX")))
+(defn term-row-of [(e : Any)] : I32 (term-row-at (js/get e "clientY")))
+(defn term-row-px [] : F64
+  (/ (js/get (js/call (el "term-canvas") "getBoundingClientRect") "height") 34.0))
 
+;; Mouse: drag selects, the wheel scrolls the history.
+;; Touch (a phone has no wheel): a quick swipe scrolls the history -- finger down shows older lines, like any phone list --
+;; and press-and-hold (450 ms) then drag selects. A tap brings up the keyboard. Scrolled back, the screen stays put while
+;; output arrives (the wasm holds the view); "Live" or any key returns to the bottom.
 (def down-x 0.0)
 (def down-y 0.0)
+(def down-t 0.0)
+(def last-y 0.0)
 (def dragging false)
 (def moved false)
+(def touch-p false)
+(def touch-mode 0)              ; touch only: 0 undecided, 1 scrolling, 2 selecting
 
 (defn on-term-down [(e : Any)] : Unit
   (when (and (not (js/null? ssh)) (js/get ssh "up"))
-    (do (set! down-x (js/get e "clientX")) (set! down-y (js/get e "clientY"))
+    (do (set! down-x (js/get e "clientX")) (set! down-y (js/get e "clientY")) (set! last-y down-y)
+        (set! down-t (js/get e "timeStamp"))
         (set! dragging true) (set! moved false)
+        (set! touch-p (= (js/get e "pointerType") "touch"))
+        (set! touch-mode 0)
         (js/call (el "term-canvas") "setPointerCapture" (js/get e "pointerId"))
-        (js/call (js/get ssh "t") "term_mouse" 0 (term-col-of e) (term-row-of e)))))
+        (when (not touch-p) (js/call (js/get ssh "t") "term_mouse" 0 (term-col-of e) (term-row-of e))))))
+
+;; whole rows the finger has travelled since last-y move the history; the remainder carries over
+(defn touch-scroll! [(y : F64)] : Unit
+  (let [h (term-row-px)
+        n (if (> y last-y) (math/floor (/ (- y last-y) h)) (- 0 (math/floor (/ (- last-y y) h))))]
+    (when (!= n 0)
+      (do (js/call (js/get ssh "t") "term_scroll" n)
+          (set! last-y (+ last-y (* n h)))))))
 
 (defn on-term-move [(e : Any)] : Unit
   (when (and dragging (not (js/null? ssh)))
-    (do (when (or (> (math/abs (- (js/get e "clientX") down-x)) 6.0) (> (math/abs (- (js/get e "clientY") down-y)) 6.0))
-          (set! moved true))
-        (when moved (js/call (js/get ssh "t") "term_mouse" 1 (term-col-of e) (term-row-of e))))))
+    (do (when (and (not moved)
+                   (or (> (math/abs (- (js/get e "clientX") down-x)) 6.0) (> (math/abs (- (js/get e "clientY") down-y)) 6.0)))
+          (do (set! moved true)
+              (when touch-p
+                (if (>= (- (js/get e "timeStamp") down-t) 450.0)
+                    (do (set! touch-mode 2)
+                        (js/call (js/get ssh "t") "term_mouse" 0 (term-col-at down-x) (term-row-at down-y)))
+                    (set! touch-mode 1)))))
+        (when moved
+          (if (= touch-mode 1)
+              (touch-scroll! (js/get e "clientY"))
+              (js/call (js/get ssh "t") "term_mouse" 1 (term-col-of e) (term-row-of e)))))))
 
 (defn on-term-up [(e : Any)] : Unit
   (when (and dragging (not (js/null? ssh)))
     (do (set! dragging false)
-        (js/call (js/get ssh "t") "term_mouse" 2 (term-col-of e) (term-row-of e))
+        (when (!= touch-mode 1) (js/call (js/get ssh "t") "term_mouse" 2 (term-col-of e) (term-row-of e)))
         ;; a tap (no drag) clears the selection and brings up the keyboard
         (when (not moved)
           (do (js/call (js/get ssh "t") "term_mouse" 4 0 0)
               (js/call (el "term-ime") "focus"))))))
+
+(defn on-term-cancel [(e : Any)] : Unit (set! dragging false))
 
 (defn on-term-dbl [(e : Any)] : Unit
   (when (and (not (js/null? ssh)) (js/get ssh "up"))
@@ -199,12 +237,22 @@
     (do (js/call (js/get ssh "t") "term_scroll" (if (> (js/get e "deltaY") 0.0) -3 3))
         (js/call e "preventDefault"))))
 
+;; back to the bottom: following the output again
+(defn on-term-live [(e : Any)] : Unit
+  (when (and (not (js/null? ssh)) (js/get ssh "up"))
+    (do (js/call (js/get ssh "t") "term_scroll" -100000)
+        (js/call (el "term-ime") "focus"))))
+
 ;; ---- painting ------------------------------------------------------------------------------------------------------------------------------------
 (defn term-frame [(t : F64)] : Unit
   (do (when (and (not (js/null? ssh)) (js/get ssh "up"))
         (let [tt (js/get ssh "t")]
           (when (= (js/call tt "term_render") 1)
-            (js/call (js/get ssh "ctx") "putImageData" (js/get ssh "img") 0 0))))
+            (do (js/call (js/get ssh "ctx") "putImageData" (js/get ssh "img") 0 0)
+                ;; scrolled back: show how far, and the way back
+                (let [v (js/call tt "term_view") b (el "btn-term-live")]
+                  (do (js/set! b "hidden" (= v 0))
+                      (when (> v 0) (js/set! b "textContent" (str "\u{2193} Live (" v " lines back)")))))))))
       (js/call (win) "requestAnimationFrame" (callback term-frame))))
 
 (defn blink! [] : Unit
