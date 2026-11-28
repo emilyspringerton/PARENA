@@ -1,0 +1,181 @@
+;; stdlib/shankpit_survival/sv_camera.prn -- SURVIVAL's REDGARDEN / GFD-OG camera: wheel zoom, third person, click to move.
+;;
+;; Founder 2026-11-28: "bring in the REDGARDEN OG DNA ... click to move ... when you use the mouse wheel it should zoom out ... click to move
+;; disabled for abilities that have a right click (sniper) ... the camera should be adjustable just like it is in GFD OG, the C version."
+;; The decisions are the PARENA camera mods the C clients already compile (stdlib/camera): zoom_cam_mod (wheel -> arm, easing, first-person
+;; hysteresis) and click_move_mod (accept / arrive / cancel / stuck / steer push). This file is the host side for the wasm engine:
+;;
+;;   wheel            zooms the arm. All the way in IS first person (the shooter as before); out is third person: an orbit camera behind
+;;                    the hero, the hero's body drawn, the view model hidden.
+;;   click (mouse)    in third person, a left click on the GROUND sets a destination; the hero walks there (WASD cancels, arriving or being
+;;                    stuck 1.5 s cancels, entering first person cancels). A click on a building or a roof is not somewhere to walk.
+;;   the sniper       its right mouse button is the scope, so click to move is OFF while the sniper is the wanted weapon.
+;;   right-drag       orbits (yaw / elevation) while in third person -- the host forwards it as mouse look.
+;;   fire             in third person the hero faces the nearest living zombie within 80 units while fire is held, and shoots level at it.
+;;
+;; Not done, named: clicking a zombie does not set an attack target (REDGARDEN's attack-move); the crosshair is still drawn in third person;
+;; no terrain-slope pitch, follow-style or recenter options (camera_follow_mod is not linked); touch has no zoom gesture (a mouse wheel does).
+;;
+;; State words: G 650..669 (F32 where noted).
+
+(defn g-svc-arm [] : I32 650)         ; the displayed arm, milli
+(defn g-svc-target [] : I32 651)      ; the wheel's target arm, milli
+(defn g-svc-fp [] : I32 652)          ; 1 = first person
+(defn g-svc-dest [] : I32 653)        ; 1 = a click-to-move destination is set
+(defn g-svc-dx [] : I32 654)          ; F32
+(defn g-svc-dz [] : I32 655)          ; F32
+(defn g-svc-stuck [] : I32 656)       ; ms
+(defn g-svc-hyaw [] : I32 657)        ; F32: the hero's facing in third person
+(defn g-svc-px [] : I32 658)          ; F32: hero x last frame (stuck test)
+(defn g-svc-pz [] : I32 659)          ; F32
+(defn g-svc-mark [] : I32 660)        ; ticks the destination marker shows
+(defn g-svc-fire [] : I32 661)        ; 1 = the hero is turning to a zombie to shoot
+
+(defn svc-max-arm-milli [] : I32 40000)
+(defn svc-start-pitch [] : F32 -35.0)
+(defn svc-step-permille [] : I32 1500)
+(defn svc-aim-range [] : F32 80.0)
+(defn svc-sniper [] : I32 4)
+;; click_move_mod's radii are REDGARDEN's (arrive 0.4, slow 1.5 units); this hero covers ground ~5x faster per tick in a city 5x larger,
+;; so distances are divided by this before the mod sees them (arrive 2.0, slow 7.5) -- else the hero overshoots, circles and "gets stuck".
+(defn svc-scale [] : I32 5)
+
+(defn svc-reset! [] : Unit
+  (do (gi! (g-svc-arm) 0) (gi! (g-svc-target) 0) (gi! (g-svc-fp) 1) (gi! (g-svc-dest) 0) (gi! (g-svc-stuck) 0)
+      (gi! (g-svc-mark) 0) (gi! (g-svc-fire) 0) (gf! (g-svc-hyaw) 0.0)))
+
+(defn svc-tp? [] : Bool (and (mod-active?) (= (gi (g-svc-fp)) 0)))
+
+;; click to move is on unless the wanted weapon has a right-click ability (the sniper's scope)
+(defn svc-click-enabled [] : I32 (if (= (gi (want-weapon)) (svc-sniper)) 0 1))
+
+;; ---- the wheel ---------------------------------------------------------------------------------------------------------------------
+(defn mod-wheel! [(dir : I32)] : Bool
+  (if (mod-active?)
+      (do (gi! (g-svc-target) (zoom-cam-wheel-target-milli (gi (g-svc-target)) dir (svc-step-permille) 0 (svc-max-arm-milli)))
+          true)
+      false))
+
+;; ---- the camera --------------------------------------------------------------------------------------------------------------------
+(defn mod-third-person? [] : Bool (and (svc-tp?) (alive? 0)))
+
+(defn mod-camera! [(alpha : F32)] : Bool
+  (if (not (mod-active?))
+      false
+      (let [was (gi (g-svc-fp))]
+        (do (gi! (g-svc-arm) (zoom-cam-ease-arm-milli (gi (g-svc-arm)) (gi (g-svc-target)) 16 (zoom-cam-tau-ms)))
+            (gi! (g-svc-fp) (zoom-cam-is-first-person (gi (g-svc-arm)) was))
+            ;; leaving first person: look down at the hero, and the hero keeps facing where the camera was pointing
+            (when (and (= was 1) (= (gi (g-svc-fp)) 0))
+              (do (gf! (g-svc-hyaw) (gf (g-cam-yaw)))
+                  (when (> (gf (g-cam-pitch)) -10.0) (gf! (g-cam-pitch) (svc-start-pitch)))))
+            ;; entering first person drops the destination
+            (when (and (= was 0) (= (gi (g-svc-fp)) 1)) (gi! (g-svc-dest) 0))
+            (if (or (= (gi (g-svc-fp)) 1) (not (alive? 0)))
+                false
+                (let [me 0
+                      (hx : F32) (lerp-pos me 0 alpha)
+                      (hy : F32) (+ (lerp-pos me 1 alpha) 2.6)
+                      (hz : F32) (lerp-pos me 2 alpha)
+                      (pitch : F32) (clamp-f (gf (g-cam-pitch)) -80.0 -10.0)
+                      (yaw : F32) (gf (g-cam-yaw))
+                      (arm : F32) (/ (f32 (gi (g-svc-arm))) 1000.0)
+                      (r : F32) (* (- 0.0 yaw) 0.0174533)
+                      (p : F32) (* pitch 0.0174533)
+                      ;; the aim vector (sp_3d set-camera!): the eye sits `arm` behind the focus along it
+                      (fx : F32) (* (sinf r) (cosf p))
+                      (fy : F32) (sinf p)
+                      (fz : F32) (* (- 0.0 (cosf r)) (cosf p))
+                      (ey : F32) (fmax2 1.0 (- hy (* arm fy)))]
+                  (gf! (g-cam-pitch) pitch)
+                  (gf! (g-fov) 75.0)
+                  (set-camera! (- hx (* arm fx)) ey (- hz (* arm fz)) yaw pitch 75.0)
+                  true))))))
+
+;; ---- the click -----------------------------------------------------------------------------------------------------------------------
+;; framebuffer pixel -> a ray through the camera (basis as sp_3d to-camera!: right (cy 0 sy), up (-sy*sp cp cy*sp), forward (sy*cp sp -cy*cp))
+(defn mod-click! [(px : I32) (py : I32)] : Unit
+  (when (and (svc-tp?) (and (alive? 0) (= (svc-click-enabled) 1)))
+    (let [(a : F32) (/ (- (f32 px) (half-w)) (gf (g-proj-scale)))
+          (b : F32) (/ (- (half-h) (f32 py)) (gf (g-proj-scale)))
+          (sy : F32) (gf (g-cam-sy)) (cy : F32) (gf (g-cam-cy))
+          (sp : F32) (gf (g-cam-sp)) (cp : F32) (gf (g-cam-cp))
+          (dx : F32) (+ (+ (* sy cp) (* a cy)) (* b (* (- 0.0 sy) sp)))
+          (dy : F32) (+ sp (* b cp))
+          (dz : F32) (+ (+ (* (- 0.0 cy) cp) (* a sy)) (* b (* cy sp)))
+          (ox : F32) (gf (g-cam-x)) (oy : F32) (gf (g-cam-y)) (oz : F32) (gf (g-cam-z))
+          (t : F32) (ray-world ox oy oz dx dy dz 100000.0)
+          (hx : F32) (+ ox (* dx t))
+          (hy : F32) (+ oy (* dy t))
+          (hz : F32) (+ oz (* dz t))
+          ;; ground = the ray's first solid is the floor plane (y ~ 0), inside the city's edge
+          ground (and (< (fabs hy) 0.2) (and (< (fabs hx) (sv-city-edge)) (< (fabs hz) (sv-city-edge))))]
+      (when (= (click-move-accept (svc-click-enabled) 0 0 (if ground 1 0) 1000) 1)
+        (gf! (g-svc-dx) hx)
+        (gf! (g-svc-dz) hz)
+        (gi! (g-svc-dest) 1)
+        (gi! (g-svc-stuck) 0)
+        (gi! (g-svc-mark) 70)
+        (gf! (g-svc-px) (p-x 0)) (gf! (g-svc-pz) (p-z 0))
+        (snd-ui! 15)))))
+
+;; ---- steering (the end of gather-cmd!) ----------------------------------------------------------------------------------------------
+(defn svc-nearest-zombie [] : I32
+  (let [best -1
+        (bd : F32) (svc-aim-range)]
+    (loop [p 1]
+      (when (<= p (sv-pool))
+        (when (alive? p)
+          (let [(d : F32) (len2 (- (p-x p) (p-x 0)) (- (p-z p) (p-z 0)))]
+            (when (< d bd) (set! bd d) (set! best p))))
+        (recur (+ p 1))))
+    best))
+
+(defn mod-cmd! [] : Unit
+  (when (svc-tp?)
+    (let [wasd (b2i (or (!= (gf (g-cmd-fwd)) 0.0) (!= (gf (g-cmd-str)) 0.0)))]
+      (do
+        (when (> (gi (g-svc-mark)) 0) (gi! (g-svc-mark) (- (gi (g-svc-mark)) 1)))
+        ;; WASD / the stick drives as before, facing the camera's forward
+        (when (= wasd 1) (gf! (g-svc-hyaw) (gf (g-cam-yaw))))
+        (when (= (gi (g-svc-dest)) 1)
+          (let [(dx : F32) (- (gf (g-svc-dx)) (p-x 0))
+                (dz : F32) (- (gf (g-svc-dz)) (p-z 0))
+                dxm (i32 (* dx 1000.0))
+                dzm (i32 (* dz 1000.0))
+                moved (i32 (* 1000.0 (len2 (- (p-x 0) (gf (g-svc-px))) (- (p-z 0) (gf (g-svc-pz))))))]
+            (gi! (g-svc-stuck) (click-move-stuck-update (gi (g-svc-stuck)) 16 moved))
+            (gf! (g-svc-px) (p-x 0)) (gf! (g-svc-pz) (p-z 0))
+            (if (or (= (click-move-should-cancel (svc-click-enabled) 0 wasd (gi (g-svc-stuck))) 1)
+                    (= (click-move-arrived dxm dzm (* (svc-scale) (click-move-arrive-radius-milli))) 1))
+                (gi! (g-svc-dest) 0)
+                (let [dist (click-move-isqrt (+ (* (/ dxm 4) (/ dxm 4)) (* (/ dzm 4) (/ dzm 4))))]
+                  ;; dist above is |d|/4 in milli (the squares must stay inside I32): scale back
+                  (gf! (g-svc-hyaw) (yaw-to dx dz))
+                  (gf! (g-cmd-fwd) (/ (f32 (click-move-steer-scale-permille (/ (* dist 4) (svc-scale)))) 1000.0))
+                  (gf! (g-cmd-str) 0.0)))))
+        ;; firing: turn to the nearest living zombie
+        (gi! (g-svc-fire) 0)
+        (when (!= (gi (g-cmd-fire)) 0)
+          (let [z (svc-nearest-zombie)]
+            (when (>= z 0)
+              (gi! (g-svc-fire) (+ z 1))
+              (gf! (g-svc-hyaw) (yaw-to (- (p-x z) (p-x 0)) (- (p-z z) (p-z 0)))))))))))
+
+(defn mod-cmd-yaw! [] : F32 (if (svc-tp?) (gf (g-svc-hyaw)) (gf (g-cam-yaw))))
+
+;; third person aims level; at a zombie, up or down to its chest
+(defn mod-cmd-pitch! [] : F32
+  (if (svc-tp?)
+      (let [z (- (gi (g-svc-fire)) 1)]
+        (if (>= z 0)
+            (* (atan2f (- (+ (p-y z) 1.8) (+ (p-y 0) 3.0)) (len2 (- (p-x z) (p-x 0)) (- (p-z z) (p-z 0)))) (rad2deg))
+            0.0))
+      (gf (g-cam-pitch))))
+
+;; the destination marker
+(defn svc-draw! [] : Unit
+  (when (and (svc-tp?) (and (= (gi (g-svc-dest)) 1) (= (gi (g-map-id)) 3)))
+    (let [(pulse : F32) (+ 1.6 (* 0.5 (sinf (* (f32 (gi (g-ticker))) 0.012))))]
+      (draw-aabb! (gf (g-svc-dx)) 0.1 (gf (g-svc-dz)) (* pulse 2.0) 0.2 (* pulse 2.0) (rgb 255 210 110) 1)
+      (draw-aabb! (gf (g-svc-dx)) 2.2 (gf (g-svc-dz)) 0.3 4.0 0.3 (rgb 255 232 170) 2))))

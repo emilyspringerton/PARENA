@@ -159,4 +159,5 @@
         (look! (* rx 3.0) (* ry 3.0))))
     ;; right mouse zooms the sniper
     (gi! (g-zoom) (b2i (and (right-down?) (= (gi (want-weapon)) 4))))
-    (gi! (g-score-open) (b2i (key-down? (kc-tab))))))
+    (gi! (g-score-open) (b2i (key-down? (kc-tab))))
+    (mod-cmd!)))

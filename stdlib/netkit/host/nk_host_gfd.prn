@@ -78,6 +78,8 @@
                       (let [d (js/call (doc) "createElement" "div")]
                         (do (js/set! d "className" (str "gl s" style))
                             (js/set! d "textContent" (js/call ln "slice" 1))
+                            (surv-chat-add! (str "s" style) (js/call ln "slice" 1))
+                            (when (= (js/call (js/call ln "slice" 1) "startsWith" "SVTRAVEL ") true) (surv-on-svtravel! (js/call ln "slice" 1)))
                             (js/call frag "appendChild" d)
                             (set! gfd-lines (+ gfd-lines 1)))))))))
             (js/call box "appendChild" frag)
@@ -90,6 +92,7 @@
   (let [d (js/call (doc) "createElement" "div") box (el "gfd-log")]
     (do (js/set! d "className" "gl s9")
         (js/set! d "textContent" (str "> " text))
+        (surv-chat-add! "s9" (str "> " text))
         (js/call box "appendChild" d)
         (set! gfd-lines (+ gfd-lines 1))
         (js/set! box "scrollTop" (js/get box "scrollHeight")))))
@@ -248,6 +251,7 @@
             (when (= (js/get gfd "kind") "tcp") (tcp-close! (js/get gfd "id")))
             (when (and (= (js/get gfd "kind") "ws") (not (js/null? (js/get gfd "ws")))) (js/call (js/get gfd "ws") "close"))))
       (set! gfd null)
+      (surv-chat-add! "s6" why)
       (set-text! "gfd-note" why)
       (gfd-render-connect!)))
 (defn on-gfd-leave [(e : Any)] : Unit (gfd-ended! "You left the world."))

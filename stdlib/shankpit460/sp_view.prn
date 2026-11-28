@@ -142,7 +142,7 @@
 
 (defn draw-players! [(alpha : F32)] : Unit
   (dotimes [i (max-players)]
-    (when (and (alive? i) (!= i (gi (g-view-slot))))
+    (when (and (alive? i) (or (!= i (gi (g-view-slot))) (mod-third-person?)))
       (when (or (= (p-spawn-prot i) 0) (= (bit-and (gi (g-frame)) 4) 0))
         (draw-player! i alpha)))))
 

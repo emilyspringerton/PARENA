@@ -21,6 +21,12 @@
 ;;   mod-draw-world!        draw-arena!, after the boxes    the mode's props (items, chests)
 ;;   mod-hud!               draw-hud!                       the mode's HUD (replaces the score bar)
 ;;   mod-title! -> Bool     render-title!                   true = the mode drew its own title screen
+;;   mod-wheel! -> Bool      sp-zoom (the mouse wheel)       true = the mode used the wheel (zoom); the arena build has no use for it
+;;   mod-click! (x y)       sp-click (a mouse click)        a click on the picture at framebuffer pixel (x, y): click-to-move
+;;   mod-camera! -> Bool    game-camera!                    true = the mode placed the camera (third person)
+;;   mod-third-person? -> Bool  draw-players!, render-play! true = the hero's own body is drawn and the view model hidden
+;;   mod-cmd-yaw! / -pitch! -> F32  apply-local-cmd!        the yaw / pitch the hero's command carries (default: the camera's)
+;;   mod-cmd!               gather-cmd!, last               the mode may overwrite the command (click-to-move steering)
 ;;   mod-end! -> Bool       render-end!                     true = the mode drew its own end screen
 
 (defn mod-init! [] : Unit unit)
@@ -37,3 +43,11 @@
 (defn mod-hud! [(me : I32)] : Unit unit)
 (defn mod-title! [] : Bool false)
 (defn mod-end! [(alpha : F32)] : Bool false)
+
+(defn mod-wheel! [(dir : I32)] : Bool false)
+(defn mod-click! [(x : I32) (y : I32)] : Unit unit)
+(defn mod-camera! [(alpha : F32)] : Bool false)
+(defn mod-third-person? [] : Bool false)
+(defn mod-cmd-yaw! [] : F32 (gf (g-cam-yaw)))
+(defn mod-cmd-pitch! [] : F32 (gf (g-cam-pitch)))
+(defn mod-cmd! [] : Unit unit)

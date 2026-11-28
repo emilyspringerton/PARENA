@@ -112,7 +112,7 @@
 (defn apply-local-cmd! [] : Unit
   (let [me (gi (g-me))]
     (when (and (alive? me) (and (= (gi (g-countdown)) 0) (= (p-is-bot me) 0)))
-      (apply-usercmd! me (gf (g-cmd-fwd)) (gf (g-cmd-str)) (gf (g-cam-yaw)) (gf (g-cam-pitch))
+      (apply-usercmd! me (gf (g-cmd-fwd)) (gf (g-cmd-str)) (mod-cmd-yaw!) (mod-cmd-pitch!)
                       (!= (gi (g-cmd-jump)) 0) (!= (gi (g-cmd-fire)) 0) (!= (gi (g-cmd-crouch)) 0)
                       (!= (gi (g-cmd-reload)) 0) (!= (gi (g-cmd-ability)) 0))
       (when (and (>= (gi (g-cmd-weapon)) 0) (mod-weapon-ok? me (gi (g-cmd-weapon))))

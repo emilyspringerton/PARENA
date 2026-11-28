@@ -13,8 +13,17 @@
 ;;   the buttons (bottom right)    -> the keys / wheel / left mouse nk-survival-touch-key names
 ;;   a tap on the picture in a menu-> a click at that framebuffer pixel (sp_pointer + sp_button)
 ;; Every held key, the stick and the fire button are released on leaving, on blur and when the page is hidden.
-;; NOT here (named): sound (the engine fills its sound ring; nothing plays it in the SHANKPHONE yet -- BRAWLPIT has no sound here either),
-;; and any network: SURVIVAL is offline by design, as the OG mode is.
+;; THE CAMERA (2026-11-28, "bring in the REDGARDEN OG DNA"): a mouse wheel over the picture zooms (sp_zoom; out = third person, all the way in =
+;; first person), a left click that is not a drag becomes sp_click(x, y) = click to move (third person only; the engine refuses it for the sniper),
+;; and a drag orbits in third person / looks in first. The right button is the engine's right button in first person (the sniper's scope) and
+;; orbits in third person. A touch tap counts as a click too. The decisions are PARENA's (sv_camera.prn over stdlib/camera).
+;; THE GFD LINK (2026-11-28, founder: "wire it up to the server ... full command capabilities via the chat log"): the module imports nothing,
+;; so this host carries its network. The Chat button opens a log + input on the SURVIVAL view; every line typed is sent UNCHANGED to the live GFD
+;; connection (the one the GFD tab opens: signed in over wss, or the guest TCP session), so the chat log has the full command set of the MUD,
+;; and everything the MUD says comes back into it. The same connection settles telecrystal casts: survival.wasm's mailbox (sv_crystal.prn)
+;; holds a request when a cast commits; each frame this file turns it into `svtravel <id> <x> <z> <fight>` and turns the server's
+;; `SVTRAVEL OK|FIZZLE|NO ...` reply line back into the mailbox. No live connection = server-on 0 = the offline rules (wood, local d20).
+;; NOT here (named): sound (the engine fills its sound ring; nothing plays it in the SHANKPHONE yet -- BRAWLPIT has no sound here either).
 
 (def surv-state 0)          ; 0 not loaded, 1 loading, 2 ready, 3 could not load (nk_garage.prn's codes)
 (def surv-x null)
@@ -33,6 +42,13 @@
 (def surv-look-x 0.0)
 (def surv-look-y 0.0)
 (def surv-menu-down false)  ; a menu tap is pressed on the picture
+(def surv-down-x 0.0)       ; where the picture was pressed (CSS px), for the click-vs-drag test
+(def surv-down-y 0.0)
+(def surv-down-tp false)    ; third person when it was pressed
+(def surv-rmb false)        ; the right mouse button is held as the engine's right button (the sniper's scope)
+(def surv-seen 0)           ; the last mailbox request sequence this host relayed
+(def surv-chat-lines 0)
+(def surv-live false)       ; the badge's last state
 
 (defn surv-say! [(text : Any)] : Unit
   (do (set-text! "survival-msg" text)
@@ -81,11 +97,91 @@
     (surv-say! "")
     (when surv-run (do (js/call surv-x "sp_lock" 1) (surv-start-loop!)))))
 
+;; ---- the GFD link: chat log + the cast mailbox (layout: stdlib/shankpit_survival/sv_crystal.prn, base = sv-base + 12288 = 536576) ----------
+(defn surv-mb [] : I32 536576)
+(defn surv-view [] : Any (js/new "DataView" (js/get surv-mem "buffer")))
+
+(defn surv-chat-add! [(cls : String) (text : String)] : Unit
+  (let [box (el "sv-log")]
+    (when (not (js/null? box))
+      (let [d (js/call (doc) "createElement" "div")]
+        (do (js/set! d "className" (str "gl " cls))
+            (js/set! d "textContent" text)
+            (js/call box "appendChild" d)
+            (set! surv-chat-lines (+ surv-chat-lines 1))
+            (loop [] (when (> surv-chat-lines 120)
+                       (do (js/call box "removeChild" (js/get box "firstChild")) (set! surv-chat-lines (- surv-chat-lines 1)) (recur))))
+            (js/set! box "scrollTop" (js/get box "scrollHeight")))))))
+
+;; a live, playing GFD session (the wasm's state 3 = in the world)
+(defn surv-gfd-live? [] : Bool
+  (if (js/null? gfd) false
+      (if (js/get gfd "up") (= (js/call (js/get gfd "x") "nk_gfd_state") 3) false)))
+
+(defn surv-badge! [(live : Bool)] : Unit
+  (when (!= live surv-live)
+    (do (set! surv-live live)
+        (set-text! "sv-badge" (if live "GFD live" "offline")))))
+
+;; the server's SVTRAVEL line -> the mailbox reply (the request sequence last, so the wasm never sees a half-written reply)
+(defn surv-on-svtravel! [(text : String)] : Unit
+  (when (not (js/null? surv-mem))
+    (let [p (js/call text "split" " ")
+          v (js/aget p 1)
+          dv (surv-view)
+          b (surv-mb)]
+      (do (cond
+            (= v "OK")
+              (do (js/call dv "setInt32" (+ b 36) 1 true)
+                  (js/call dv "setFloat32" (+ b 44) (js/call-fn (js/global "parseFloat") (js/aget p 3)) true)
+                  (js/call dv "setFloat32" (+ b 48) (js/call-fn (js/global "parseFloat") (js/aget p 4)) true)
+                  (js/call dv "setFloat32" (+ b 52) (js/call-fn (js/global "parseFloat") (js/aget p 5)) true)
+                  (js/call dv "setInt32" (+ b 56) (js/call-fn (js/global "parseInt") (js/aget p 6) 10) true))
+            (= v "FIZZLE") (js/call dv "setInt32" (+ b 36) 2 true)
+            :else
+              (let [why (js/aget p 3)]
+                (do (js/call dv "setInt32" (+ b 36) 3 true)
+                    (js/call dv "setInt32" (+ b 40)
+                             (cond (= why "unknown") 1 (= why "out-of-ring") 2 (= why "guard") 3 (= why "flow") 4
+                                   (= why "pending") 5 (= why "ko") 6 :else 7) true))))
+          (js/call dv "setInt32" (+ b 32) (js/call dv "getInt32" b true) true)))))
+
+;; once a frame: tell the wasm whether a server is there, and send a freshly posted cast
+(defn surv-relay! [] : Unit
+  (let [dv (surv-view) b (surv-mb) live (surv-gfd-live?)]
+    (do (js/call dv "setInt32" (+ b 64) (if live 1 0) true)
+        (surv-badge! live)
+        (let [seq (js/call dv "getInt32" b true)]
+          (when (!= seq surv-seen)
+            (do (set! surv-seen seq)
+                (when live
+                  (let [id (cstr (js/new "Uint8Array" (js/get surv-mem "buffer")) (+ b 128))]
+                    (gfd-command! (str "svtravel " id " " (js/call (js/call dv "getFloat32" (+ b 8) true) "toFixed" 2) " "
+                                       (js/call (js/call dv "getFloat32" (+ b 12) true) "toFixed" 2) " "
+                                       (js/call dv "getInt32" (+ b 16) true)))))))))))
+
+(defn on-sv-chat-send [(e : Any)] : Unit
+  (do (js/call e "preventDefault")
+      (let [t (str (val "sv-chat-input"))]
+        (when (> (js/get t "length") 0)
+          (do (set-val! "sv-chat-input" "")
+              (if (surv-gfd-live?)
+                  (gfd-command! t)
+                  (surv-chat-add! "s8" "Not connected to GoblinFoxDragon. Open the GFD tab, sign in or play as a guest, and tap Play; this log then reaches the whole MUD.")))))))
+
+(defn on-sv-chat-toggle [(e : Any)] : Unit
+  (let [box (el "sv-chat")
+        open (js/get box "hidden")]
+    (do (set-hidden! "sv-chat" (not open))
+        (js/call (el "btn-sv-chat") "setAttribute" "aria-expanded" (if open "true" "false"))
+        (when open (js/call (el "sv-chat-input") "focus")))))
+
 ;; ---- the frame loop (only while the view is up) ------------------------------------------------------------------------------------
 (defn surv-tick [(t : F64)] : Unit
   (do (set! surv-looping false)
       (when (and surv-run (= surv-state 2))
         (do (js/call surv-x "sp_pad" 0 surv-lx surv-ly 0.0 0.0 0.0 0.0 0)
+            (surv-relay!)
             (js/call surv-x "sp_frame" t)
             (js/call surv-ctx "putImageData" surv-img 0 0)
             (surv-start-loop!)))))
@@ -98,6 +194,8 @@
 ;; ---- entering and leaving ---------------------------------------------------------------------------------------------------------
 (defn survival-enter! [] : Unit
   (do (set! surv-run true)
+      ;; signed in with IDUNA and no session yet: open one, so the chat log and the crystals reach the server without a detour
+      (when (and (js/null? gfd) (not (js/null? (gfd-sso)))) (on-gfd-resume null))
       (when (or (= surv-state 0) (= surv-state 3)) (survival-load!))
       (when (= surv-state 2) (do (js/call surv-x "sp_lock" 1) (surv-start-loop!)))))
 
@@ -120,6 +218,7 @@
           (set! surv-look-id -1)
           (when (not (js/null? surv-x))
             (do (when surv-menu-down (js/call surv-x "sp_button" 0 0))
+                (when surv-rmb (do (set! surv-rmb false) (js/call surv-x "sp_button" 2 0)))
                 (set! surv-menu-down false)
                 (js/call surv-x "sp_pad_gone" 0)
                 (js/call surv-x "sp_blur")))))))
@@ -201,11 +300,16 @@
   (when (= surv-state 2)
     (do (js/call e "preventDefault")
         (if (= (js/call surv-x "sp_phase") 1)
-            (when (< surv-look-id 0)
-              (do (set! surv-look-id (js/get e "pointerId"))
-                  (set! surv-look-x (js/get e "clientX"))
-                  (set! surv-look-y (js/get e "clientY"))
-                  (js/call surv-canvas "setPointerCapture" surv-look-id)))
+            (if (and (= (js/get e "pointerType") "mouse") (and (= (js/get e "button") 2) (= (js/call surv-x "sp_third_person") 0)))
+                (do (set! surv-rmb true) (js/call surv-x "sp_button" 2 1))
+                (when (< surv-look-id 0)
+                  (do (set! surv-look-id (js/get e "pointerId"))
+                      (set! surv-look-x (js/get e "clientX"))
+                      (set! surv-look-y (js/get e "clientY"))
+                      (set! surv-down-x (js/get e "clientX"))
+                      (set! surv-down-y (js/get e "clientY"))
+                      (set! surv-down-tp (= (js/call surv-x "sp_third_person") 1))
+                      (js/call surv-canvas "setPointerCapture" surv-look-id))))
             (do (js/call surv-x "sp_pointer" (surv-fb-x e) (surv-fb-y e))
                 (set! surv-menu-down true)
                 (js/call surv-x "sp_button" 0 1))))))
@@ -222,9 +326,24 @@
               (js/call surv-x "sp_mouse" dx dy)))
         (js/call surv-x "sp_pointer" (surv-fb-x e) (surv-fb-y e)))))
 
+(defn surv-abs [(v : F64)] : F64 (if (< v 0.0) (- 0.0 v) v))
+
+(defn surv-canvas-wheel [(e : Any)] : Unit
+  (when (= surv-state 2)
+    (do (js/call e "preventDefault")
+        (when (!= (js/get e "deltaY") 0.0)
+          (js/call surv-x "sp_zoom" (if (> (js/get e "deltaY") 0.0) -1 1))))))
+
 (defn surv-canvas-up [(e : Any)] : Unit
   (when (= surv-state 2)
-    (do (when (= (js/get e "pointerId") surv-look-id) (set! surv-look-id -1))
+    (do (when (= (js/get e "pointerId") surv-look-id)
+          (do (set! surv-look-id -1)
+              ;; a press that barely moved, in third person, is a click: click to move
+              (when (and surv-down-tp (and (= (js/get e "type") "pointerup") (= (js/get e "button") 0)))
+                (when (< (+ (surv-abs (- (js/get e "clientX") surv-down-x)) (surv-abs (- (js/get e "clientY") surv-down-y))) 8.0)
+                  (js/call surv-x "sp_click" (surv-fb-x e) (surv-fb-y e))))))
+        (when (and surv-rmb (= (js/get e "button") 2))
+          (do (set! surv-rmb false) (js/call surv-x "sp_button" 2 0)))
         (when surv-menu-down
           (do (set! surv-menu-down false)
               (js/call surv-x "sp_button" 0 0)
@@ -253,4 +372,7 @@
         (js/call surv-canvas "addEventListener" "pointermove" (callback surv-canvas-move))
         (js/call surv-canvas "addEventListener" "pointerup" (callback surv-canvas-up))
         (js/call surv-canvas "addEventListener" "pointercancel" (callback surv-canvas-up))
-        (js/call surv-canvas "addEventListener" "contextmenu" (callback arc-no-menu)))))
+        (js/call surv-canvas "addEventListener" "contextmenu" (callback arc-no-menu))
+        (js/call surv-canvas "addEventListener" "wheel" (callback surv-canvas-wheel) (js/obj "passive" false))
+        (on! "sv-chat-form" "submit" (callback on-sv-chat-send))
+        (on! "btn-sv-chat" "click" (callback on-sv-chat-toggle)))))

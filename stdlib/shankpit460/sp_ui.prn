@@ -86,6 +86,7 @@
   (do (gi! (g-fog) (sky-horizon)) (gf! (g-fog-near) 90.0) (gf! (g-fog-far) 560.0) (gf! (g-fog-inv) (/ 1.0 470.0)) (gf! (g-pe) 0.45)))
 
 (defn game-camera! [(alpha : F32)] : Unit
+  (if (mod-camera! alpha) unit
   (let [me (gi (g-me))
         (x : F32) (lerp-pos me 0 alpha)
         (y : F32) (lerp-pos me 1 alpha)
@@ -106,7 +107,7 @@
                   (want-pitch : F32) (* (atan2f dy (len2 dx dz)) (rad2deg))]
               (gf! (g-cam-yaw) (norm-yaw (+ (gf (g-cam-yaw)) (* (angle-diff want-yaw (gf (g-cam-yaw))) 0.06))))
               (gf! (g-cam-pitch) (+ (gf (g-cam-pitch)) (* (- want-pitch (gf (g-cam-pitch))) 0.06)))))
-          (set-camera! x (+ y 1.4) z (gf (g-cam-yaw)) (gf (g-cam-pitch)) 75.0)))))
+          (set-camera! x (+ y 1.4) z (gf (g-cam-yaw)) (gf (g-cam-pitch)) 75.0))))))
 
 (defn orbit-camera! [] : Unit
   (let [(t : F32) (* (f32 (gi (g-ticker))) 0.00012)
@@ -152,7 +153,7 @@
     (game-camera! alpha)
     (render-world! alpha)
     (draw-tags!)
-    (when (and (alive? me) (not (and (= (p-weapon me) 4) (!= (gi (g-zoom)) 0))))
+    (when (and (alive? me) (and (not (mod-third-person?)) (not (and (= (p-weapon me) 4) (!= (gi (g-zoom)) 0)))))
       (draw-viewmodel! me))
     (draw-hud! me)
     ;; not locked: the game is waiting for a click

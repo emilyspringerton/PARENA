@@ -286,6 +286,7 @@
     (sv-city-init!)
     (sv-trees-reset!)
     (svx-reset!)
+    (svc-reset!)
     (clear-world!)
     (gi! (g-mode) 2)
     (gi! (g-me) 0)
@@ -381,6 +382,7 @@
   (when (= (gi (g-map-id)) 3)
     (sv-trees-draw!)
     (svx-draw!)
+    (svc-draw!)
     (let [(bob : F32) (* 0.25 (sinf (* (f32 (gi (g-ticker))) 0.004)))]
       (dotimes [i (sv-max-guns)]
         (let [a (sv-gun-addr i)]

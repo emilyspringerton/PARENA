@@ -72,6 +72,9 @@
       (when (and (= b 0) (!= down 0))
         (ui-click!))))
 (defn sp-wheel [(dir : I32)] : Unit (when (= (gi (g-phase)) 1) (cycle-weapon! dir)))
+(defn sp-zoom [(dir : I32)] : Unit (when (= (gi (g-phase)) 1) (mod-wheel! dir)))
+(defn sp-third-person [] : I32 (b2i (mod-third-person?)))
+(defn sp-click [(x : I32) (y : I32)] : Unit (when (= (gi (g-phase)) 1) (mod-click! x y)))
 (defn sp-pad [(slot : I32) (lx : F32) (ly : F32) (rx : F32) (ry : F32) (lt : F32) (rt : F32) (buttons : I32)] : Unit
   (in-pad! slot lx ly rx ry lt rt buttons))
 (defn sp-pad-gone [(slot : I32)] : Unit (in-pad-gone! slot))
