@@ -15,11 +15,17 @@ SURVIVAL mode (`SHANKPIT/apps/lobby`, `lobby_start_survival_mode` + `witness_ai_
   4 + 3n, at most 5 + n alive, one zombie every 15 s, a 6 s rest, the hidden 60..130 ring, zombie 100 hp / 14 damage / 3 units /
   1.1 s, the gun loot table) and the existing `stdlib/shankpit/chest_rules.prn`.
 
+- **telecrystals** (2026-11-28, `sv_crystal.prn`): the WORLDMAP contract played. `survival_city.wmap` (WORLDMAP v1 `crystal` rows, shared with
+  GoblinFoxDragon) -> `tools/sv_wmap_gen.py` -> `sv_crystal_data.prn`. G (or the SHANKPHONE's Teleport button) inside a ring casts; every rule is
+  `stdlib/worldmap/wm_rules.prn`, which the GFD server compiles to Go (commit time, 1.5 interrupt slack, 250 ms guard, and the travel-from-combat gate:
+  +742 ms and a d20 where <= 4 fizzles). Cost is wood, charged at commit. Offline: no GFD round trip (the module imports nothing).
+
 One wasm32 module, the same build guarantees as the arena: no allocator, no imports, fixed 8 MB, 232 KB.
 
 ```bash
 scripts/build_shankpit_survival_wasm.sh /tmp/survival.wasm
-node tests/shankpit_survival_test.mjs /tmp/survival.wasm     # 31 checks, plays the mode headlessly
+python3 tools/sv_wmap_gen.py --check                           # the generated crystal table is current
+node tests/shankpit_survival_test.mjs /tmp/survival.wasm     # 55 checks, plays the mode headlessly
 scripts/test_shankpit460.sh                                    # the arena's parity / engine / soak legs + this one
 ```
 
