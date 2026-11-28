@@ -13,7 +13,14 @@
 (defn sv-city-road [] : F32 54.0)
 (defn sv-city-pitch [] : F32 284.0)       ; block + road
 (defn sv-city-radius [] : I32 3)          ; grid cells either side of the origin (the C city: 12)
-(defn sv-city-edge [] : F32 994.0)        ; (radius + 0.5) * pitch: the road ring outside the last blocks
+(defn g-sv-biome [] : I32 664)            ; 0 city (the original level), 1 meadow (every GFD zone for now): sp_zone sets it
+(defn g-sv-zseed [] : I32 665)            ; the zone's seed (the host hashes the GFD room into it): trees grow from it
+(defn g-sv-zin [] : I32 666)              ; how the hero arrived: 0 centre, 1 heading N, 2 S, 3 E, 4 W (north = +z, east = +x)
+(defn g-sv-zpend [] : I32 667)            ; 1 = rebuild the scene at the next tick
+(defn g-sv-zexit [] : I32 668)            ; the hero walked off this edge (1 N, 2 S, 3 E, 4 W) and the host has not answered yet
+(defn g-sv-zcool [] : I32 669)            ; ticks before another edge exit counts
+(defn sv-meadow? [] : Bool (= (gi (g-sv-biome)) 1))
+(defn sv-city-edge [] : F32 (if (sv-meadow?) 420.0 994.0))   ; city: (radius + 0.5) * pitch, the road ring outside the last blocks; meadow: the zone's half width
 (defn sv-city-max-boxes [] : I32 127)
 
 ;; per-box colour table, filled while the city is built (mod-box-color reads it)
@@ -76,16 +83,17 @@
         r (sv-city-radius)]
     (gi! (g-box-n) 0)
     (sv-push-box! 0.0 -2.0 0.0 (* e 4.0) 4.0 (* e 4.0) (floor-color))   ; slot 0: the floor slab (never drawn, never traced)
-    ;; the hard edge: four low walls on the outer road ring
-    (sv-push-box! 0.0 5.0 (- 0.0 e) (* e 2.0) 10.0 4.0 (wall-color))
-    (sv-push-box! 0.0 5.0 e (* e 2.0) 10.0 4.0 (wall-color))
-    (sv-push-box! (- 0.0 e) 5.0 0.0 4.0 10.0 (* e 2.0) (wall-color))
-    (sv-push-box! e 5.0 0.0 4.0 10.0 (* e 2.0) (wall-color))
+    ;; the hard edge: four low walls on the outer road ring (a meadow has none: its edges are the way into the next zone)
+    (when (not (sv-meadow?))
+      (sv-push-box! 0.0 5.0 (- 0.0 e) (* e 2.0) 10.0 4.0 (wall-color))
+      (sv-push-box! 0.0 5.0 e (* e 2.0) 10.0 4.0 (wall-color))
+      (sv-push-box! (- 0.0 e) 5.0 0.0 4.0 10.0 (* e 2.0) (wall-color))
+      (sv-push-box! e 5.0 0.0 4.0 10.0 (* e 2.0) (wall-color)))
     (loop [gx (- 0 r)]
       (when (<= gx r)
         (loop [gz (- 0 r)]
           (when (<= gz r)
-            (when (not (or (and (<= (abs-i gx) 1) (= gz 0)) (and (<= (abs-i gz) 1) (= gx 0))))
+            (when (and (not (sv-meadow?)) (not (or (and (<= (abs-i gx) 1) (= gz 0)) (and (<= (abs-i gz) 1) (= gx 0)))))
               (sv-city-block! gx gz))
             (recur (+ gz 1))))
         (recur (+ gx 1))))

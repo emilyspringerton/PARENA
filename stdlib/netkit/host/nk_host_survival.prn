@@ -50,6 +50,10 @@
 (def surv-link-code -1)
 (def surv-seen 0)           ; the last mailbox request sequence this host relayed
 (def surv-chat-lines 0)
+(def surv-room "")           ; the GFD room the scene was last built for ("room|zone")
+(def surv-dir 0)             ; the way the hero last went (1 N, 2 S, 3 E, 4 W): where the next zone's arrival side comes from
+(def surv-dir-at 0.0)
+(def surv-exit-at -1.0)      ; when an edge exit's move command went out (-1 none)
 (def surv-mouse-seen false)  ; a real mouse has touched the picture: FPS-style look (the app captures the pointer) is worth doing
 (def surv-cap false)         ; the app currently holds the pointer captured (relative mouse: NetkitNative.mouseCapture)
 (def surv-cap-off false)     ; Esc let go of it; the next mouse press on the picture takes it back
@@ -99,6 +103,7 @@
                           (* (* (js/call surv-x "sp_fb_w") (js/call surv-x "sp_fb_h")) 4))
                   (js/call surv-x "sp_fb_w") (js/call surv-x "sp_fb_h")))
     (surv-install!)
+    (js/call surv-x "sp_zone" (surv-hash "meadow") 0 1)   ; every zone is a meadow for now; a GFD room replaces this seed once connected
     (set! surv-state 2)
     (surv-say! "")
     (when surv-run (do (js/call surv-x "sp_lock" 1) (surv-start-loop!)))))
@@ -206,7 +211,7 @@
         (when (> (js/get t "length") 0)
           (do (set-val! "sv-chat-input" "")
               (if (surv-gfd-live?)
-                  (gfd-command! t)
+                  (do (surv-note-dir! (surv-dir-of t)) (gfd-command! t))
                   (surv-chat-add! "s8" "Not connected to GoblinFoxDragon. Open the GFD tab, sign in or play as a guest, and tap Play; this log then reaches the whole MUD.")))))))
 
 (defn on-sv-chat-toggle [(e : Any)] : Unit
@@ -248,11 +253,67 @@
           (surv-mouse-buttons! (js/get ev "b"))
           (when (!= w 0.0) (js/call surv-x "sp_zoom" (if (> w 0.0) 1 -1)))))))
 
+;; ---- zones: every GFD room is a scene (sv_zone.prn is the other half) -------------------------------------------------------------------
+(defn surv-hash [(s : String)] : I32
+  (let [(h : F64) 5381.0
+        n (js/get s "length")]
+    (do (dotimes [i n]
+          (set! h (js/call (js/global "Math") "abs" (js/call (js/global "Math") "imul" (+ (js/call (js/global "Math") "imul" h 33) (js/call s "charCodeAt" i)) 1))))
+        (js/call (js/global "Math") "max" 1 (js/call (js/global "Math") "floor" (/ h 1.0))))))
+(defn surv-dir-word [(d : I32)] : String
+  (cond (= d 1) "north" (= d 2) "south" (= d 3) "east" :else "west"))
+(defn surv-dir-of [(t : String)] : I32
+  (let [w (js/call (js/call t "trim") "toLowerCase")]
+    (cond (or (= w "n") (= w "north")) 1
+          (or (= w "s") (= w "south")) 2
+          (or (= w "e") (= w "east")) 3
+          (or (= w "w") (= w "west")) 4
+          :else 0)))
+(defn surv-note-dir! [(d : I32)] : Unit
+  (when (> d 0) (do (set! surv-dir d) (set! surv-dir-at (js/call (js/global "performance") "now")))))
+
+(defn surv-zone-sync! [(t : F64)] : Unit
+  (let [live (surv-gfd-live?)]
+    (do
+      (when live
+        (let [key (str (gfd-word0 "nk_gfd_room_addr") "|" (gfd-word0 "nk_gfd_zone_addr"))]
+          (when (and (!= key "|") (!= key surv-room))
+            (let [first (= surv-room "")
+                  side (if (and (not first) (< (- t surv-dir-at) 6000.0)) surv-dir 0)]
+              (do (set! surv-room key)
+                  (set! surv-dir 0)
+                  (js/call surv-x "sp_zone" (surv-hash key) side 1)
+                  (set! surv-exit-at -1.0)
+                  (surv-chat-add! "s5" (str "Zone: " (gfd-word0 "nk_gfd_room_addr")))
+                  (js/set! (el "sv-room") "title" key))))))
+      (let [d (js/call surv-x "sp_zone_exit")]
+        (if (= d 0)
+            (set! surv-exit-at -1.0)
+            (if (and live (< surv-exit-at 0.0))
+                (do (surv-note-dir! d) (set! surv-exit-at t) (gfd-command! (surv-dir-word d)))
+                (when (or (not live) (> (- t surv-exit-at) 2500.0))
+                  (do (set! surv-exit-at -1.0)
+                      (js/call surv-x "sp_zone_ack")
+                      (surv-chat-add! "s8" (if live "You cannot go that way." "Not connected to GoblinFoxDragon: the edge of this zone is closed."))))))))))
+
+(defn on-sv-gfd-toggle [(e : Any)] : Unit
+  (let [box (el "sv-gfd")
+        open (js/get box "hidden")]
+    (do (set-hidden! "sv-gfd" (not open))
+        (js/call (el "btn-sv-gfd") "setAttribute" "aria-expanded" (if open "true" "false")))))
+(defn surv-compass-code [(c : I32)] : I32 (if (and (>= c 1) (<= c 4)) c 0))
+(defn on-sv-gfd-btn [(e : Any)] : Unit
+  (let [b (js/call (js/get e "target") "closest" "[data-gb]")]
+    (when (not (js/null? b))
+      (do (surv-note-dir! (surv-compass-code (js/call-fn (js/global "parseInt") (js/get (js/get b "dataset") "gb") 10)))
+          (on-gfd-button e)))))
+
 (defn surv-tick [(t : F64)] : Unit
   (do (set! surv-looping false)
       (when (and surv-run (= surv-state 2))
         (do (js/call surv-x "sp_pad" 0 surv-lx surv-ly 0.0 0.0 0.0 0.0 0)
             (surv-relay!)
+            (surv-zone-sync! t)
             (surv-capture-sync!)
             (js/call surv-x "sp_frame" t)
             (js/call surv-ctx "putImageData" surv-img 0 0)
@@ -457,5 +518,9 @@
         (js/call surv-canvas "addEventListener" "wheel" (callback surv-canvas-wheel) (js/obj "passive" false))
         (on! "sv-chat-form" "submit" (callback on-sv-chat-send))
         (on! "btn-sv-chat" "click" (callback on-sv-chat-toggle))
+        (on! "btn-sv-gfd" "click" (callback on-sv-gfd-toggle))
+        (on! "sv-actions" "click" (callback on-sv-gfd-btn))
+        (on! "sv-compass" "click" (callback on-sv-gfd-btn))
+        (on! "sv-here" "click" (callback on-gfd-here))
         (on! "btn-sv-sso" "click" (callback on-sv-sso))
         (on! "btn-sv-connect" "click" (callback on-sv-connect)))))

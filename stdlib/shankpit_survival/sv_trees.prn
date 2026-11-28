@@ -21,7 +21,7 @@
 (defn g-sv-build-t [] : I32 625)           ; ticks of the build notice
 (defn g-sv-build-msg [] : I32 626)         ; 1 built, 2 not enough wood, 3 no room
 (defn g-sv-felled [] : I32 627)
-(defn sv-forest-seed [] : I32 1337)
+(defn sv-forest-seed [] : I32 (if (= (gi (g-sv-zseed)) 0) 1337 (gi (g-sv-zseed))))   ; the zone seed (sv_city.prn), the city's own 1337 by default
 
 (defn tk [(i : I32)] : I32 (load32 (sv-tree-addr i 0)))
 (defn tbox [(i : I32)] : I32 (load32 (sv-tree-addr i 1)))
@@ -62,7 +62,7 @@
                   (z : F32) (+ (* (f32 gz) cell) (milli (tree-jitter-milli gx gz (sv-forest-seed) 1)))]
               (when (and (and (< (fabs x) lim) (< (fabs z) lim))
                          (and (not (and (< (fabs x) 14.0) (< (fabs z) 14.0)))
-                              (and (not (or (sv-near-road? x) (sv-near-road? z)))
+                              (and (or (sv-meadow?) (not (or (sv-near-road? x) (sv-near-road? z))))
                                    (not (sv-point-blocked? x z 4.0)))))
                 (store32! (sv-tree-addr count 0) kind)
                 (store32! (sv-tree-addr count 1) (map-count))

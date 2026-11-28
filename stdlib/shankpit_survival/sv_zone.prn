@@ -1,0 +1,76 @@
+;; stdlib/shankpit_survival/sv_zone.prn -- SURVIVAL's zones: every GFD room is a scene.
+;;
+;; The page host owns the GFD connection and the room; this file owns the picture of it. The contract (state words in sv_city.prn, G 664..669):
+;;   sp_zone(seed, entry, biome)   the host: "you are in this zone now". seed = a hash of the GFD room (trees grow from it, so a room always
+;;                                 looks the same); entry = which way the hero came in (0 centre, 1 going N, 2 S, 3 E, 4 W; north = +z,
+;;                                 east = +x), so walking east out of one zone puts you on the west edge of the next; biome 1 = meadow
+;;                                 (every zone, for now), 0 = the city. Applied at the next tick: scene rebuilt, zombies gone, wave restarts,
+;;                                 wood and weapons kept.
+;;   sp_zone_exit()                the hero walked off an edge (1 N, 2 S, 3 E, 4 W), 0 = no. The host answers with the room's move
+;;                                 command (`east`...) and then either sp_zone(...) (the room changed) or sp_zone_ack() (it did not / no link).
+;;   sp_zone_ack()                 the exit was refused: the hero is stepped back in and the edge sleeps for a moment.
+;; Biomes are procedural later; today only the trees come from the seed.
+
+(defn sv-zone-margin [] : F32 14.0)
+
+(defn sp-zone [(seed : I32) (side : I32) (biome : I32)] : Unit
+  (do (gi! (g-sv-zseed) seed)
+      (gi! (g-sv-zin) side)
+      (gi! (g-sv-biome) biome)
+      (gi! (g-sv-zexit) 0)
+      (gi! (g-sv-zpend) 1)))
+(defn sp-zone-exit [] : I32 (gi (g-sv-zexit)))
+(defn sp-zone-ack [] : Unit
+  (let [d (gi (g-sv-zexit))
+        (back : F32) (- (sv-city-edge) 60.0)]
+    (do (when (= d 1) (when (> (p-z 0) back) (set-p-z! 0 back)))
+        (when (= d 2) (when (< (p-z 0) (- 0.0 back)) (set-p-z! 0 (- 0.0 back))))
+        (when (= d 3) (when (> (p-x 0) back) (set-p-x! 0 back)))
+        (when (= d 4) (when (< (p-x 0) (- 0.0 back)) (set-p-x! 0 (- 0.0 back))))
+        (set-p-vx! 0 0.0) (set-p-vz! 0 0.0)
+        (gi! (g-sv-zexit) 0)
+        (gi! (g-sv-zcool) 120))))
+
+;; the hero's arrival point: the edge opposite the way they were going, 40 units in; across the edge they keep their other coordinate
+(defn sv-zone-apply! [] : Unit
+  (let [(e : F32) (- (sv-city-edge) 40.0)
+        side (gi (g-sv-zin))
+        wood (gi (g-sv-wood))
+        (x : F32) (p-x 0)
+        (z : F32) (p-z 0)]
+    (do (gi! (g-sv-zpend) 0)
+        (sv-city-init!)
+        (sv-trees-reset!)
+        (gi! (g-sv-wood) wood)
+        (sv-seed-street!)
+        (loop [p 1] (when (<= p (sv-pool)) (set-p-active! p 0) (recur (+ p 1))))
+        (gi! (g-sv-spawned) 0)
+        (gi! (g-sv-resting) 0)
+        (gi! (g-sv-next-ms) (+ (sv-now) (sv-first-spawn-ms)))
+        (gi! (g-sv-wave-t) 150)
+        (cond
+          (= side 1) (do (set! z (- 0.0 e)) (set! x (clamp-f x (- 0.0 e) e)))
+          (= side 2) (do (set! z e) (set! x (clamp-f x (- 0.0 e) e)))
+          (= side 3) (do (set! x (- 0.0 e)) (set! z (clamp-f z (- 0.0 e) e)))
+          (= side 4) (do (set! x e) (set! z (clamp-f z (- 0.0 e) e)))
+          :else (do (set! x 0.0) (set! z 0.0)))
+        (set-p-x! 0 x) (set-p-z! 0 z) (set-p-y! 0 6.0)
+        (set-p-vx! 0 0.0) (set-p-vy! 0 0.0) (set-p-vz! 0 0.0)
+        (gi! (g-sv-zcool) 120))))
+
+(defn sv-zone-tick! [] : Unit
+  (do (when (!= (gi (g-sv-zpend)) 0) (sv-zone-apply!))
+      (when (> (gi (g-sv-zcool)) 0) (gi! (g-sv-zcool) (- (gi (g-sv-zcool)) 1)))
+      (when (and (sv-meadow?) (and (= (gi (g-sv-zexit)) 0) (and (= (gi (g-sv-zcool)) 0) (alive? 0))))
+        (let [(lim : F32) (- (sv-city-edge) (sv-zone-margin))]
+          (cond
+            (> (p-z 0) lim) (gi! (g-sv-zexit) 1)
+            (< (p-z 0) (- 0.0 lim)) (gi! (g-sv-zexit) 2)
+            (> (p-x 0) lim) (gi! (g-sv-zexit) 3)
+            (< (p-x 0) (- 0.0 lim)) (gi! (g-sv-zexit) 4)
+            :else unit)))))
+
+(defn sv-zone-hud! [] : Unit
+  (when (!= (gi (g-sv-zexit)) 0)
+    (do (panel 250 300 140 22)
+        (draw-text-c "TRAVELLING..." 320 306 1 (amber)))))

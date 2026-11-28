@@ -114,6 +114,14 @@
           room (gfd-word0 "nk_gfd_room_addr")
           zone (gfd-word0 "nk_gfd_zone_addr")]
       (do
+        (set-text! "sv-room" (if (= room "") "GoblinFoxDragon" room))
+        (set-text! "sv-zone" (if (= zone "") "" (str "Lv " (js/call x "nk_gfd_vital" 0) " - " zone)))
+        (gfd-bar! "sv-hp" (js/call x "nk_gfd_bar" 0) (str "HP " (js/call x "nk_gfd_vital" 1) "/" (js/call x "nk_gfd_vital" 2)))
+        (gfd-bar! "sv-mp" (js/call x "nk_gfd_bar" 1) (str "MP " (js/call x "nk_gfd_vital" 3) "/" (js/call x "nk_gfd_vital" 4)))
+        (gfd-bar! "sv-tp" (js/call x "nk_gfd_bar" 2) (str "TP " (js/call x "nk_gfd_vital" 5)))
+        (dotimes [i (js/call x "nk_gfd_buttons")]
+          (let [b (el (str "sg-" (+ i 1)))]
+            (when (not (js/null? b)) (js/set! b "disabled" (= (js/call x "nk_gfd_btn_enabled" (+ i 1)) 0)))))
         (set-text! "gfd-room" (if (= room "") "GoblinFoxDragon" room))
         (set-text! "gfd-zone" (if (= zone "") "" (str "Lv " (js/call x "nk_gfd_vital" 0) " - " zone)))
         (gfd-bar! "gfd-hp" (js/call x "nk_gfd_bar" 0) (str "HP " (js/call x "nk_gfd_vital" 1) "/" (js/call x "nk_gfd_vital" 2)))
@@ -127,10 +135,12 @@
 
 ;; who is here: a chip per creature, tap to pick it as the target
 (defn gfd-paint-here! [] : Unit
+  (do (gfd-paint-here-in! "gfd-here") (gfd-paint-here-in! "sv-here")))
+(defn gfd-paint-here-in! [(box-id : String)] : Unit
   (let [x (js/get gfd "x")
         n (js/call x "nk_gfd_creatures")
         sel (js/call x "nk_gfd_selected")
-        box (el "gfd-here")]
+        box (el box-id)]
     (do (js/set! box "textContent" "")
         (when (= n 0) (let [d (js/call (doc) "createElement" "span")] (do (js/set! d "className" "muted") (js/set! d "textContent" "Nobody here") (js/call box "appendChild" d))))
         (dotimes [i n]

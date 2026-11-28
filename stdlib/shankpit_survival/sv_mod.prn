@@ -359,7 +359,8 @@
     (sv-corpses!)
     (sv-pickups!)
     (sv-trees-tick!)
-    (svx-tick!)
+    (when (not (sv-meadow?)) (svx-tick!))
+    (sv-zone-tick!)
     (if (alive? 0)
         (sv-waves!)
         (do (gi! (g-sv-dead-t) (+ (gi (g-sv-dead-t)) 1))
@@ -381,7 +382,7 @@
 (defn mod-draw-world! [] : Unit
   (when (= (gi (g-map-id)) 3)
     (sv-trees-draw!)
-    (svx-draw!)
+    (when (not (sv-meadow?)) (svx-draw!))
     (svc-draw!)
     (let [(bob : F32) (* 0.25 (sinf (* (f32 (gi (g-ticker))) 0.004)))]
       (dotimes [i (sv-max-guns)]
@@ -405,7 +406,8 @@
 (defn mod-hud! [(me : I32)] : Unit
   (do
     (sv-trees-hud!)
-    (svx-hud!)
+    (when (not (sv-meadow?)) (svx-hud!))
+    (sv-zone-hud!)
     (panel 238 6 164 34)
     (draw-text "WAVE" 248 9 1 (ink-faint))
     (draw-int (gi (g-sv-wave)) 248 19 2 (amber))
