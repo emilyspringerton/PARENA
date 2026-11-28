@@ -269,9 +269,31 @@
       (gfd-render-connect!)))
 (defn on-gfd-leave [(e : Any)] : Unit (gfd-ended! "You left the world."))
 
+;; a hardware keyboard on the GFD screen types into the command line: the first printable key focuses the input and lands in it,
+;; the caret at the end ("cast stone" -> c, a, s, t ... all in the box); Enter alone just focuses it. Ignored while any field already has focus.
+(defn gfd-typing-ok? [] : Bool
+  (and (not (js/get (el "view-gfd") "hidden"))
+       (and (not (js/get (el "gfd-play") "hidden"))
+            (and (not (js/null? gfd)) (not (arc-typing?))))))
+(defn gfd-on-keydown [(e : Any)] : Unit
+  (when (gfd-typing-ok?)
+    (when (not (or (js/get e "ctrlKey") (or (js/get e "metaKey") (or (js/get e "altKey") (js/get e "isComposing")))))
+      (let [k (js/get e "key")
+            box (el "gfd-input")]
+        (cond
+          (= k "Enter") (do (js/call e "preventDefault") (js/call box "focus"))
+          (= (js/get k "length") 1)
+            (do (js/call e "preventDefault")
+                (js/call box "focus")
+                (set-val! "gfd-input" (str (val "gfd-input") k))
+                (let [n (js/get (js/get box "value") "length")]
+                  (js/call box "setSelectionRange" n n)))
+          :else unit)))))
+
 (defn gfd-enter! [] : Unit
   (do (when (not gfd-ready)
         (do (set! gfd-ready true)
+            (js/call (win) "addEventListener" "keydown" (callback gfd-on-keydown))
             (on! "gfd-actions" "click" (callback on-gfd-button))
             (on! "gfd-compass" "click" (callback on-gfd-button))
             (on! "gfd-here" "click" (callback on-gfd-here))
