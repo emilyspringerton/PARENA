@@ -42,4 +42,16 @@ x.sp_zone(111, 4, 1); frame(3);
 ok(trees() === t1 && hx() > 300, `the same room (seed) regrows the same forest (${trees()} = ${t1}) and arrival is on the east edge`);
 x.sp_zone(333, 0, 1); frame(3);
 ok(Math.abs(hx()) < 1 && Math.abs(hz()) < 1, 'entry 0 = the centre');
+// biomes (sv_biome.prn): a named biome sticks, 255 is picked from the seed, and density differs between biomes
+const grow = (seed, biome) => { x.sp_zone(seed, 0, biome); frame(3); return trees(); };
+const swamp = grow(333, 2), snow = grow(333, 10), salt = grow(333, 4), forest = grow(333, 9), hollow = grow(333, 13);
+ok(gi(664) === 13 && hollow === 0, `the hollow (indoors stand-in) grows no trees (${hollow})`);
+ok(swamp > salt && forest >= snow && forest > salt, `swamp ${swamp} / forest ${forest} / snow ${snow} / salt flats ${salt}: dense biomes grow more`);
+x.sp_zone(333, 0, 255); frame(3);
+const picked = gi(664);
+ok(picked >= 1 && picked <= 12, `255 = the seed picks a biome (${picked})`);
+x.sp_zone(333, 0, 255); frame(3);
+ok(gi(664) === picked, 'the same seed picks the same biome');
+for (const b of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) { x.sp_zone(77, 0, b); frame(4); }
+ok(true, 'every biome renders frames without trapping');
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
