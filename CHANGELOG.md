@@ -1,4 +1,5 @@
 ## 2026-11-26
+- **feat(stdlib/worldmap): the WORLDMAP contract -- one map format + one rules module for SHANKPIT (client) and GoblinFoxDragon (server).** `CONTRACT.md` (the `.wmap` format, a superset of shankpit-460's `.map`: zones, buildings, NPCs, exits, portals) and `wm_rules.prn` (zone kinds, setjob-in-town-only, the 742 ms / d20 / <=4 combat-travel gate, footprint/circle/bound geometry in F32). `make test-worldmap` builds it with BURROW to C and Go and requires both to print the same hand-derived vectors. Needed BURROW F32 + fabs/fmin2/fmax2 + Bool literals in its C target (BURROW dfd03d5 and follow-up). (session: sess-20261128-0210-7f8701d8)
 
 - **feat(netkit): GoblinFoxDragon in the SHANKPHONE, the MUD with a GUI** (founder: "start building the affordances for a Goblin, Fox,
   Dragon GUI into the Shank Phone app ... with the SSO login ... basic buttons for north, south, east, and west ... whatever you think we

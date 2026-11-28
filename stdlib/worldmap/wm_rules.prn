@@ -1,0 +1,38 @@
+;; stdlib/worldmap/wm_rules.prn -- the rules half of the WORLDMAP contract (see CONTRACT.md).
+;;
+;; One source, two engines: SHANKPIT (the client: C/wasm) and GoblinFoxDragon (the server: Go) both compile THIS file,
+;; so "can I change job here", "did the travel roll fail" and "is this point inside that box / portal" cannot drift
+;; between them. Scalars only (I32/F32/Bool, no heap, no state, no RNG -- the host rolls and passes the roll), which is
+;; exactly the subset BURROW's Go target and its C target both emit.
+
+(module wm_rules)
+
+;; ---- zone kinds (the `zone <id> <kind> <name>` line of a worldmap) --------------------------------------------
+(defn kind-town [] : I32 1)
+(defn kind-field [] : I32 2)
+(defn kind-dungeon [] : I32 3)
+(defn kind-arena [] : I32 4)
+(defn kind-valid [(k : I32)] : Bool (and (>= k 1) (<= k 4)))
+
+;; ---- GFD rules lifted out of apps2/mud (founder 2026-11-28) ----------------------------------------------------
+;; setjob only in a town, never while fighting.
+(defn job-change-allowed [(kind : I32) (fighting : Bool)] : Bool
+  (if fighting false (= kind 1)))
+
+;; travel from combat: wait 742 ms, then the host rolls a d20; a roll of 4 or below fails and you stay in the fight.
+(defn travel-delay-ms [] : I32 742)
+(defn travel-fail-max [] : I32 4)
+(defn travel-roll-fails [(roll : I32)] : Bool (<= roll 4))
+
+;; ---- geometry (F32, same arithmetic as sp_map.prn's boxes) ---------------------------------------------------------
+;; point inside an axis-aligned footprint given centre + full size (the `box` / `building` convention).
+(defn point-in-footprint [(px : F32) (pz : F32) (cx : F32) (cz : F32) (w : F32) (d : F32)] : Bool
+  (and (<= (fabs (- px cx)) (/ w 2.0)) (<= (fabs (- pz cz)) (/ d 2.0))))
+
+;; point inside a portal / socket circle, compared squared (no sqrt).
+(defn point-in-circle [(px : F32) (pz : F32) (cx : F32) (cz : F32) (r : F32)] : Bool
+  (<= (+ (* (- px cx) (- px cx)) (* (- pz cz) (- pz cz))) (* r r)))
+
+;; the map must fit the engine's envelope: |x|,|z| <= bound.
+(defn within-bound [(x : F32) (z : F32) (bound : F32)] : Bool
+  (and (<= (fabs x) bound) (<= (fabs z) bound)))
