@@ -46,6 +46,8 @@
 (def surv-down-y 0.0)
 (def surv-down-tp false)    ; third person when it was pressed
 (def surv-rmb false)        ; the right mouse button is held as the engine's right button (the sniper's scope)
+(def surv-from-sso false)    ; the sign-in was started from SURVIVAL: come back here when it returns
+(def surv-link-code -1)
 (def surv-seen 0)           ; the last mailbox request sequence this host relayed
 (def surv-chat-lines 0)
 (def surv-live false)       ; the badge's last state
@@ -118,10 +120,42 @@
   (if (js/null? gfd) false
       (if (js/get gfd "up") (= (js/call (js/get gfd "x") "nk_gfd_state") 3) false)))
 
+(defn surv-link-paint! [] : Unit
+  (let [signed (not (js/null? (gfd-sso)))
+        live (surv-gfd-live?)]
+    (do (set-text! "sv-who"
+                   (cond live (str "Connected to GoblinFoxDragon" (if (= (gfd-sso-player) "") "" (str " as player " (gfd-sso-player))))
+                         (not (js/null? gfd)) "Connecting to GoblinFoxDragon..."
+                         signed "Signed in with IDUNA. Not connected."
+                         :else "Not signed in. SURVIVAL is offline."))
+        (set-hidden! "btn-sv-sso" (or signed live))
+        (set-hidden! "btn-sv-connect" (or (not signed) (or live (not (js/null? gfd))))))))
+
 (defn surv-badge! [(live : Bool)] : Unit
   (when (!= live surv-live)
     (do (set! surv-live live)
-        (set-text! "sv-badge" (if live "GFD live" "offline")))))
+        (set-text! "sv-badge" (if live "GFD live" "offline"))
+        (surv-link-paint!))))
+
+;; the same IDUNA sign-in the GFD tab uses (NetkitNative.ssoOpen -> the system browser -> shankphone://sso); it returns here
+(defn on-sv-sso [(e : Any)] : Unit
+  (if (have-native?)
+      (do (set! surv-from-sso true)
+          (surv-chat-add! "s8" "IDUNA's sign-in page is open in your browser. Come back here when it is done.")
+          (js/call nat "ssoOpen"))
+      (surv-chat-add! "s8" "Sign-in needs the SHANKPHONE app.")))
+(defn on-sv-connect [(e : Any)] : Unit
+  (when (js/null? gfd) (on-gfd-resume null)))
+
+;; the shell's sso event, as far as SURVIVAL is concerned: signed in from here -> back to the game and connect
+(defn surv-after-sso! [(ok : Bool)] : Unit
+  (when surv-from-sso
+    (do (set! surv-from-sso false)
+        (if ok
+            (do (show-view! "survival")
+                (surv-chat-add! "s5" "Signed in with IDUNA. Connecting...")
+                (when (js/null? gfd) (on-gfd-resume null)))
+            (surv-chat-add! "s6" "No browser to sign in with.")))))
 
 ;; the server's SVTRAVEL line -> the mailbox reply (the request sequence last, so the wasm never sees a half-written reply)
 (defn surv-on-svtravel! [(text : String)] : Unit
@@ -151,6 +185,8 @@
   (let [dv (surv-view) b (surv-mb) live (surv-gfd-live?)]
     (do (js/call dv "setInt32" (+ b 64) (if live 1 0) true)
         (surv-badge! live)
+        (let [code (+ (if live 2 (if (js/null? gfd) 0 1)) (if (js/null? (gfd-sso)) 0 3))]
+          (when (!= code surv-link-code) (do (set! surv-link-code code) (surv-link-paint!))))
         (let [seq (js/call dv "getInt32" b true)]
           (when (!= seq surv-seen)
             (do (set! surv-seen seq)
@@ -174,6 +210,7 @@
         open (js/get box "hidden")]
     (do (set-hidden! "sv-chat" (not open))
         (js/call (el "btn-sv-chat") "setAttribute" "aria-expanded" (if open "true" "false"))
+        (surv-link-paint!)
         (when open (js/call (el "sv-chat-input") "focus")))))
 
 ;; ---- the frame loop (only while the view is up) ------------------------------------------------------------------------------------
@@ -379,4 +416,6 @@
         (js/call surv-canvas "addEventListener" "contextmenu" (callback arc-no-menu))
         (js/call surv-canvas "addEventListener" "wheel" (callback surv-canvas-wheel) (js/obj "passive" false))
         (on! "sv-chat-form" "submit" (callback on-sv-chat-send))
-        (on! "btn-sv-chat" "click" (callback on-sv-chat-toggle)))))
+        (on! "btn-sv-chat" "click" (callback on-sv-chat-toggle))
+        (on! "btn-sv-sso" "click" (callback on-sv-sso))
+        (on! "btn-sv-connect" "click" (callback on-sv-connect)))))

@@ -53,6 +53,7 @@
                   (gfd-send-text! (js/get gfd "name"))
                   ;; a signed-in account's first visit: the name is permanent, so the player types it
                   (do (js/set! (el "gfd-input") "placeholder" "choose your permanent character name")
+                      (surv-chat-add! "s8" "First visit: type your permanent character name here and send it.")
                       (js/call (el "gfd-input") "focus"))))))))
 
 (defn gfd-b64-u8 [(b64 : Any)] : Any
@@ -243,7 +244,9 @@
           (set-text! "gfd-note" "Signed in. Tap Play to enter the world.")
           (set-text! "gfd-note" "No browser to sign in with."))
       (gfd-render-connect!)
-      (show-view! "gfd")))
+      (if surv-from-sso
+          (surv-after-sso! (= (js/get ev "e") "ok"))
+          (show-view! "gfd"))))
 
 (defn gfd-ended! [(why : String)] : Unit
   (do (when (not (js/null? gfd))
