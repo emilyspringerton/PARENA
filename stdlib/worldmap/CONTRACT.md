@@ -18,6 +18,8 @@ building <id> <label> <x> <z> <w> <d> <h> <tags...>   # a footprint; tags: enter
 npc    <id> <x> <z>                          # a named NPC stands here (GFD's npcDef.ID)
 exit   <dir> <dest_zone>                     # MUD-style adjacency (north south east west up down); GFD's `exits` table
 portal <x> <z> <r> <dest_zone> <dx> <dz>     # walk-in circle -> lands at (dx,dz) in dest_zone
+crystal <id> <x> <z> <r> <dest_zone> <dx> <dz> <yaw> <cost> <total_ms> <commit_ms> <prompt...>
+                                             # telecrystal: stand in the ring, press G; the jump fires at commit_ms
 bound  <n>                                   # |x|,|z| <= n (SHANKPIT: 420)
 ```
 
@@ -27,7 +29,7 @@ Units are engine units. Zone ids are GFD's (town = 4, fields 0-3, TRAPX 200-207)
 
 Scalar, stateless, heap-free PARENA. Compiled by BURROW to **Go** (the server) and to **C** (the client; wasm via PARENA's LLVM target).
 Covers: zone kinds, `job-change-allowed` (town only, never in combat), the combat-travel gate (742 ms, d20, <= 4 fails), `point-in-footprint`,
-`point-in-circle`, `within-bound`.
+`point-in-circle`, `within-bound`, and the telecrystal cast (`crystal-in-ring`, `crystal-still-in-ring` with 1.5 of slack, `cast-commits`, `cast-interrupted`; lifted from apps/lobby's `telecrystal_tick`).
 
 The host owns randomness and time: the rules take the roll as an argument.
 

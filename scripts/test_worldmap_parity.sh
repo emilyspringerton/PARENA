@@ -21,6 +21,8 @@ int main(void){
   printf("kind 0=%d 1=%d 4=%d 5=%d\n", kind_valid(0), kind_valid(1), kind_valid(4), kind_valid(5));
   printf("footprint in=%d edge=%d out=%d\n", point_in_footprint(60,58,60,58,28,22), point_in_footprint(74,69,60,58,28,22), point_in_footprint(74.5f,58,60,58,28,22));
   printf("circle in=%d edge=%d out=%d\n", point_in_circle(61,58,60,58,3.5f), point_in_circle(63.5f,58,60,58,3.5f), point_in_circle(64,58,60,58,3.5f));
+  printf("cast commit=%d,%d,%d interrupt=%d,%d,%d,%d pad=%g\n", cast_commits(599,600), cast_commits(600,600), cast_commits(1000,600), cast_interrupted(100,600,0), cast_interrupted(100,600,1), cast_interrupted(600,600,0), cast_interrupted(700,600,0), ring_pad());
+  printf("ring in=%d edge=%d slack=%d out=%d\n", crystal_in_ring(284,60,270,60,14), crystal_in_ring(284.5f,60,270,60,14), crystal_still_in_ring(285.5f,60,270,60,14), crystal_still_in_ring(285.6f,60,270,60,14));
   printf("bound in=%d edge=%d out=%d\n", within_bound(-420,0,420), within_bound(420,-420,420), within_bound(0,420.5f,420));
   return 0; }
 C
@@ -51,6 +53,9 @@ func main() {
 	c := burrowgen.PointInCircle
 	fmt.Printf("circle in=%d edge=%d out=%d\n", b(c(61, 58, 60, 58, 3.5)), b(c(63.5, 58, 60, 58, 3.5)), b(c(64, 58, 60, 58, 3.5)))
 	w := burrowgen.WithinBound
+	cc, ci := burrowgen.CastCommits, burrowgen.CastInterrupted
+	fmt.Printf("cast commit=%d,%d,%d interrupt=%d,%d,%d,%d pad=%g\n", b(cc(599, 600)), b(cc(600, 600)), b(cc(1000, 600)), b(ci(100, 600, false)), b(ci(100, 600, true)), b(ci(600, 600, false)), b(ci(700, 600, false)), burrowgen.RingPad())
+	fmt.Printf("ring in=%d edge=%d slack=%d out=%d\n", b(burrowgen.CrystalInRing(284, 60, 270, 60, 14)), b(burrowgen.CrystalInRing(284.5, 60, 270, 60, 14)), b(burrowgen.CrystalStillInRing(285.5, 60, 270, 60, 14)), b(burrowgen.CrystalStillInRing(285.6, 60, 270, 60, 14)))
 	fmt.Printf("bound in=%d edge=%d out=%d\n", b(w(-420, 0, 420)), b(w(420, -420, 420)), b(w(0, 420.5, 420)))
 }
 G
@@ -65,6 +70,8 @@ travel delay=742 max=4 r4=1 r5=0 r1=1 r20=0
 kind 0=0 1=1 4=1 5=0
 footprint in=1 edge=1 out=0
 circle in=1 edge=1 out=0
+cast commit=0,1,1 interrupt=1,0,0,0 pad=1.5
+ring in=1 edge=0 slack=1 out=0
 bound in=1 edge=1 out=0
 W
 diff -u "$W/want.out" "$W/c.out" && echo "C target: matches hand-derived"

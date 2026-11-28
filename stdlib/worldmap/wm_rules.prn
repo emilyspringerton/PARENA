@@ -36,3 +36,15 @@
 ;; the map must fit the engine's envelope: |x|,|z| <= bound.
 (defn within-bound [(x : F32) (z : F32) (bound : F32)] : Bool
   (and (<= (fabs x) bound) (<= (fabs z) bound)))
+
+;; ---- telecrystals (ported from apps/lobby's telecrystal_tick; GFD's server/telecrystal registry has the rows) ----
+;; Walk into the ring and press G to start a cast. The teleport happens at the COMMIT time (not the total); until then,
+;; stepping out of the ring (radius + 1.5 of slack, so a jitter at the edge doesn't cancel) interrupts the cast.
+(defn ring-pad [] : F32 1.5)
+(defn crystal-in-ring [(px : F32) (pz : F32) (cx : F32) (cz : F32) (r : F32)] : Bool
+  (point-in-circle px pz cx cz r))
+(defn crystal-still-in-ring [(px : F32) (pz : F32) (cx : F32) (cz : F32) (r : F32)] : Bool
+  (point-in-circle px pz cx cz (+ r 1.5)))
+(defn cast-commits [(elapsed-ms : I32) (commit-ms : I32)] : Bool (>= elapsed-ms commit-ms))
+(defn cast-interrupted [(elapsed-ms : I32) (commit-ms : I32) (still-inside : Bool)] : Bool
+  (if still-inside false (< elapsed-ms commit-ms)))
