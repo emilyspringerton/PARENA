@@ -213,7 +213,7 @@
       (do (dotimes [i (js/get ids "length")]
             (surv-code-up! (js/aget surv-held (js/aget ids i))))
           (set! surv-held (js/obj))
-          (js/call (js/call (doc) "querySelectorAll" "#sv-pad .down") "forEach" (callback surv-unpress!))
+          (js/call (js/call (doc) "querySelectorAll" "#sv-pad .down, #sv-zoom .down") "forEach" (callback surv-unpress!))
           (set! surv-stick-id -1) (set! surv-lx 0.0) (set! surv-ly 0.0) (surv-knob! 0.0 0.0)
           (set! surv-look-id -1)
           (when (not (js/null? surv-x))
@@ -227,11 +227,15 @@
 (defn surv-code-down! [(code : I32)] : Unit
   (when (and (not (js/null? surv-x)) (> code 0))
     (cond (= code 1000) (js/call surv-x "sp_wheel" 1)
+          (= code 1002) (js/call surv-x "sp_zoom" -1)
+          (= code 1003) (js/call surv-x "sp_zoom" 1)
           (= code 1001) (js/call surv-x "sp_button" 0 1)
           :else (js/call surv-x "sp_key" code 1))))
 (defn surv-code-up! [(code : I32)] : Unit
   (when (and (not (js/null? surv-x)) (> code 0))
     (cond (= code 1000) unit
+          (= code 1002) unit
+          (= code 1003) unit
           (= code 1001) (js/call surv-x "sp_button" 0 0)
           :else (js/call surv-x "sp_key" code 0))))
 

@@ -230,6 +230,7 @@
 ;; slot 0). Button codes -> what the host sends:
 ;;   1 jump (Space) 2 crouch (C) 3 reload (R) 4 ability (E) 5 next weapon (wheel +1, code 1000) 6 fire (left mouse, code 1001)
 ;;   7 build a barricade (B, the resource-collection mod: wood from trees)
+;;   9 zoom out / 10 zoom in (codes 1002 / 1003: the mouse wheel for a hand with no mouse; sp_zoom)
 ;;   8 teleport (G, the telecrystal mod: cast while standing in a crystal's ring)
 (defn nk-survival-touch-key [(btn : I32)] : I32
   (case btn
@@ -241,8 +242,10 @@
     6 1001
     7 66
     8 71
+    9 1002
+    10 1003
     0))
-(defn nk-survival-touch-count [] : I32 8)
+(defn nk-survival-touch-count [] : I32 10)
 ;; look sensitivity: degrees of turn per 100 CSS pixels of finger drag, and the move stick's full-deflection radius in CSS pixels
 (defn nk-survival-look-per-100px [] : I32 60)
 (defn nk-survival-stick-radius [] : I32 56)

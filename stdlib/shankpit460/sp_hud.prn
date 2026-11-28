@@ -262,7 +262,7 @@
   (do
     (if (and (= (p-weapon me) 4) (and (!= (gi (g-zoom)) 0) (alive? me)))
         (draw-scope!)
-        (when (alive? me) (draw-crosshair! me)))
+        (when (and (alive? me) (not (mod-third-person?))) (draw-crosshair! me)))
     (draw-damage!)
     (if (mod-active?)
         (mod-hud! me)

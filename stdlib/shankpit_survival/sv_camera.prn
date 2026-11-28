@@ -29,6 +29,7 @@
 (defn g-svc-px [] : I32 658)          ; F32: hero x last frame (stuck test)
 (defn g-svc-pz [] : I32 659)          ; F32
 (defn g-svc-mark [] : I32 660)        ; ticks the destination marker shows
+(defn g-svc-atk [] : I32 662)         ; attack target: zombie slot + 1 (click a zombie), 0 none
 (defn g-svc-fire [] : I32 661)        ; 1 = the hero is turning to a zombie to shoot
 
 (defn svc-max-arm-milli [] : I32 40000)
@@ -42,7 +43,7 @@
 
 (defn svc-reset! [] : Unit
   (do (gi! (g-svc-arm) 0) (gi! (g-svc-target) 0) (gi! (g-svc-fp) 1) (gi! (g-svc-dest) 0) (gi! (g-svc-stuck) 0)
-      (gi! (g-svc-mark) 0) (gi! (g-svc-fire) 0) (gf! (g-svc-hyaw) 0.0)))
+      (gi! (g-svc-mark) 0) (gi! (g-svc-fire) 0) (gi! (g-svc-atk) 0) (gf! (g-svc-hyaw) 0.0)))
 
 (defn svc-tp? [] : Bool (and (mod-active?) (= (gi (g-svc-fp)) 0)))
 
@@ -94,8 +95,29 @@
 
 ;; ---- the click -----------------------------------------------------------------------------------------------------------------------
 ;; framebuffer pixel -> a ray through the camera (basis as sp_3d to-camera!: right (cy 0 sy), up (-sy*sp cp cy*sp), forward (sy*cp sp -cy*cp))
+(defn svc-zombie-at [(px : I32) (py : I32)] : I32
+  (let [best -1
+        (bd : F32) 26.0]
+    (loop [p 1]
+      (when (<= p (sv-pool))
+        (when (alive? p)
+          (let [(z : F32) (project-point (p-x p) (+ (p-y p) 2.0) (p-z p))]
+            (when (> z (near-plane))
+              (let [(d : F32) (len2 (- (gf (g-sx)) (f32 px)) (- (gf (g-sy)) (f32 py)))]
+                (when (< d bd) (set! bd d) (set! best p))))))
+        (recur (+ p 1))))
+    best))
+
 (defn mod-click! [(px : I32) (py : I32)] : Unit
   (when (and (svc-tp?) (and (alive? 0) (= (svc-click-enabled) 1)))
+    (let [zk (svc-zombie-at px py)]
+      (if (>= zk 0)
+          (do (gi! (g-svc-atk) (+ zk 1)) (gi! (g-svc-dest) 0) (snd-ui! 15))
+          (svc-click-ground! px py)))))
+
+(defn svc-click-ground! [(px : I32) (py : I32)] : Unit
+  (do
+    (gi! (g-svc-atk) 0)
     (let [(a : F32) (/ (- (f32 px) (half-w)) (gf (g-proj-scale)))
           (b : F32) (/ (- (half-h) (f32 py)) (gf (g-proj-scale)))
           (sy : F32) (gf (g-cam-sy)) (cy : F32) (gf (g-cam-cy))
@@ -154,6 +176,20 @@
                   (gf! (g-svc-hyaw) (yaw-to dx dz))
                   (gf! (g-cmd-fwd) (/ (f32 (click-move-steer-scale-permille (/ (* dist 4) (svc-scale)))) 1000.0))
                   (gf! (g-cmd-str) 0.0)))))
+        ;; an attack target (a clicked zombie): chase it to weapon reach, face it, hold fire; WASD or a ground click drops it
+        (when (= wasd 1) (gi! (g-svc-atk) 0))
+        (when (> (gi (g-svc-atk)) 0)
+          (let [z (- (gi (g-svc-atk)) 1)]
+            (if (not (alive? z))
+                (gi! (g-svc-atk) 0)
+                (let [(dx : F32) (- (p-x z) (p-x 0))
+                      (dz : F32) (- (p-z z) (p-z 0))
+                      (d : F32) (len2 dx dz)
+                      (reach : F32) (if (wpn-melee? (p-weapon 0)) 3.5 60.0)]
+                  (gf! (g-svc-hyaw) (yaw-to dx dz))
+                  (if (> d reach)
+                      (do (gf! (g-cmd-fwd) 1.0) (gf! (g-cmd-str) 0.0))
+                      (gi! (g-cmd-fire) 1))))))
         ;; firing: turn to the nearest living zombie
         (gi! (g-svc-fire) 0)
         (when (!= (gi (g-cmd-fire)) 0)

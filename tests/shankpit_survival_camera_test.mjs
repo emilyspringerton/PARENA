@@ -16,8 +16,8 @@ const hero = () => [x.sp_player_addr(0)].map((a) => [dv().getFloat32(a + 16, tru
 const place = (px, pz) => x.sp_t_place(0, px, 6, pz, 0, 0);
 const tap = (code) => { x.sp_key(code, 1); frame(1); x.sp_key(code, 0); frame(1); };
 // world ground point -> framebuffer pixel, with the engine's own camera numbers (sp_3d project-point)
-const pixelOf = (wx, wz) => {
-  const dx = wx - gf(G.camX), dy = 0 - gf(G.camY), dz = wz - gf(G.camZ), sy = gf(G.sy), cy = gf(G.cy), sp = gf(G.sp), cp = gf(G.cp);
+const pixelOf = (wx, wz, wy = 0) => {
+  const dx = wx - gf(G.camX), dy = wy - gf(G.camY), dz = wz - gf(G.camZ), sy = gf(G.sy), cy = gf(G.cy), sp = gf(G.sp), cp = gf(G.cp);
   const cx = dx * cy + dz * sy, cyy = -dx * sy * sp + dy * cp + dz * cy * sp, cz = dx * sy * cp + dy * sp - dz * cy * cp;
   return [Math.round(320 + (cx / cz) * gf(G.scale)), Math.round(180 - (cyy / cz) * gf(G.scale)), cz];
 };
@@ -75,6 +75,28 @@ ok(gi(G.dest) === 0, 'with the sniper wanted, click to move is disabled (its rig
 poke(G.want, 0); frame(2);
 { const [a, b] = hero(); x.sp_click(...pixelOf(a + 7, b + 5).slice(0, 2)); frame(1); }
 ok(gi(G.dest) === 1, 'with the knife again it works');
+
+// click a zombie: it becomes the attack target; the hero closes in, faces it and fights
+{
+  x.sp_t_poke(G.want, 0);
+  const [a, b] = hero();
+  const zp = [a + 14, b + 2];
+  const sa = x.sp_player_addr(1);
+  const setI = (off, v) => dv().setInt32(sa + off, v, true), setF = (off, v) => dv().setFloat32(sa + off, v, true);
+  x.sp_t_spawn(1, zp[0], 6, zp[1]);
+  dv().setInt32(sa + 4, 1, true);     // active
+  frame(2);
+  const [zx, zy] = (() => { const zy0 = dv().getFloat32(sa + 20, true); const k = pixelOf(dv().getFloat32(sa + 16, true), dv().getFloat32(sa + 24, true), zy0 + 2.0); return [k[0], k[1]]; })();
+  x.sp_click(zx, zy); frame(1);
+  ok(gi(662) === 2, `a click on a zombie targets it (atk ${gi(662)})`);
+  ok(gi(G.dest) === 0, 'and drops any ground destination');
+  const d0 = Math.hypot(dv().getFloat32(sa + 16, true) - hero()[0], dv().getFloat32(sa + 24, true) - hero()[1]);
+  frame(40);
+  ok(Math.hypot(dv().getFloat32(sa + 16, true) - hero()[0], dv().getFloat32(sa + 24, true) - hero()[1]) < d0, 'the hero closes on it');
+  tap(87); frame(1);
+  ok(gi(662) === 0, 'W drops the attack target');
+  dv().setInt32(sa + 4, 0, true);
+}
 
 // all the way in: first person, destination dropped
 for (let i = 0; i < 12; i++) { x.sp_zoom(1); frame(2); }
