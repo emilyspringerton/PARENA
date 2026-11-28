@@ -275,6 +275,80 @@ ok(g.gi(G.spawned) === 1, 'the next one waits out the 15 s spawn gap');
   ok(bad.length === 0, 'every crystal and destination stands on open street' + (bad.length ? ' -- blocked: ' + JSON.stringify(bad) : ''));
 }
 
+
+// ---- server mode: the host relays a cast to GoblinFoxDragon (mailbox at sv-base + 12288) ---------------------------------------------
+{
+  const MB = SV + 12288, C = { cast: 630, await: 638, why: 639, msg: 633, jumps: 636, fizzles: 637 }, WOOD = 622;
+  const h = await boot(); h.play(); h.frame(140);
+  const mi = (k) => h.i32(MB + k * 4), mf = (k) => h.f32(MB + k * 4);
+  const setMi = (k, v) => h.dv().setInt32(MB + k * 4, v, true), setMf = (k, v) => h.dv().setFloat32(MB + k * 4, v, true);
+  const at = (x, z) => { h.x.sp_t_place(0, x, 6, z, 0, 0); h.setI(0, 'health', 100); };
+  const pos = () => [h.pf(0, 'x'), h.pf(0, 'z')];
+  const hub = [22, -48];                                              // SV_PLAZA_TO_SOUTHWEST
+  const reply = (verdict, reason = 0, dx = 0, dz = 0, yaw = 0, cost = 0) => {
+    setMi(9, verdict); setMi(10, reason); setMf(11, dx); setMf(12, dz); setMf(13, yaw); setMi(14, cost); setMi(8, mi(0)); };
+  const cast = () => { h.setI(0, 'health', 100); h.x.sp_t_poke(C.await, 0); at(...hub); h.tap(71); h.frame(45); };   // commit at 600 ms = 38 frames
+
+  setMi(16, 1);                                                       // the host: "I have a live GFD connection"
+  h.x.sp_t_poke(WOOD, 0);                                             // wood is NOT the currency on a server
+  const seq0 = mi(0);
+  at(...hub); h.tap(71);
+  ok(h.gi(C.cast) === 2, 'server mode: with no wood at all the cast still starts (the server decides cost)');
+  h.frame(45);
+  ok(mi(0) === seq0 + 1 && mi(1) === 1, `the commit posts exactly one request for crystal 1 (seq ${seq0} -> ${mi(0)})`);
+  { let id = ''; for (let k = 0; k < 63 && h.dv().getUint8(MB + 128 + k); k++) id += String.fromCharCode(h.dv().getUint8(MB + 128 + k));
+    ok(id === 'SV_PLAZA_TO_SOUTHWEST', `the request carries the crystal's id for the chat-log command (${id})`); }
+  ok(Math.abs(mf(2) - hub[0]) < 1.5 && Math.abs(mf(3) - hub[1]) < 1.5, `the request carries the reported position (${mf(2).toFixed(1)}, ${mf(3).toFixed(1)})`);
+  ok(mi(4) === 0 && h.gi(C.await) > 0, 'no fight flag without zombies; the client now WAITS (no local jump)');
+  h.frame(20);
+  ok(near2(pos(), hub) && mi(0) === seq0 + 1, 'while waiting it does not move and does not re-post');
+  function near2(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]) < 3; }
+
+  // OK: the server's destination and cost are applied; the client's own wood and table are not consulted
+  reply(1, 0, 123, -321, 90, 3);
+  h.frame(2);
+  ok(near2(pos(), [123, -321]) && h.gi(C.jumps) === 1 && h.gi(C.await) === 0, `a jump reply lands where the SERVER said (${pos().map((v) => v.toFixed(0))})`);
+  ok(h.gi(WOOD) === 0, 'and charged no wood');
+  h.frame(30);
+
+  // FIZZLE
+  cast(); reply(2);
+  h.frame(2);
+  ok(h.gi(C.fizzles) === 1 && h.gi(C.msg) === 4 && near2(pos(), hub), 'a fizzle reply: stays at the crystal, counted');
+  h.frame(30);
+
+  // refused: each reason shows a message and never moves the hero
+  for (const [reason, msg] of [[4, 3], [2, 7], [3, 7], [1, 7]]) {
+    cast(); reply(3, reason);
+    h.frame(2);
+    ok(h.gi(C.msg) === msg && near2(pos(), hub) && h.gi(C.await) === 0, `refused (reason ${reason}) -> notice ${msg}, no move`);
+    h.frame(30);
+  }
+
+  // a stale reply (older seq) is ignored; silence times out and is never a free jump
+  cast();
+  setMi(9, 1); setMf(11, 5); setMf(12, 5); setMi(8, mi(0) - 1);       // a reply to an OLDER request
+  h.frame(10);
+  ok(h.gi(C.await) > 0 && near2(pos(), hub), 'a stale reply (wrong seq) is ignored');
+  h.frame(420);
+  ok(h.gi(C.await) === 0 && h.gi(C.msg) === 6 && near2(pos(), hub), 'no answer in ~6.5 s: timeout notice, no jump');
+  h.frame(30);
+
+  // a fight is reported to the server, and the CLIENT does not add the combat wait (the server does)
+  h.x.sp_t_poke(C.await, 0); at(...hub); h.setI(1, 'active', 1); h.setI(1, 'state', 0); h.setI(1, 'health', 100); h.x.sp_t_place(1, hub[0] + 12, 6, hub[1], 0, 0);
+  h.x.sp_t_poke(635, 0); h.tap(71);
+  const need = h.gi(632);
+  for (let k = 0; k < 50 && h.gi(C.await) === 0; k++) { at(...hub); h.setI(1, 'health', 100); h.x.sp_t_place(1, hub[0] + 12, 6, hub[1], 0, 0); h.frame(1); }
+  ok(need === 600, `in a fight the client's own commit stays 600 ms (${need}); the server owns the 742 ms wait`);
+  ok(mi(4) === 1, 'the request tells the server it is a fight');
+  reply(2); h.frame(2);
+  h.setI(1, 'active', 0);
+
+  // turning server mode off returns to the offline rules (wood)
+  setMi(16, 0); h.frame(60); h.x.sp_t_poke(WOOD, 0); at(...hub); h.tap(71);
+  ok(h.gi(C.cast) === 0 && h.gi(C.msg) === 3, 'host drops the connection: back to offline wood rules');
+}
+
 // ---- a frame of the city costs little enough for a phone -------------------------------------------------------------------------
 {
   const t0 = performance.now(); g.frame(120); const ms = (performance.now() - t0) / 120;

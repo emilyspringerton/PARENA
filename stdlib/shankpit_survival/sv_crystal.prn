@@ -16,7 +16,18 @@
 ;; reading). Not done, named: no GFD server round trip (the wasm imports nothing, so a cast cannot ask the registry; the host would
 ;; have to), and no cross-zone hop (SURVIVAL is one level; the generator refuses a crystal whose dest_zone is not this zone).
 ;;
-;; State words: G 630..637.
+;; SERVER MODE (2026-11-28, "wire it up to the server"): the module imports nothing, so it cannot talk to GoblinFoxDragon itself. It talks to
+;; its HOST through a mailbox in linear memory (sv-base + 12288, below). When the host sets `server on` (it has a live GFD connection) a cast
+;; no longer decides anything at commit: it posts a request (crystal, position, fight flag) and waits for the reply, which carries the
+;; verdict, the destination and the cost. The host turns the request into the chat-log command `svtravel <id> <x> <z> <fight>` and the
+;; server's `SVTRAVEL OK|FIZZLE|NO` line back into the reply (gfd apps2/mud/svtravel.go owns cost, destination and the combat gate then;
+;; the client's wood and local d20 are not used). No answer within ~6.5 s is a timeout, never a free jump.
+;;   mailbox words (I32 each, F32 where noted):   0 req-seq  1 crystal  2 x(F32)  3 z(F32)  4 fight
+;;                                                8 rep-seq  9 verdict (1 jump, 2 fizzle, 3 refused)  10 reason  11 dx(F32)  12 dz(F32)  13 yaw-deg(F32)  14 cost
+;;                                                16 server-on (host writes)
+;;   bytes 128..191: the crystal's id as a C string (the host puts it in the `svtravel` command)
+;;   reason: 1 unknown 2 out-of-ring 3 guard 4 flow 5 pending 6 ko 7 other
+;; State words: G 630..639.
 
 (defn g-svx-cast [] : I32 630)        ; 0 = idle, else crystal index + 1
 (defn g-svx-ms [] : I32 631)          ; ms into the cast
@@ -26,6 +37,17 @@
 (defn g-svx-guard [] : I32 635)       ; ticks of the re-cast guard
 (defn g-svx-jumps [] : I32 636)       ; jumps this run
 (defn g-svx-fizzles [] : I32 637)     ; fizzled casts this run
+(defn g-svx-await [] : I32 638)       ; ticks spent waiting for the server (0 = not waiting)
+(defn g-svx-why [] : I32 639)         ; the server's refusal reason code
+(defn g-svx-wait-crystal [] : I32 628) ; crystal index + 1 whose reply we await
+
+(defn svx-mbox [] : I32 (+ (sv-base) 12288))
+(defn mb-i [(k : I32)] : I32 (load32 (+ (svx-mbox) (shl k 2))))
+(defn mb-i! [(k : I32) (v : I32)] : Unit (store32! (+ (svx-mbox) (shl k 2)) v))
+(defn mb-f [(k : I32)] : F32 (loadf32 (+ (svx-mbox) (shl k 2))))
+(defn mb-f! [(k : I32) (v : F32)] : Unit (storef32! (+ (svx-mbox) (shl k 2)) v))
+(defn svx-server? [] : Bool (!= (mb-i 16) 0))
+(defn svx-wait-ticks [] : I32 400)
 
 (defn sv-fight-radius [] : F32 45.0)
 (defn svx-recast-guard-ms [] : I32 250)
@@ -35,7 +57,7 @@
 
 (defn svx-reset! [] : Unit
   (do (gi! (g-svx-cast) 0) (gi! (g-svx-ms) 0) (gi! (g-svx-need) 0) (gi! (g-svx-msg) 0) (gi! (g-svx-msg-t) 0)
-      (gi! (g-svx-guard) 0) (gi! (g-svx-jumps) 0) (gi! (g-svx-fizzles) 0)))
+      (gi! (g-svx-guard) 0) (gi! (g-svx-jumps) 0) (gi! (g-svx-fizzles) 0) (gi! (g-svx-await) 0) (gi! (g-svx-why) 0) (gi! (g-svx-wait-crystal) 0)))
 
 ;; is the hero close enough to a living zombie to count as fighting?
 (defn svx-fighting? [] : Bool
@@ -59,19 +81,49 @@
 
 (defn svx-start! [(i : I32)] : Unit
   (cond
-    (< (gi (g-sv-wood)) (svx-cost i)) (svx-note! 3)
+    (and (not (svx-server?)) (< (gi (g-sv-wood)) (svx-cost i))) (svx-note! 3)
     :else
       (do (gi! (g-svx-cast) (+ i 1))
           (gi! (g-svx-ms) 0)
-          (gi! (g-svx-need) (if (svx-fighting?) (+ (svx-commit-ms i) (travel-delay-ms)) (svx-commit-ms i)))
+          ;; offline the client plays the combat gate itself; on a server the SERVER waits and rolls
+          (gi! (g-svx-need) (if (and (not (svx-server?)) (svx-fighting?)) (+ (svx-commit-ms i) (travel-delay-ms)) (svx-commit-ms i)))
           (snd-ui! 15))))
+
+;; server mode: the commit posts a request instead of jumping
+(defn svx-post! [(i : I32)] : Unit
+  (do (let [a (str-addr (svx-id i))]
+        (loop [k 0]
+          (let [ch (load8 (+ a k))]
+            (store8! (+ (svx-mbox) (+ 128 k)) ch)
+            (when (and (!= ch 0) (< k 62)) (recur (+ k 1))))))
+      (mb-i! 1 i)
+      (mb-f! 2 (p-x 0))
+      (mb-f! 3 (p-z 0))
+      (mb-i! 4 (if (svx-fighting?) 1 0))
+      (mb-i! 0 (+ (mb-i 0) 1))
+      (gi! (g-svx-cast) 0)
+      (gi! (g-svx-wait-crystal) (+ i 1))
+      (gi! (g-svx-await) 1)))
+
+;; the reply landed: apply the server's verdict
+(defn svx-apply-reply! [] : Unit
+  (let [v (mb-i 9)]
+    (do (gi! (g-svx-await) 0)
+        (gi! (g-svx-wait-crystal) 0)
+        (cond
+          (= v 1) (svx-land! (mb-f 11) (mb-f 12) (mb-f 13))
+          (= v 2) (do (gi! (g-svx-fizzles) (+ (gi (g-svx-fizzles)) 1)) (svx-end! 4))
+          :else (do (gi! (g-svx-why) (mb-i 10)) (svx-end! (if (= (mb-i 10) 4) 3 7)))))))
 
 ;; the jump: the hero stands at the crystal's destination, facing its yaw, at rest
 (defn svx-jump! [(i : I32)] : Unit
-  (let [(yaw : F32) (* (svx-yaw-deg i) 0.017453292)]
-    (gi! (g-sv-wood) (- (gi (g-sv-wood)) (svx-cost i)))
-    (set-p-x! 0 (svx-dx i))
-    (set-p-z! 0 (svx-dz i))
+  (do (gi! (g-sv-wood) (- (gi (g-sv-wood)) (svx-cost i)))
+      (svx-land! (svx-dx i) (svx-dz i) (svx-yaw-deg i))))
+
+(defn svx-land! [(dx : F32) (dz : F32) (yaw-deg : F32)] : Unit
+  (let [(yaw : F32) (* yaw-deg 0.017453292)]
+    (set-p-x! 0 dx)
+    (set-p-z! 0 dz)
     (set-p-y! 0 6.0)
     (set-p-vx! 0 0.0) (set-p-vy! 0 0.0) (set-p-vz! 0 0.0)
     (set-p-yaw! 0 yaw)
@@ -91,6 +143,11 @@
   (do
     (when (> (gi (g-svx-msg-t)) 0) (gi! (g-svx-msg-t) (- (gi (g-svx-msg-t)) 1)))
     (when (> (gi (g-svx-guard)) 0) (gi! (g-svx-guard) (- (gi (g-svx-guard)) 1)))
+    (when (> (gi (g-svx-await)) 0)
+      (cond
+        (= (mb-i 8) (mb-i 0)) (svx-apply-reply!)
+        (> (gi (g-svx-await)) (svx-wait-ticks)) (do (gi! (g-svx-await) 0) (gi! (g-svx-wait-crystal) 0) (svx-end! 6))
+        :else (gi! (g-svx-await) (+ (gi (g-svx-await)) 1))))
     (let [c (- (gi (g-svx-cast)) 1)]
       (if (>= c 0)
           ;; casting
@@ -102,12 +159,14 @@
             :else
               (do (gi! (g-svx-ms) (+ (gi (g-svx-ms)) 16))
                   (when (cast-commits (gi (g-svx-ms)) (gi (g-svx-need)))
-                    ;; a fight at the start put the combat wait in `need`: now the d20 (1..20)
-                    (if (and (> (gi (g-svx-need)) (svx-commit-ms c)) (travel-roll-fails (+ 1 (rnd 20))))
-                        (do (gi! (g-svx-fizzles) (+ (gi (g-svx-fizzles)) 1)) (svx-end! 4))
-                        (svx-jump! c)))))
+                    (if (svx-server?)
+                        (svx-post! c)
+                        ;; a fight at the start put the combat wait in `need`: now the d20 (1..20)
+                        (if (and (> (gi (g-svx-need)) (svx-commit-ms c)) (travel-roll-fails (+ 1 (rnd 20))))
+                            (do (gi! (g-svx-fizzles) (+ (gi (g-svx-fizzles)) 1)) (svx-end! 4))
+                            (svx-jump! c))))))
           ;; idle: G inside a ring starts a cast
-          (when (and (alive? 0) (and (= (gi (g-svx-guard)) 0) (or (key-hit? (svx-key)) (any-pad-hit? (pb-x)))))
+          (when (and (alive? 0) (and (= (gi (g-svx-await)) 0) (and (= (gi (g-svx-guard)) 0) (or (key-hit? (svx-key)) (any-pad-hit? (pb-x))))))
             (let [i (svx-ring-at (p-x 0) (p-z 0))]
               (when (>= i 0) (svx-start! i))))))))
 
@@ -129,6 +188,10 @@
 
 (defn svx-hud! [] : Unit
   (let [c (- (gi (g-svx-cast)) 1)]
+    (if (> (gi (g-svx-await)) 0)
+        (do (panel 232 256 176 26)
+            (draw-text-c "ASKING THE SERVER" 320 260 1 (amber))
+            (draw-text-c "GoblinFoxDragon decides" 320 272 1 (ink-faint)))
     (if (>= c 0)
         (let [(f : F32) (/ (f32 (gi (g-svx-ms))) (f32 (max-i 1 (gi (g-svx-need)))))
               w (i32 (* 120.0 (if (< f 1.0) f 1.0)))]
@@ -136,15 +199,17 @@
           (draw-text-c "CASTING" 320 260 1 (amber))
           (fill-rect 260 272 120 4 (slate))
           (fill-rect 260 272 w 4 (amber))
-          (when (> (gi (g-svx-need)) (svx-commit-ms c)) (draw-text-c "in a fight: the crystal may fizzle" 320 286 1 (coral))))
+          (when (and (> (gi (g-svx-need)) (svx-commit-ms c)) (not (svx-server?))) (draw-text-c "in a fight: the crystal may fizzle" 320 286 1 (coral))))
         (let [i (if (alive? 0) (svx-ring-at (p-x 0) (p-z 0)) -1)]
           (when (>= i 0)
             (panel 214 256 212 34)
             (draw-text-c (svx-prompt i) 320 260 1 (amber))
             (if (> (svx-cost i) 0)
                 (do (draw-int (svx-cost i) 290 274 1 (if (>= (gi (g-sv-wood)) (svx-cost i)) (ink) (coral)))
-                    (draw-text "wood" 306 274 1 (ink-faint)))
-                (draw-text-c "free" 320 274 1 (ink-faint))))))
+                    (draw-text (if (svx-server?) "flow" "wood") 306 274 1 (ink-faint)))
+                (draw-text-c "free" 320 274 1 (ink-faint)))))))
     (when (> (gi (g-svx-msg-t)) 0)
-      (draw-text-c (case (gi (g-svx-msg)) 1 "TELEPORTED" 2 "CAST INTERRUPTED" 3 "NOT ENOUGH WOOD" 4 "THE CRYSTAL FIZZLES" "")
+      (draw-text-c (case (gi (g-svx-msg)) 1 "TELEPORTED" 2 "CAST INTERRUPTED" 3 (if (svx-server?) "NOT ENOUGH FLOW" "NOT ENOUGH WOOD") 4 "THE CRYSTAL FIZZLES" 6 "THE SERVER DID NOT ANSWER"
+                          7 (case (gi (g-svx-why)) 1 "SERVER: NO SUCH CRYSTAL" 2 "SERVER: OUT OF RANGE" 3 "SERVER: TOO SOON" 5 "SERVER: ALREADY CASTING" 6 "SERVER: YOU ARE DOWN" "SERVER REFUSED")
+                          "")
                    320 232 1 (if (= (gi (g-svx-msg)) 1) (amber) (coral))))))

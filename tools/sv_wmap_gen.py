@@ -55,6 +55,8 @@ def parse(text):
     seen = set()
     for c in crystals:
         w = f"line {c['line']} ({c['id']})"
+        if not (1 <= len(c["id"]) <= 40) or not all(ch.isalnum() or ch == "_" for ch in c["id"]):
+            fail(f"{w}: id must be 1..40 letters, digits or _ (it is sent to the server as a chat-log command)")
         if c["id"] in seen: fail(f"{w}: duplicate id")
         seen.add(c["id"])
         if c["dest_zone"] != zone: fail(f"{w}: dest_zone {c['dest_zone']} != zone {zone} (SURVIVAL is one level)")
@@ -93,6 +95,7 @@ def emit(zone, bound, cs):
     tbl("svx-cost", "I32", [str(c["cost"]) for c in cs])
     tbl("svx-total-ms", "I32", [str(c["total"]) for c in cs])
     tbl("svx-commit-ms", "I32", [str(c["commit"]) for c in cs])
+    tbl("svx-id", "String", ['"%s"' % c["id"] for c in cs])
     tbl("svx-prompt", "String", ['"%s"' % c["prompt"] for c in cs])
     return "\n".join(o) + "\n"
 
