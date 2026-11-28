@@ -50,6 +50,10 @@
 (def surv-link-code -1)
 (def surv-seen 0)           ; the last mailbox request sequence this host relayed
 (def surv-chat-lines 0)
+(def surv-mouse-seen false)  ; a real mouse has touched the picture: FPS-style look (the app captures the pointer) is worth doing
+(def surv-cap false)         ; the app currently holds the pointer captured (relative mouse: NetkitNative.mouseCapture)
+(def surv-cap-off false)     ; Esc let go of it; the next mouse press on the picture takes it back
+(def surv-mbtn 0)            ; captured-mouse buttons as last reported (bit 0 left, bit 1 right)
 (def surv-live false)       ; the badge's last state
 
 (defn surv-say! [(text : Any)] : Unit
@@ -214,11 +218,42 @@
         (when open (js/call (el "sv-chat-input") "focus")))))
 
 ;; ---- the frame loop (only while the view is up) ------------------------------------------------------------------------------------
+;; ---- FPS-style mouse (the Android app captures the pointer: WebView has no Pointer Lock) -----------------------------------------------
+;; first person + a mouse + the world showing = relative look, left fires, right scopes the sniper, wheel zooms. Third person keeps the
+;; free cursor (click to move), exactly as before.
+(defn surv-want-capture? [] : Bool
+  (and surv-run (and (= surv-state 2) (and surv-mouse-seen (and (not surv-cap-off)
+       (and (= (js/call surv-x "sp_phase") 1) (and (= (js/call surv-x "sp_third_person") 0) (not (arc-typing?)))))))))
+(defn surv-capture-sync! [] : Unit
+  (when (have-native?)
+    (let [want (surv-want-capture?)]
+      (when (!= want surv-cap)
+        (do (set! surv-cap want)
+            (when (not want) (surv-mouse-buttons! 0))
+            (js/call nat "mouseCapture" (if want 1 0)))))))
+
+(defn surv-mouse-buttons! [(b : I32)] : Unit
+  (do (when (!= (bit-and b 1) (bit-and surv-mbtn 1)) (js/call surv-x "sp_button" 0 (bit-and b 1)))
+      (when (!= (bit-and b 2) (bit-and surv-mbtn 2)) (js/call surv-x "sp_button" 2 (if (!= (bit-and b 2) 0) 1 0)))
+      (set! surv-mbtn b)))
+
+;; the app's captured mouse: {"dx":..,"dy":..,"b":buttons,"w":-1|0|1}
+(defn on-netkit-mouse [(json : String)] : Unit
+  (when (and surv-run (and (= surv-state 2) surv-cap))
+    (let [ev (js/call (js/global "JSON") "parse" json)
+          dx (js/get ev "dx")
+          dy (js/get ev "dy")
+          w (js/get ev "w")]
+      (do (when (or (!= dx 0.0) (!= dy 0.0)) (js/call surv-x "sp_mouse" dx dy))
+          (surv-mouse-buttons! (js/get ev "b"))
+          (when (!= w 0.0) (js/call surv-x "sp_zoom" (if (> w 0.0) 1 -1)))))))
+
 (defn surv-tick [(t : F64)] : Unit
   (do (set! surv-looping false)
       (when (and surv-run (= surv-state 2))
         (do (js/call surv-x "sp_pad" 0 surv-lx surv-ly 0.0 0.0 0.0 0.0 0)
             (surv-relay!)
+            (surv-capture-sync!)
             (js/call surv-x "sp_frame" t)
             (js/call surv-ctx "putImageData" surv-img 0 0)
             (surv-start-loop!)))))
@@ -253,6 +288,8 @@
           (js/call (js/call (doc) "querySelectorAll" "#sv-pad .down, #sv-zoom .down") "forEach" (callback surv-unpress!))
           (set! surv-stick-id -1) (set! surv-lx 0.0) (set! surv-ly 0.0) (surv-knob! 0.0 0.0)
           (set! surv-look-id -1)
+          (when (and surv-cap (have-native?)) (js/call nat "mouseCapture" 0))
+          (set! surv-cap false) (set! surv-mbtn 0)
           (when (not (js/null? surv-x))
             (do (when surv-menu-down (js/call surv-x "sp_button" 0 0))
                 (when surv-rmb (do (set! surv-rmb false) (js/call surv-x "sp_button" 2 0)))
@@ -340,6 +377,7 @@
 (defn surv-canvas-down [(e : Any)] : Unit
   (when (= surv-state 2)
     (do (js/call e "preventDefault")
+        (when (= (js/get e "pointerType") "mouse") (do (set! surv-mouse-seen true) (set! surv-cap-off false)))
         (if (= (js/call surv-x "sp_phase") 1)
             (if (and (= (js/get e "pointerType") "mouse") (and (= (js/get e "button") 2) (= (js/call surv-x "sp_third_person") 0)))
                 (do (set! surv-rmb true) (js/call surv-x "sp_button" 2 1))
@@ -357,6 +395,7 @@
 
 (defn surv-canvas-move [(e : Any)] : Unit
   (when (= surv-state 2)
+    (when (= (js/get e "pointerType") "mouse") (set! surv-mouse-seen true))
     (if (= (js/get e "pointerId") surv-look-id)
         ;; the engine turns by 0.15 degrees per mouse unit (sp_input look-sens); the wasm says how many degrees a 100 px drag is
         (let [per (/ (js/call scan-x "nk_survival_look_per_100px") 15.0)
@@ -394,7 +433,8 @@
 ;; hardware keyboard (Bluetooth, ChromeOS, a desktop browser): forwarded while the view is up and no text field has focus
 (defn surv-on-keydown [(e : Any)] : Unit
   (when (and surv-run (and (= surv-state 2) (not (arc-typing?))))
-    (do (js/call surv-x "sp_key" (js/get e "keyCode") 1)
+    (do (when (= (js/get e "keyCode") 27) (set! surv-cap-off true))
+        (js/call surv-x "sp_key" (js/get e "keyCode") 1)
         (when (arc-game-key? e) (js/call e "preventDefault")))))
 (defn surv-on-keyup [(e : Any)] : Unit
   (when (and surv-run (= surv-state 2)) (js/call surv-x "sp_key" (js/get e "keyCode") 0)))

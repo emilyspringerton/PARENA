@@ -331,6 +331,7 @@
     (set! nat (if (js/defined? "NetkitNative") (js/global "NetkitNative") null))
     (js/set! (win) "netkitEvent" (callback on-native))
     (js/set! (win) "netkitBack" (callback nk-back))
+    (js/set! (win) "netkitMouse" (callback on-netkit-mouse))
     (js/call
       (js/call (js/call (js/global "Promise") "all"
                         (js/array (fetch-module "netkit.wasm") (fetch-module "netkit-lite.wasm") (fetch-module "nkterm.wasm")))
