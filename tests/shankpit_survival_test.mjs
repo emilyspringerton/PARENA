@@ -191,6 +191,90 @@ ok(g.gi(G.spawned) === 1, 'the next one waits out the 15 s spawn gap');
   ok(tw(b, 7) === 1 || g.gi(G.phase) !== 1, 'a felled tree grows back');
 }
 
+
+// ---- telecrystals: the WORLDMAP contract, played (sv_crystal.prn + stdlib/worldmap/wm_rules.prn) ---------------------------------------
+{
+  const C = { cast: 630, ms: 631, need: 632, msg: 633, guard: 635, jumps: 636, fizzles: 637 }, WOOD = 622;
+  const h = await boot();
+  h.play(); h.frame(140);   // the countdown
+  const at = (x, z) => { h.x.sp_t_place(0, x, 6, z, 0, 0); h.setI(0, 'health', 100); };
+  const pos = () => [h.pf(0, 'x'), h.pf(0, 'z')];
+  const near = (a, b, e = 1.5) => Math.hypot(a[0] - b[0], a[1] - b[1]) < e;
+  // the wmap and its generated table agree (tools/sv_wmap_gen.py --check is the real freshness test; this checks the wasm)
+  const wmap = fs.readFileSync(path.join(here, '../stdlib/shankpit_survival/survival_city.wmap'), 'utf8').split('\n')
+    .filter((l) => l.startsWith('crystal ')).map((l) => l.split(/\s+/));
+  ok(wmap.length === 4, 'survival_city.wmap carries four crystals');
+  const hub = wmap[1], ne = wmap[2];                                  // SV_PLAZA_TO_SOUTHWEST, SV_NORTHEAST_RETURN
+  const P = (r) => [+r[2], +r[3]], D = (r) => [+r[6], +r[7]];
+  const first = wmap[0];
+
+  // not in a ring: G does nothing
+  h.setI(1, 'active', 0); h.x.sp_t_poke(WOOD, 9); at(426, 142); h.tap(71); h.frame(5);
+  ok(h.gi(C.cast) === 0 && near(pos(), [426, 142]), 'G outside every ring starts nothing');
+
+  // inside a ring, enough wood: the jump fires at COMMIT (600 ms), not at the total (1000 ms), and costs wood only then
+  h.x.sp_t_poke(WOOD, 9); at(...P(first)); h.tap(71);
+  ok(h.gi(C.cast) === 1 && h.gi(C.need) === 600, `G in the ring starts a cast that commits at ${h.gi(C.need)} ms`);
+  h.frame(20);
+  ok(h.gi(C.cast) === 1 && h.gi(WOOD) === 9, 'mid-cast: still here, nothing charged yet');
+  h.frame(30);
+  ok(near(pos(), D(first)), `the jump lands at the wmap destination (${pos().map((v) => v.toFixed(0))})`);
+  ok(h.gi(WOOD) === 9 - +first[9] && h.gi(C.jumps) === 1, `cost ${first[9]} wood was charged at commit (9 -> ${h.gi(WOOD)})`);
+  ok(Math.abs(h.pf(0, 'yaw') - (+first[8] * Math.PI / 180)) < 1e-3, 'the hero faces the crystal\'s yaw');
+
+  // the 250 ms re-cast guard: an immediate G cannot restart a cast
+  at(...P(hub)); h.tap(71);
+  ok(h.gi(C.cast) === 0, 'right after a jump the re-cast guard refuses G');
+  h.frame(20);
+
+  // not enough wood
+  h.x.sp_t_poke(WOOD, 2); at(...P(hub)); h.tap(71);
+  ok(h.gi(C.cast) === 0 && h.gi(C.msg) === 3 && h.gi(WOOD) === 2, 'with too little wood the crystal refuses (nothing charged)');
+  h.frame(30);
+
+  // leaving the ring + 1.5 interrupts; staying inside the slack does not
+  h.x.sp_t_poke(WOOD, 9); at(...P(hub)); h.tap(71); h.frame(10);
+  h.x.sp_t_place(0, +hub[2] + 10 + 1.0, 6, +hub[3], 0, 0); h.frame(3);                // 1.0 past the edge: inside the 1.5 slack
+  ok(h.gi(C.cast) === 2, 'a step just past the ring (inside the 1.5 slack) does not interrupt');
+  h.x.sp_t_place(0, +hub[2] + 10 + 3.0, 6, +hub[3], 0, 0); h.frame(2);                // 3.0 past: out
+  ok(h.gi(C.cast) === 0 && h.gi(C.msg) === 2 && h.gi(WOOD) === 9 && h.gi(C.jumps) === 1, 'leaving the ring interrupts the cast, uncharged');
+  h.frame(30);
+
+  // a free return needs no wood
+  h.x.sp_t_poke(WOOD, 0); at(...P(ne)); h.tap(71); h.frame(40);
+  ok(near(pos(), D(ne)) && h.gi(WOOD) === 0, `the free return crystal works with no wood (${pos().map((v) => v.toFixed(0))})`);
+  h.frame(30);
+
+  // travel from combat (GFD's gate): the cast waits an extra 742 ms and a d20 of 4 or less fizzles it
+  let jumped = 0, fizzled = 0, needOk = true;
+  for (let t = 0; t < 14 && (!jumped || !fizzled); t++) {
+    h.x.sp_t_poke(WOOD, 9); at(...P(first)); h.frame(30);
+    // a living zombie 12 units away = a fight (sv-fight-radius 45)
+    h.setI(1, 'active', 1); h.setI(1, 'state', 0); h.setI(1, 'health', 100);
+    h.x.sp_t_place(1, +first[2] + 12, 6, +first[3], 0, 0);
+    h.x.sp_t_poke(C.guard, 0);
+    h.tap(71);
+    if (h.gi(C.cast) !== 1) { needOk = false; break; }
+    if (h.gi(C.need) !== 600 + 742) needOk = false;
+    const j0 = h.gi(C.jumps), f0 = h.gi(C.fizzles);
+    for (let k = 0; k < 130 && h.gi(C.cast) === 1; k++) { at(...P(first)); h.setI(1, 'health', 100); h.x.sp_t_place(1, +first[2] + 12, 6, +first[3], 0, 0); h.frame(1); }
+    if (h.gi(C.jumps) > j0) { jumped++; if (h.gi(WOOD) !== 9 - +first[9]) needOk = false; }
+    if (h.gi(C.fizzles) > f0) { fizzled++; if (h.gi(WOOD) !== 9 || !near(pos(), P(first), 15) || h.gi(C.msg) !== 4) needOk = false; }
+    h.setI(1, 'active', 0); h.setI(1, 'state', 0);
+    h.frame(30);
+  }
+  ok(needOk, 'in a fight the cast commits at 600 + 742 ms, a fizzle charges nothing and leaves you at the crystal, a jump charges wood');
+  ok(jumped > 0 && fizzled > 0, `the d20 gate both lets casts through and fizzles them (${jumped} jumped, ${fizzled} fizzled)`);
+
+  // every crystal and every destination is on open street (not inside a building)
+  const blocked = (x, z) => { for (let i = 1; i < h.gi(G.boxN); i++) {
+      const a = (n) => h.f32(163840 + i * 32 + n);                     // map box record: x y z w h d
+      const cx = a(0), cy = a(4), cz = a(8), w = a(12), hh = a(16), d = a(20);
+      if (cy - hh / 2 < 8 && Math.abs(x - cx) < w / 2 + 2 && Math.abs(z - cz) < d / 2 + 2) return true; } return false; };
+  const bad = wmap.flatMap((r) => [P(r), D(r)]).filter(([x, z]) => blocked(x, z));
+  ok(bad.length === 0, 'every crystal and destination stands on open street' + (bad.length ? ' -- blocked: ' + JSON.stringify(bad) : ''));
+}
+
 // ---- a frame of the city costs little enough for a phone -------------------------------------------------------------------------
 {
   const t0 = performance.now(); g.frame(120); const ms = (performance.now() - t0) / 120;

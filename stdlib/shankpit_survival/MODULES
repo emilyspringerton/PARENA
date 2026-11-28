@@ -20,7 +20,10 @@ stdlib/shankpit460/sp_ui.prn
 stdlib/shankpit/survival_rules.prn
 stdlib/shankpit/chest_rules.prn
 stdlib/shankpit/tree_rules.prn
+stdlib/worldmap/wm_rules.prn
 stdlib/shankpit_survival/sv_city.prn
 stdlib/shankpit_survival/sv_mod.prn
 stdlib/shankpit_survival/sv_trees.prn
+stdlib/shankpit_survival/sv_crystal_data.prn
+stdlib/shankpit_survival/sv_crystal.prn
 stdlib/shankpit460/sp_main.prn

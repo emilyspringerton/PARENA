@@ -1,0 +1,150 @@
+;; stdlib/shankpit_survival/sv_crystal.prn -- SURVIVAL's telecrystals: the WORLDMAP contract, played.
+;;
+;; Founder 2026-11-28: SURVIVAL is DragonsNShit's code name; "deliver the value" of the GFD / SHANKPIT unification into the survival
+;; mode. This mod is that delivery. The crystals come from a WORLDMAP v1 file (survival_city.wmap -> sv_crystal_data.prn) and every
+;; rule that decides what a cast IS comes from stdlib/worldmap/wm_rules.prn -- the file GoblinFoxDragon's server compiles to Go --
+;; so the ring, the commit time, the interrupt slack and the travel-from-combat gate are the same numbers on both sides:
+;;
+;;   in the ring + G            starts a cast (crystal-in-ring); the jump fires at the COMMIT time, not the total (cast-commits)
+;;   leaving the ring + 1.5     interrupts it (crystal-still-in-ring / cast-interrupted); a 250 ms re-cast guard follows
+;;   in a fight                 the cast waits travel-delay-ms (742) more and then rolls a d20: travel-roll-fails (<= 4) = the
+;;                              crystal fizzles, nothing is charged (GFD's combat travel gate, verbatim)
+;;   cost                       wood, charged at commit only (the GFD server charges gil and owns that column; offline there is no
+;;                              server, so the resource this mode has is the currency)
+;;
+;; "In a fight" = a living zombie within sv-fight-radius of the hero (the C client has no such flag; this is the closest honest
+;; reading). Not done, named: no GFD server round trip (the wasm imports nothing, so a cast cannot ask the registry; the host would
+;; have to), and no cross-zone hop (SURVIVAL is one level; the generator refuses a crystal whose dest_zone is not this zone).
+;;
+;; State words: G 630..637.
+
+(defn g-svx-cast [] : I32 630)        ; 0 = idle, else crystal index + 1
+(defn g-svx-ms [] : I32 631)          ; ms into the cast
+(defn g-svx-need [] : I32 632)        ; ms at which it commits (commit_ms, plus the combat wait when fighting)
+(defn g-svx-msg [] : I32 633)         ; 1 jumped, 2 interrupted, 3 not enough wood, 4 fizzled, 5 no cast while dead
+(defn g-svx-msg-t [] : I32 634)       ; ticks the notice stays up
+(defn g-svx-guard [] : I32 635)       ; ticks of the re-cast guard
+(defn g-svx-jumps [] : I32 636)       ; jumps this run
+(defn g-svx-fizzles [] : I32 637)     ; fizzled casts this run
+
+(defn sv-fight-radius [] : F32 45.0)
+(defn svx-recast-guard-ms [] : I32 250)
+(defn svx-key [] : I32 71)            ; G
+
+(defn svx-note! [(m : I32)] : Unit (do (gi! (g-svx-msg) m) (gi! (g-svx-msg-t) 110)))
+
+(defn svx-reset! [] : Unit
+  (do (gi! (g-svx-cast) 0) (gi! (g-svx-ms) 0) (gi! (g-svx-need) 0) (gi! (g-svx-msg) 0) (gi! (g-svx-msg-t) 0)
+      (gi! (g-svx-guard) 0) (gi! (g-svx-jumps) 0) (gi! (g-svx-fizzles) 0)))
+
+;; is the hero close enough to a living zombie to count as fighting?
+(defn svx-fighting? [] : Bool
+  (let [hit false
+        (r : F32) (sv-fight-radius)]
+    (loop [p 1]
+      (when (and (<= p (sv-pool)) (not hit))
+        (when (alive? p)
+          (when (<= (len2 (- (p-x p) (p-x 0)) (- (p-z p) (p-z 0))) r) (set! hit true)))
+        (recur (+ p 1))))
+    hit))
+
+;; the crystal whose ring holds (x, z), or -1
+(defn svx-ring-at [(x : F32) (z : F32)] : I32
+  (let [found -1]
+    (loop [i 0]
+      (when (and (< i (svx-n)) (< found 0))
+        (when (crystal-in-ring x z (svx-x i) (svx-z i) (svx-r i)) (set! found i))
+        (recur (+ i 1))))
+    found))
+
+(defn svx-start! [(i : I32)] : Unit
+  (cond
+    (< (gi (g-sv-wood)) (svx-cost i)) (svx-note! 3)
+    :else
+      (do (gi! (g-svx-cast) (+ i 1))
+          (gi! (g-svx-ms) 0)
+          (gi! (g-svx-need) (if (svx-fighting?) (+ (svx-commit-ms i) (travel-delay-ms)) (svx-commit-ms i)))
+          (snd-ui! 15))))
+
+;; the jump: the hero stands at the crystal's destination, facing its yaw, at rest
+(defn svx-jump! [(i : I32)] : Unit
+  (let [(yaw : F32) (* (svx-yaw-deg i) 0.017453292)]
+    (gi! (g-sv-wood) (- (gi (g-sv-wood)) (svx-cost i)))
+    (set-p-x! 0 (svx-dx i))
+    (set-p-z! 0 (svx-dz i))
+    (set-p-y! 0 6.0)
+    (set-p-vx! 0 0.0) (set-p-vy! 0 0.0) (set-p-vz! 0 0.0)
+    (set-p-yaw! 0 yaw)
+    (gf! (g-cam-yaw) yaw)
+    (gi! (g-svx-jumps) (+ (gi (g-svx-jumps)) 1))
+    (gi! (g-svx-cast) 0)
+    (gi! (g-svx-guard) (ms-ticks (svx-recast-guard-ms)))
+    (svx-note! 1)
+    (snd-ui! 19)))
+
+(defn svx-end! [(m : I32)] : Unit
+  (do (gi! (g-svx-cast) 0)
+      (gi! (g-svx-guard) (ms-ticks (svx-recast-guard-ms)))
+      (svx-note! m)))
+
+(defn svx-tick! [] : Unit
+  (do
+    (when (> (gi (g-svx-msg-t)) 0) (gi! (g-svx-msg-t) (- (gi (g-svx-msg-t)) 1)))
+    (when (> (gi (g-svx-guard)) 0) (gi! (g-svx-guard) (- (gi (g-svx-guard)) 1)))
+    (let [c (- (gi (g-svx-cast)) 1)]
+      (if (>= c 0)
+          ;; casting
+          (cond
+            (not (alive? 0)) (gi! (g-svx-cast) 0)
+            (cast-interrupted (gi (g-svx-ms)) (gi (g-svx-need))
+                              (crystal-still-in-ring (p-x 0) (p-z 0) (svx-x c) (svx-z c) (svx-r c)))
+              (svx-end! 2)
+            :else
+              (do (gi! (g-svx-ms) (+ (gi (g-svx-ms)) 16))
+                  (when (cast-commits (gi (g-svx-ms)) (gi (g-svx-need)))
+                    ;; a fight at the start put the combat wait in `need`: now the d20 (1..20)
+                    (if (and (> (gi (g-svx-need)) (svx-commit-ms c)) (travel-roll-fails (+ 1 (rnd 20))))
+                        (do (gi! (g-svx-fizzles) (+ (gi (g-svx-fizzles)) 1)) (svx-end! 4))
+                        (svx-jump! c)))))
+          ;; idle: G inside a ring starts a cast
+          (when (and (alive? 0) (and (= (gi (g-svx-guard)) 0) (or (key-hit? (svx-key)) (any-pad-hit? (pb-x)))))
+            (let [i (svx-ring-at (p-x 0) (p-z 0))]
+              (when (>= i 0) (svx-start! i))))))))
+
+;; ---- drawing -----------------------------------------------------------------------------------------------------------------------
+;; a pillar on a ring plate: the plate is the ring (radius r), the pillar and the floating gem are the crystal
+(defn svx-draw! [] : Unit
+  (when (= (gi (g-map-id)) 3)
+    (let [(bob : F32) (* 0.6 (sinf (* (f32 (gi (g-ticker))) 0.004)))]
+      (dotimes [i (svx-n)]
+        (let [(x : F32) (svx-x i)
+              (z : F32) (svx-z i)
+              (r : F32) (svx-r i)
+              active (= (gi (g-svx-cast)) (+ i 1))
+              col (if active (rgb 255 240 170) (if (= (svx-cost i) 0) (rgb 120 210 170) (rgb 120 170 255)))]
+          (when (sv-near? x z)
+            (draw-aabb! x 0.15 z (* r 2.0) 0.3 (* r 2.0) (shade col 150) 1)
+            (draw-aabb! x 3.0 z 1.2 6.0 1.2 (shade col 200) 1)
+            (draw-aabb! x (+ 8.0 bob) z 2.6 2.6 2.6 col 2)))))))
+
+(defn svx-hud! [] : Unit
+  (let [c (- (gi (g-svx-cast)) 1)]
+    (if (>= c 0)
+        (let [(f : F32) (/ (f32 (gi (g-svx-ms))) (f32 (max-i 1 (gi (g-svx-need)))))
+              w (i32 (* 120.0 (if (< f 1.0) f 1.0)))]
+          (panel 250 256 140 26)
+          (draw-text-c "CASTING" 320 260 1 (amber))
+          (fill-rect 260 272 120 4 (slate))
+          (fill-rect 260 272 w 4 (amber))
+          (when (> (gi (g-svx-need)) (svx-commit-ms c)) (draw-text-c "in a fight: the crystal may fizzle" 320 286 1 (coral))))
+        (let [i (if (alive? 0) (svx-ring-at (p-x 0) (p-z 0)) -1)]
+          (when (>= i 0)
+            (panel 214 256 212 34)
+            (draw-text-c (svx-prompt i) 320 260 1 (amber))
+            (if (> (svx-cost i) 0)
+                (do (draw-int (svx-cost i) 290 274 1 (if (>= (gi (g-sv-wood)) (svx-cost i)) (ink) (coral)))
+                    (draw-text "wood" 306 274 1 (ink-faint)))
+                (draw-text-c "free" 320 274 1 (ink-faint))))))
+    (when (> (gi (g-svx-msg-t)) 0)
+      (draw-text-c (case (gi (g-svx-msg)) 1 "TELEPORTED" 2 "CAST INTERRUPTED" 3 "NOT ENOUGH WOOD" 4 "THE CRYSTAL FIZZLES" "")
+                   320 232 1 (if (= (gi (g-svx-msg)) 1) (amber) (coral))))))
