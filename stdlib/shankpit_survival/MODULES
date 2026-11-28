@@ -25,6 +25,7 @@ stdlib/camera/ease.prn
 stdlib/camera/zoom_cam_mod.prn
 stdlib/camera/click_move_mod.prn
 stdlib/shankpit_survival/sv_city.prn
+stdlib/shankpit_survival/sv_biome.prn
 stdlib/shankpit_survival/sv_mod.prn
 stdlib/shankpit_survival/sv_trees.prn
 stdlib/shankpit_survival/sv_crystal_data.prn

@@ -56,7 +56,7 @@
       (dotimes [ci (* (+ (* ring 2) 1) (+ (* ring 2) 1))]
         (let [gx (- (mod ci (+ (* ring 2) 1)) ring)
               gz (- (/ ci (+ (* ring 2) 1)) ring)
-              kind (if (= (max-i (abs-i gx) (abs-i gz)) ring) (tree-at gx gz (sv-forest-seed)) 0)]
+              kind (if (= (max-i (abs-i gx) (abs-i gz)) ring) (sv-tree-kind-at gx gz (sv-forest-seed)) 0)]
           (when (and (> kind 0) (and (< count (sv-max-trees)) (< (map-count) (- 127 (sv-box-reserve)))))
             (let [(x : F32) (+ (* (f32 gx) cell) (milli (tree-jitter-milli gx gz (sv-forest-seed) 0)))
                   (z : F32) (+ (* (f32 gz) cell) (milli (tree-jitter-milli gx gz (sv-forest-seed) 1)))]
@@ -165,7 +165,7 @@
           (loop [p 1]
             (when (< p (tree-parts (tk i)))
               (draw-aabb! (+ (tx i) (tpart i p 0)) (tpart i p 1) (+ (tz i) (tpart i p 2))
-                          (tpart i p 3) (tpart i p 4) (tpart i p 5) (rgb-of-hex (tree-part-color (tk i) p)) 1)
+                          (tpart i p 3) (tpart i p 4) (tpart i p 5) (rgb-of-hex (sv-tree-hex (tk i) p)) 1)
               (recur (+ p 1))))
           (draw-aabb! (tx i) 0.25 (tz i) (tpart i 0 3) 0.5 (tpart i 0 5) (shade (rgb-of-hex (tree-part-color (tk i) 0)) 200) 1)))))
 

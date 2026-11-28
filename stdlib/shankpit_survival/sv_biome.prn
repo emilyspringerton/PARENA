@@ -1,0 +1,89 @@
+;; stdlib/shankpit_survival/sv_biome.prn -- SURVIVAL's biomes: what a zone's ground, sky and trees look like.   (list + lore: BIOMES.md)
+;;
+;; Founder 2026-11-28: "zones a mixture of what a minecraft world would look like and diablo 2". So two rules, both deterministic in the zone seed:
+;;   - Diablo 2: a NAMED zone keeps its identity (Pellet Marsh is always a swamp; the host maps the GFD zone name to an id), but its
+;;     layout, tint and tree count come from the seed, so no two rooms of a biome are the same picture.
+;;   - Minecraft: a zone the host does not know by name is handed 255 ("auto") and the seed picks a biome for it.
+;; Today a biome is: floor colour, sky (and so fog) colours, how many trees grow, which kinds, and the canopy tint. 0 is the city.
+;;
+;;   1 meadow   2 swamp   3 hills   4 salt flats   5 coast   6 moor   7 ridge (tor)   8 terraces   9 forest   10 snow (taiga)
+;;   11 town    12 badlands   13 hollow (indoors: caves / mines / halls, a stand-in until the dungeon pass)
+
+(defn sv-biome [] : I32 (gi (g-sv-biome)))
+
+;; the seed's pick for a zone the host cannot name (never the city, the town or the hollow)
+(defn sv-biome-pick [(seed : I32)] : I32
+  (case (mod (abs-i (bit-xor seed (shr seed 7))) 9) 0 1 1 2 2 3 3 5 4 6 5 7 6 9 7 10 12))
+
+;; -1 = "the engine's own look" (the city)
+(defn sv-biome-floor [] : I32
+  (let [b (sv-biome)
+        j (- (mod (abs-i (gi (g-sv-zseed))) 13) 6)]
+    (if (= b 0) -1
+        (let [c (case b
+                  1 (rgb 120 168 90)
+                  2 (rgb 84 96 62)
+                  3 (rgb 138 156 98)
+                  4 (rgb 230 226 212)
+                  5 (rgb 218 200 152)
+                  6 (rgb 118 104 110)
+                  7 (rgb 140 142 148)
+                  8 (rgb 160 150 100)
+                  9 (rgb 66 108 60)
+                  10 (rgb 232 238 244)
+                  11 (rgb 176 170 160)
+                  12 (rgb 186 126 84)
+                  (rgb 70 66 72))]
+          ;; a little lighter or darker per zone, so no two meadows are the same colour
+          (rgb (clamp-i (+ (bit-and c 255) (/ j 2)) 0 255)
+               (clamp-i (+ (bit-and (shr c 8) 255) j) 0 255)
+               (clamp-i (+ (bit-and (shr c 16) 255) (/ j 2)) 0 255))))))
+
+(defn sv-biome-sky-top [] : I32
+  (case (sv-biome) 2 (rgb 104 124 118) 4 (rgb 150 184 220) 5 (rgb 124 170 214) 6 (rgb 112 120 138) 10 (rgb 150 170 200) 12 (rgb 176 134 112) 13 (rgb 44 44 54) -1))
+(defn sv-biome-sky-mid [] : I32
+  (case (sv-biome) 2 (rgb 150 160 146) 4 (rgb 208 218 226) 5 (rgb 190 212 226) 6 (rgb 164 166 178) 10 (rgb 200 210 226) 12 (rgb 214 176 142) 13 (rgb 66 64 76) -1))
+(defn sv-biome-sky-horizon [] : I32
+  (case (sv-biome) 2 (rgb 190 190 164) 4 (rgb 240 236 224) 5 (rgb 236 228 206) 6 (rgb 206 200 196) 10 (rgb 236 238 240) 12 (rgb 236 196 150) 13 (rgb 86 82 92) -1))
+
+;; trees per thousand cells, +-30% by zone seed
+(defn sv-biome-density [] : I32
+  (let [base (case (sv-biome) 1 200 2 320 3 70 4 12 5 35 6 28 7 90 8 130 9 520 10 240 11 45 12 18 0)]
+    (/ (* base (+ 70 (mod (abs-i (gi (g-sv-zseed))) 61))) 100)))
+
+;; which kind (1 pine, 2 oak, 3 birch) for a roll 0..2
+(defn sv-biome-kind [(r : I32)] : I32
+  (case (sv-biome)
+    1 (case r 0 2 1 3 2)
+    2 2
+    3 1
+    4 3
+    5 (case r 0 3 1 2 3)
+    6 (case r 0 1 2)
+    7 1
+    8 (case r 0 1 3)
+    9 (+ r 1)
+    10 1
+    11 2
+    12 2
+    2))
+
+;; the canopy's own colour (0xRRGGBB, 0 = the tree rules' greens); parts 1.. get a touch darker each
+(defn sv-biome-canopy [] : I32
+  (case (sv-biome) 2 5662254 4 11011176 5 6199890 6 5791816 10 13821146 12 9206332 0))
+
+(defn sv-tree-hex [(kind : I32) (part : I32)] : I32
+  (let [c (sv-biome-canopy)]
+    (if (or (= part 0) (= c 0)) (tree-part-color kind part) (- c (* (- part 1) 394758)))))
+
+(defn sv-bhash [(gx : I32) (gz : I32) (seed : I32)] : I32
+  (let [h (bit-xor (bit-xor (* gx 73856093) (* gz 19349663)) (* seed 83492791))
+        h2 (bit-xor h (* (bit-and h 65535) 2654435))]
+    (if (< h2 0) (- 0 h2) h2)))
+
+;; the tree (kind, or 0 = none) of a candidate cell: the city keeps the rules' own forest, every other biome grows its own
+(defn sv-tree-kind-at [(gx : I32) (gz : I32) (seed : I32)] : I32
+  (if (= (sv-biome) 0)
+      (tree-at gx gz seed)
+      (let [h (sv-bhash gx gz seed)]
+        (if (< (mod h 1000) (sv-biome-density)) (sv-biome-kind (mod (/ h 1000) 3)) 0))))

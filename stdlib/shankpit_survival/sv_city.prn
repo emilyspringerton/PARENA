@@ -13,13 +13,13 @@
 (defn sv-city-road [] : F32 54.0)
 (defn sv-city-pitch [] : F32 284.0)       ; block + road
 (defn sv-city-radius [] : I32 3)          ; grid cells either side of the origin (the C city: 12)
-(defn g-sv-biome [] : I32 664)            ; 0 city (the original level), 1 meadow (every GFD zone for now): sp_zone sets it
+(defn g-sv-biome [] : I32 664)            ; 0 city (the original level), 1.. a zone's biome (sv_biome.prn): sp_zone sets it
 (defn g-sv-zseed [] : I32 665)            ; the zone's seed (the host hashes the GFD room into it): trees grow from it
 (defn g-sv-zin [] : I32 666)              ; how the hero arrived: 0 centre, 1 heading N, 2 S, 3 E, 4 W (north = +z, east = +x)
 (defn g-sv-zpend [] : I32 667)            ; 1 = rebuild the scene at the next tick
 (defn g-sv-zexit [] : I32 668)            ; the hero walked off this edge (1 N, 2 S, 3 E, 4 W) and the host has not answered yet
 (defn g-sv-zcool [] : I32 669)            ; ticks before another edge exit counts
-(defn sv-meadow? [] : Bool (= (gi (g-sv-biome)) 1))
+(defn sv-meadow? [] : Bool (!= (gi (g-sv-biome)) 0))   ; "is a GFD zone": any biome but the city (sv_biome.prn)
 (defn sv-city-edge [] : F32 (if (sv-meadow?) 420.0 994.0))   ; city: (radius + 0.5) * pitch, the road ring outside the last blocks; meadow: the zone's half width
 (defn sv-city-max-boxes [] : I32 127)
 

@@ -3,20 +3,20 @@
 ;; The page host owns the GFD connection and the room; this file owns the picture of it. The contract (state words in sv_city.prn, G 664..669):
 ;;   sp_zone(seed, entry, biome)   the host: "you are in this zone now". seed = a hash of the GFD room (trees grow from it, so a room always
 ;;                                 looks the same); entry = which way the hero came in (0 centre, 1 going N, 2 S, 3 E, 4 W; north = +z,
-;;                                 east = +x), so walking east out of one zone puts you on the west edge of the next; biome 1 = meadow
-;;                                 (every zone, for now), 0 = the city. Applied at the next tick: scene rebuilt, zombies gone, wave restarts,
+;;                                 east = +x), so walking east out of one zone puts you on the west edge of the next; biome 1.. = a zone's biome (sv_biome.prn),
+;;                                 255 = pick one from the seed, 0 = the city. Applied at the next tick: scene rebuilt, zombies gone, wave restarts,
 ;;                                 wood and weapons kept.
 ;;   sp_zone_exit()                the hero walked off an edge (1 N, 2 S, 3 E, 4 W), 0 = no. The host answers with the room's move
 ;;                                 command (`east`...) and then either sp_zone(...) (the room changed) or sp_zone_ack() (it did not / no link).
 ;;   sp_zone_ack()                 the exit was refused: the hero is stepped back in and the edge sleeps for a moment.
-;; Biomes are procedural later; today only the trees come from the seed.
+;; Biomes (sv_biome.prn): the host names the biome of a known zone; the seed picks one for the rest and tints / thins every zone's trees.
 
 (defn sv-zone-margin [] : F32 14.0)
 
 (defn sp-zone [(seed : I32) (side : I32) (biome : I32)] : Unit
   (do (gi! (g-sv-zseed) seed)
       (gi! (g-sv-zin) side)
-      (gi! (g-sv-biome) biome)
+      (gi! (g-sv-biome) (if (= biome 255) (sv-biome-pick seed) biome))
       (gi! (g-sv-zexit) 0)
       (gi! (g-sv-zpend) 1)))
 (defn sp-zone-exit [] : I32 (gi (g-sv-zexit)))

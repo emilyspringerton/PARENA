@@ -4,10 +4,10 @@
 ;; every edge, and ten muted player hues. Nothing flashes; the loudest thing on screen is a muzzle.
 
 ;; ---- palette -----------------------------------------------------------------------------------------
-(defn sky-top [] : I32 (rgb 126 150 188))
-(defn sky-mid [] : I32 (rgb 188 190 204))
-(defn sky-horizon [] : I32 (rgb 232 218 200))
-(defn floor-color [] : I32 (rgb 198 190 176))
+(defn sky-top [] : I32 (let [m (mod-sky-top)] (if (>= m 0) m (rgb 126 150 188))))
+(defn sky-mid [] : I32 (let [m (mod-sky-mid)] (if (>= m 0) m (rgb 188 190 204))))
+(defn sky-horizon [] : I32 (let [m (mod-sky-horizon)] (if (>= m 0) m (rgb 232 218 200))))
+(defn floor-color [] : I32 (let [m (mod-floor-color)] (if (>= m 0) m (rgb 198 190 176))))
 (defn wall-color [] : I32 (rgb 120 128 146))
 
 ;; ten player hues, soft but distinct against pale concrete

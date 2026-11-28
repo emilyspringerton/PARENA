@@ -350,6 +350,10 @@
       (when (not (sv-trees-hit! p ox oy oz dx dy dz reach (ray-world ox oy oz dx dy dz reach)))
         (sv-hitscan! p ox oy oz dx dy dz)))))
 (defn mod-box-color [(i : I32)] : I32 (if (= (gi (g-map-id)) 3) (sv-box-color i) -1))
+(defn mod-floor-color [] : I32 (if (= (gi (g-map-id)) 3) (sv-biome-floor) -1))
+(defn mod-sky-top [] : I32 (if (= (gi (g-map-id)) 3) (sv-biome-sky-top) -1))
+(defn mod-sky-mid [] : I32 (if (= (gi (g-map-id)) 3) (sv-biome-sky-mid) -1))
+(defn mod-sky-horizon [] : I32 (if (= (gi (g-map-id)) 3) (sv-biome-sky-horizon) -1))
 
 (defn mod-tick! [] : Unit
   (when (mod-active?)

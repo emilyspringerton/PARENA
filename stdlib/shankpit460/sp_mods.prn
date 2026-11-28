@@ -40,6 +40,10 @@
 (defn mod-hitscan! [(p : I32) (ox : F32) (oy : F32) (oz : F32) (dx : F32) (dy : F32) (dz : F32)] : Unit unit)
 (defn mod-box-color [(i : I32)] : I32 -1)
 (defn mod-draw-world! [] : Unit unit)
+(defn mod-floor-color [] : I32 -1)     ; -1 = the engine's own colour
+(defn mod-sky-top [] : I32 -1)
+(defn mod-sky-mid [] : I32 -1)
+(defn mod-sky-horizon [] : I32 -1)
 (defn mod-hud! [(me : I32)] : Unit unit)
 (defn mod-title! [] : Bool false)
 (defn mod-end! [(alpha : F32)] : Bool false)

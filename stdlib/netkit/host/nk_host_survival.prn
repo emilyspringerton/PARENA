@@ -103,7 +103,7 @@
                           (* (* (js/call surv-x "sp_fb_w") (js/call surv-x "sp_fb_h")) 4))
                   (js/call surv-x "sp_fb_w") (js/call surv-x "sp_fb_h")))
     (surv-install!)
-    (js/call surv-x "sp_zone" (surv-hash "meadow") 0 1)   ; every zone is a meadow for now; a GFD room replaces this seed once connected
+    (js/call surv-x "sp_zone" (surv-hash "meadow") 0 1)   ; offline: a meadow; a GFD room replaces this seed and biome once connected
     (set! surv-state 2)
     (surv-say! "")
     (when surv-run (do (js/call surv-x "sp_lock" 1) (surv-start-loop!)))))
@@ -260,6 +260,25 @@
     (do (dotimes [i n]
           (set! h (js/call (js/global "Math") "abs" (js/call (js/global "Math") "imul" (+ (js/call (js/global "Math") "imul" h 33) (js/call s "charCodeAt" i)) 1))))
         (js/call (js/global "Math") "max" 1 (js/call (js/global "Math") "floor" (/ h 1.0))))))
+
+;; a GFD zone's name -> its biome (sv_biome.prn, BIOMES.md). Diablo 2 rule: a named zone keeps its identity. Anything unnamed is 255 = the seed picks (Minecraft).
+(defn surv-has? [(s : String) (w : String)] : Bool (>= (js/call s "indexOf" w) 0))
+(defn surv-biome-of [(key : String)] : I32
+  (let [z (js/call (js/call (js/aget (js/call key "split" "|") 1) "toString") "toLowerCase")]
+    (cond
+      (= z "") 1
+      (surv-has? z ":") 13
+      (or (surv-has? z "cave") (or (surv-has? z "deeps") (or (surv-has? z "mine") (or (surv-has? z "stacks") (or (surv-has? z "archive") (surv-has? z "geode")))))) 13
+      (or (surv-has? z "swamp") (or (surv-has? z "marsh") (surv-has? z "moor-bog"))) 2
+      (surv-has? z "salt") 4
+      (or (surv-has? z "tidepool") (or (surv-has? z "coast") (or (surv-has? z "docks") (or (surv-has? z "quay") (or (surv-has? z "balance") (surv-has? z "kuroshio")))))) 5
+      (surv-has? z "moor") 6
+      (or (surv-has? z "tor") (or (surv-has? z "ridge") (or (surv-has? z "perch") (surv-has? z "wall")))) 7
+      (or (surv-has? z "terrace") (or (surv-has? z "stair") (surv-has? z "shrine"))) 8
+      (or (surv-has? z "handington") (surv-has? z "town")) 11
+      (surv-has? z "hill") 3
+      (or (surv-has? z "meadow") (surv-has? z "field")) 1
+      :else 255)))
 (defn surv-dir-word [(d : I32)] : String
   (cond (= d 1) "north" (= d 2) "south" (= d 3) "east" :else "west"))
 (defn surv-dir-of [(t : String)] : I32
@@ -282,7 +301,7 @@
                   side (if (and (not first) (< (- t surv-dir-at) 6000.0)) surv-dir 0)]
               (do (set! surv-room key)
                   (set! surv-dir 0)
-                  (js/call surv-x "sp_zone" (surv-hash key) side 1)
+                  (js/call surv-x "sp_zone" (surv-hash key) side (surv-biome-of key))
                   (set! surv-exit-at -1.0)
                   (surv-chat-add! "s5" (str "Zone: " (gfd-word0 "nk_gfd_room_addr")))
                   (js/set! (el "sv-room") "title" key))))))
